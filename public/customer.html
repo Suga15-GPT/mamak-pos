@@ -240,7 +240,7 @@ function renderCats(){
 function renderItems(){
   const items=menu.items.filter(i=>i.category_id===activeCat);
   $('menu-items').innerHTML=items.map(it=>
-    `<button class="item-btn" onclick='addItem(${JSON.stringify(it).replace(/'/g,"&#39;")})'>
+    `<button class="item-btn" onclick="addItem(${it.id})">
       <div class="info">
         <div class="nm">${esc(it.name)}</div>
         ${it.kandar?'<div class="customisable">Customisable</div>':''}
@@ -250,9 +250,11 @@ function renderItems(){
   ).join('')||'<div class="empty">No items in this category</div>';
 }
 
-function addItem(it){
+function addItem(id){
+  const it=menu.items.find(i=>i.id===id);
+  if(!it) return;
   if(it.kandar){ openKandar(it); return; }
-  
+
   const cat = menu.categories.find(c => c.id === it.category_id);
   const catName = cat ? cat.name.toLowerCase() : '';
   let presets = [];

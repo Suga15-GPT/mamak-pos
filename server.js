@@ -166,9 +166,9 @@ app.post('/api/public/orders', publicH(async (req, res) => {
 }));
 
 /* ---------- staff: orders ---------- */
-async function ordersWithItems(where, params) {
+async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at ASC') {
   const oq = await pool.query(
-    `SELECT o.*, t.name AS table_name FROM orders o JOIN tables t ON t.id = o.table_id ${where} ORDER BY o.created_at ASC`, params);
+    `SELECT o.*, t.name AS table_name FROM orders o JOIN tables t ON t.id = o.table_id ${where} ${orderBy}`, params);
   const orders = oq.rows;
   if (!orders.length) return [];
   const ids = orders.map(o => o.id);
@@ -196,10 +196,17 @@ async function ordersWithItems(where, params) {
 app.get('/api/orders', awaitH(async (req, res) => {
   const auth = await requireAuth('admin', 'staff', 'kitchen'); await auth(req, res, () => {}); if (res.headersSent) return;
   if (req.query.mode === 'recent') {
-    res.json(await ordersWithItems('WHERE true ORDER BY o.id DESC LIMIT 15', []));
+    res.json(await ordersWithItems('', [], 'ORDER BY o.id DESC LIMIT 15'));
   } else {
     res.json(await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled')", []));
   }
+}));
+
+/* tables for staff/kitchen: names only, no qr_token (that stays admin-only) */
+app.get('/api/tables', awaitH(async (req, res) => {
+  const auth = await requireAuth('admin', 'staff', 'kitchen'); await auth(req, res, () => {}); if (res.headersSent) return;
+  const r = await pool.query('SELECT id, name FROM tables ORDER BY id');
+  res.json(r.rows);
 }));
 
 app.post('/api/orders', awaitH(async (req, res) => {
