@@ -30,15 +30,29 @@ const API = {
     return data;
   },
 
-  logout() {
+  async logout() {
+    const token = this.token;
     this.token = null;
     this.user = null;
     localStorage.removeItem('pos_token');
     localStorage.removeItem('pos_user');
+    if (token) {
+      try { await fetch('/api/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + token } }); }
+      catch (e) { /* best effort */ }
+    }
   },
 
   get(p)   { return this.request('GET', p); },
   post(p, b)  { return this.request('POST', p, b); },
   patch(p, b) { return this.request('PATCH', p, b); },
   del(p)   { return this.request('DELETE', p); },
+
+  /* fetch an authenticated binary resource (e.g. QR PNGs) as an object URL */
+  async getBlobUrl(path) {
+    const headers = {};
+    if (this.token) headers['Authorization'] = 'Bearer ' + this.token;
+    const res = await fetch(path, { headers });
+    if (!res.ok) throw new Error('failed to load ' + path);
+    return URL.createObjectURL(await res.blob());
+  },
 };

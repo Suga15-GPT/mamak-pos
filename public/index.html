@@ -44,6 +44,10 @@
   
   /* Table status badge */
   .table-status { font-size:10px; margin-top:4px; opacity:.8; text-transform:uppercase; letter-spacing:.05em; }
+
+  /* Cart line already sent to the kitchen (read-only, still billed) */
+  .sent-tag { background:var(--sage-deep); color:#fff; padding:2px 8px; border-radius:20px; font-size:10px;
+              font-weight:700; text-transform:uppercase; letter-spacing:.05em; vertical-align:middle; }
 </style>
 </head>
 <body>
@@ -225,7 +229,7 @@ async function doLogin(){
     showApp();
   }catch(e){ $('lerr').textContent=e.message; }
 }
-function doLogout(){ API.logout(); showLogin(); }
+async function doLogout(){ await API.logout(); showLogin(); }
 function showLogin(){ $('login-view').style.display=''; $('app-view').style.display='none'; if(pollTimer)clearInterval(pollTimer); }
 function showApp(){
   $('login-view').style.display='none';
@@ -264,7 +268,7 @@ function switchTab(id,btn){
 /* ===== DATA LOADING ===== */
 async function loadAll(){
   try{
-    [menu, tables] = await Promise.all([API.get('/api/menu'), API.get('/api/admin/tables')]);
+    [menu, tables] = await Promise.all([API.get('/api/menu'), API.get('/api/tables')]);
     activeCat = menu.categories[0]?.id;
     renderTables();
     renderMenu();
@@ -286,18 +290,19 @@ async function renderTables(){
       const status = tableStatus[t.id];
       const statusClass = status ? (status==='served'?'busy':'open') : '';
       const statusLabel = status ? `<div class="table-status">${status}</div>` : '';
-      return `<button class="table-btn ${statusClass}" id="tb-${t.id}" onclick="selectTable(${t.id},'${esc(t.name)}')">
+      return `<button class="table-btn ${statusClass}" id="tb-${t.id}" onclick="selectTable(${t.id})">
         ${esc(t.name)}${statusLabel}
       </button>`;
     }).join('')}</div>`;
 }
 
-function selectTable(id,name){
-  selTable={id,name};
+function selectTable(id){
+  const t=tables.find(x=>x.id===id);
+  selTable={id,name:t?t.name:''};
   cart=[];
   $('pos-tables').style.display='none';
   $('pos-workspace').style.display='';
-  $('ws-title').textContent=name;
+  $('ws-title').textContent=selTable.name;
   renderCart();
   renderMenu();
   checkOpenOrder();
@@ -316,7 +321,8 @@ async function checkOpenOrder(){
     const orders=await API.get('/api/orders');
     const open=orders.find(o=>o.table_id===selTable.id);
     if(open){
-      cart=open.items.map(l=>({item_id:l.item_id||0,name:l.name,price:l.price,qty:l.qty,mods:l.mods,note:l.note||''}));
+      /* lines already on the order are marked sent: they must never be re-submitted */
+      cart=open.items.map(l=>({item_id:l.item_id||0,name:l.name,price:l.price,qty:l.qty,mods:l.mods,note:l.note||'',sent:true}));
       renderCart();
       $('pay-btn').style.display='';
       $('pay-btn').dataset.orderId=open.id;
@@ -334,15 +340,17 @@ function renderMenu(){
   ).join('');
   const items=menu.items.filter(i=>i.category_id===activeCat);
   $('menu-items').innerHTML=items.map(it=>
-    `<button class="item-btn" onclick='addItem(${JSON.stringify(it).replace(/'/g,"&#39;")})'>
+    `<button class="item-btn" onclick="addItem(${it.id})">
       <div class="nm">${esc(it.name)}</div><div class="pr">${fmt(it.price)}</div></button>`
   ).join('')||'<div class="empty">No items in this category</div>';
 }
 
 /* ===== POS: CART ===== */
-function addItem(it){
+function addItem(id){
+  const it=menu.items.find(i=>i.id===id);
+  if(!it) return;
   if(it.kandar){ openKandarModal(it); return; }
-  
+
   // Determine preset remarks based on category
   const cat = menu.categories.find(c => c.id === it.category_id);
   const catName = cat ? cat.name.toLowerCase() : '';
@@ -370,7 +378,7 @@ function setRemark(text){
 
 function skipRemark(){
   if(pendingRemarkItem){
-    const ex = cart.find(l => l.item_id === pendingRemarkItem.id && !l.mods.length && !l.note);
+    const ex = cart.find(l => !l.sent && l.item_id === pendingRemarkItem.id && !l.mods.length && !l.note);
     if(ex) ex.qty++;
     else cart.push({item_id:pendingRemarkItem.id, name:pendingRemarkItem.name, price:pendingRemarkItem.price, qty:1, mods:[], note:''});
     pendingRemarkItem = null;
@@ -382,7 +390,7 @@ function skipRemark(){
 function confirmRemark(){
   if(pendingRemarkItem){
     const note = $('remark-input').value.trim();
-    const ex = cart.find(l => l.item_id === pendingRemarkItem.id && !l.mods.length && l.note === note);
+    const ex = cart.find(l => !l.sent && l.item_id === pendingRemarkItem.id && !l.mods.length && l.note === note);
     if(ex) ex.qty++;
     else cart.push({item_id:pendingRemarkItem.id, name:pendingRemarkItem.name, price:pendingRemarkItem.price, qty:1, mods:[], note});
     pendingRemarkItem = null;
@@ -393,8 +401,8 @@ function confirmRemark(){
 
 function closeRemarkModal(){ $('remark-modal').classList.remove('show'); pendingRemarkItem=null; }
 
-function cartQty(idx,d){ cart[idx].qty=Math.max(1,cart[idx].qty+d); renderCart(); }
-function cartDel(idx){ cart.splice(idx,1); renderCart(); }
+function cartQty(idx,d){ if(cart[idx].sent) return toast('Already sent to kitchen'); cart[idx].qty=Math.max(1,cart[idx].qty+d); renderCart(); }
+function cartDel(idx){ if(cart[idx].sent) return toast('Already sent — cancel the order instead'); cart.splice(idx,1); renderCart(); }
 
 function renderCart(){
   if(!cart.length){ $('cart-lines').innerHTML=''; $('cart-empty').style.display=''; $('cart-totals').style.display='none'; return; }
@@ -404,9 +412,9 @@ function renderCart(){
     const lt=(l.price+l.mods.reduce((s,m)=>s+m.price,0))*l.qty; total+=lt;
     const modStr=l.mods.map(m=>m.name+(m.price?` +${fmt(m.price)}`:'')).join(', ');
     return `<div class="cart-line">
-      <div><b>${l.qty}×</b> ${esc(l.name)}${modStr?`<br><small style="color:var(--warm-gray)">${esc(modStr)}</small>`:''}${l.note?`<br><small style="color:var(--terra)">📝 ${esc(l.note)}</small>`:''}</div>
+      <div><b>${l.qty}×</b> ${esc(l.name)}${l.sent?' <small class="sent-tag">sent</small>':''}${modStr?`<br><small style="color:var(--warm-gray)">${esc(modStr)}</small>`:''}${l.note?`<br><small style="color:var(--terra)">📝 ${esc(l.note)}</small>`:''}</div>
       <div style="display:flex;align-items:center;gap:10px"><span>${fmt(lt)}</span>
-        <div class="qty"><button onclick="cartQty(${i},-1)">−</button><button onclick="cartQty(${i},1)">+</button><button onclick="cartDel(${i})" style="color:var(--red)">✕</button></div>
+        ${l.sent?'':`<div class="qty"><button onclick="cartQty(${i},-1)">−</button><button onclick="cartQty(${i},1)">+</button><button onclick="cartDel(${i})" style="color:var(--red)">✕</button></div>`}
       </div></div>`;
   }).join('');
   $('cart-total-rm').textContent=fmt(total);
@@ -459,11 +467,13 @@ function confirmKandar(){
 /* ===== SEND ORDER ===== */
 async function sendOrder(){
   if(!selTable||!cart.length) return toast('Add items first');
+  const pending=cart.filter(l=>!l.sent);
+  if(!pending.length) return toast('No new items to send');
   try{
     const orders = await API.get('/api/orders');
     const existing = orders.find(o => o.table_id === selTable.id);
-    
-    const items = cart.map(l=>({
+
+    const items = pending.map(l=>({
       item_id:l.item_id,
       qty:l.qty,
       note:l.note,
@@ -603,10 +613,15 @@ async function refreshAdmin(){
     
     $('qr-grid').innerHTML=qrTables.map(t=>`
       <div class="qr-card">
-        <img src="/api/admin/tables/${t.id}/qr.png" alt="${esc(t.name)}">
+        <img id="qr-img-${t.id}" alt="${esc(t.name)}">
         <div style="font-weight:700;margin-top:8px">${esc(t.name)}</div>
         <a href="${t.url}" target="_blank">Open link</a>
       </div>`).join('');
+    qrTables.forEach(t=>{
+      API.getBlobUrl(`/api/admin/tables/${t.id}/qr.png`)
+        .then(url=>{ const img=$('qr-img-'+t.id); if(img) img.src=url; })
+        .catch(()=>{});
+    });
   }catch(e){ toast('Admin load error: '+e.message); console.error(e); }
 }
 
@@ -624,10 +639,10 @@ async function toggleSST(){
 
 /* ===== LIVE REFRESH ===== */
 function refreshLive(){
-  const active=document.querySelector('.tab.active')?.id;
+  const active=(document.querySelector('.tab.active')?.id||'').replace(/^tab-/,'');
   if(active==='kitchen') refreshKitchen();
   if(active==='dashboard') refreshDashboard();
-  if(active==='pos') renderTables();
+  if(active==='pos'&&!selTable) renderTables();
 }
 
 /* ===== INIT ===== */
