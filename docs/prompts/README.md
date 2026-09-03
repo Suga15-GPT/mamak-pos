@@ -33,7 +33,7 @@ the schema, the formulas, the acceptance tests and the scope limits.
 | 08 | `phase-08-printing.md` — chits and receipts | medium | 02, 05 |
 | 09 | `phase-09-shifts-reports.md` — shifts, drawer, X/Z | medium | 03, 05 |
 | 10 | `phase-10-ux.md` — POS ergonomics, kitchen display, BM/EN | medium | 01 |
-| 11 | `phase-11-hardening.md` — cookies, CSP, Docker, backups | medium | all |
+| 11 | `phase-11-hardening.md` — cookies, CSP, Docker, backups, staff &amp; PINs | medium | all |
 
 **Where to spend a bigger model, if the budget only covers three:** phases **02,
 03 and 07**. Those are the ones where a confident wrong answer costs real money and
