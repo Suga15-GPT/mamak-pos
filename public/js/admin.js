@@ -3,8 +3,8 @@ import { $, fmt, esc, toast } from './state.js';
 /* ===== ADMIN ===== */
 export async function refreshAdmin() {
   try {
-    const [allMenu, settings, qrTables] = await Promise.all([
-      API.get('/api/admin/menu'), API.get('/api/settings'), API.get('/api/admin/tables')
+    const [allMenu, settings, qrTables, audit] = await Promise.all([
+      API.get('/api/admin/menu'), API.get('/api/settings'), API.get('/api/admin/tables'), API.get('/api/admin/audit?limit=100')
     ]);
     $('tax-rate-input').value = (settings.tax_rate_bp / 100).toFixed(2);
     $('svc-rate-input').value = (settings.svc_rate_bp / 100).toFixed(2);
@@ -32,6 +32,14 @@ export async function refreshAdmin() {
         .then(url => { const img = $('qr-img-' + t.id); if (img) img.src = url; })
         .catch(() => {});
     });
+
+    $('audit-log').innerHTML = audit.map(a => `
+      <div class="admin-row">
+        <div>
+          <b>${esc(a.action)}</b> · ${esc(a.user_name || 'system')}
+          <div class="meta">${new Date(a.at).toLocaleString()} · ${esc(a.entity_type)}${a.entity_id != null ? ' #' + a.entity_id : ''} · ${esc(JSON.stringify(a.detail))}</div>
+        </div>
+      </div>`).join('') || '<div class="empty">No activity yet</div>';
   } catch (e) { toast('Admin load error: ' + e.message); console.error(e); }
 }
 

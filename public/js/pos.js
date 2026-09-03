@@ -57,7 +57,11 @@ async function checkOpenOrder() {
     const open = orders.find(o => o.table_id === state.selTable.id);
     if (open) {
       /* lines already on the order are marked sent: they must never be re-submitted */
-      state.cart = open.items.map(l => ({ item_id: l.item_id || 0, name: l.name, price: l.price, qty: l.qty, mods: l.mods, note: l.note || '', sent: true }));
+      state.cart = open.items.map(l => ({
+        id: l.id, item_id: l.item_id || 0, name: l.name, price: l.price, qty: l.qty, mods: l.mods,
+        note: l.note || '', sent: true, voided: l.voided, void_reason: l.void_reason,
+      }));
+      $('pay-btn').dataset.orderStatus = open.status;
       renderCart();
       $('pay-btn').style.display = '';
       $('pay-btn').dataset.orderId = open.id;
@@ -140,15 +144,37 @@ function renderCart() {
   $('cart-empty').style.display = 'none'; $('cart-totals').style.display = '';
   let total = 0;
   $('cart-lines').innerHTML = state.cart.map((l, i) => {
-    const lt = (l.price + l.mods.reduce((s, m) => s + m.price, 0)) * l.qty; total += lt;
+    const lt = (l.price + l.mods.reduce((s, m) => s + m.price, 0)) * l.qty;
+    if (!l.voided) total += lt;
     const modStr = l.mods.map(m => m.name + (m.price ? ` +${fmt(m.price)}` : '')).join(', ');
-    return `<div class="cart-line">
-      <div><b>${l.qty}×</b> ${esc(l.name)}${l.sent ? ' <small class="sent-tag">sent</small>' : ''}${modStr ? `<br><small style="color:var(--warm-gray)">${esc(modStr)}</small>` : ''}${l.note ? `<br><small style="color:var(--terra)">📝 ${esc(l.note)}</small>` : ''}</div>
-      <div style="display:flex;align-items:center;gap:10px"><span>${fmt(lt)}</span>
-        ${l.sent ? '' : `<div class="qty"><button data-action="cart-qty" data-id="${i}" data-delta="-1">−</button><button data-action="cart-qty" data-id="${i}" data-delta="1">+</button><button data-action="cart-del" data-id="${i}" style="color:var(--red)">✕</button></div>`}
+    const tag = l.voided
+      ? ` <small class="sent-tag" style="color:var(--red)">VOID${l.void_reason ? ': ' + esc(l.void_reason) : ''}</small>`
+      : (l.sent ? ' <small class="sent-tag">sent</small>' : '');
+    const controls = l.voided ? ''
+      : l.sent ? `<button data-action="void-line" data-id="${i}" style="color:var(--red)">Void</button>`
+      : `<div class="qty"><button data-action="cart-qty" data-id="${i}" data-delta="-1">−</button><button data-action="cart-qty" data-id="${i}" data-delta="1">+</button><button data-action="cart-del" data-id="${i}" style="color:var(--red)">✕</button></div>`;
+    return `<div class="cart-line"${l.voided ? ' style="opacity:.55"' : ''}>
+      <div><b>${l.qty}×</b> ${esc(l.name)}${tag}${modStr ? `<br><small style="color:var(--warm-gray)">${esc(modStr)}</small>` : ''}${l.note ? `<br><small style="color:var(--terra)">📝 ${esc(l.note)}</small>` : ''}</div>
+      <div style="display:flex;align-items:center;gap:10px"><span${l.voided ? ' style="text-decoration:line-through"' : ''}>${fmt(lt)}</span>
+        ${controls}
       </div></div>`;
   }).join('');
   $('cart-total-rm').textContent = fmt(total);
+}
+
+async function voidLine(idx) {
+  const line = state.cart[idx];
+  if (!line || !line.sent || line.voided) return;
+  const reason = prompt('Reason for voiding this line (3-200 characters):');
+  if (reason === null) return;
+  if (reason.trim().length < 3) return toast('Reason must be at least 3 characters');
+  const orderId = $('pay-btn').dataset.orderId;
+  try {
+    await API.post(`/api/orders/${orderId}/items/${line.id}/void`, { reason: reason.trim() });
+    toast('Line voided');
+    checkOpenOrder();
+    renderTables();
+  } catch (e) { toast('Void failed: ' + e.message); }
 }
 
 /* ===== KANDAR MODAL ===== */
@@ -225,7 +251,28 @@ async function sendOrder() {
     state.cart = []; renderCart();
     checkOpenOrder();
     renderTables();
-  } catch (e) { toast('Error: ' + e.message); console.error(e); }
+  } catch (e) {
+    // Another tablet won the race to open this table first (one_open_order_per_table).
+    // Join that order instead of failing outright.
+    if (e.status === 409 && e.body?.order_id) {
+      try {
+        const items = pending.map(l => ({
+          item_id: l.item_id, qty: l.qty, note: l.note,
+          modifier_option_ids: l.mods.map(m => {
+            const opt = state.menu.modifier_options.find(o => o.name === m.name);
+            return opt ? opt.id : null;
+          }).filter(Boolean),
+        }));
+        await API.post(`/api/orders/${e.body.order_id}/items`, { items });
+        toast('Another order was already open for this table — joined it');
+        state.cart = []; renderCart();
+        checkOpenOrder();
+        renderTables();
+        return;
+      } catch (e2) { toast('Error: ' + e2.message); console.error(e2); return; }
+    }
+    toast('Error: ' + e.message); console.error(e);
+  }
 }
 
 /* ===== PAYMENT =====
@@ -317,6 +364,7 @@ $('tab-pos').addEventListener('click', e => {
   else if (action === 'add-item') addItem(Number(el.dataset.id));
   else if (action === 'cart-qty') cartQty(Number(el.dataset.id), Number(el.dataset.delta));
   else if (action === 'cart-del') cartDel(Number(el.dataset.id));
+  else if (action === 'void-line') voidLine(Number(el.dataset.id));
   else if (action === 'send-order') sendOrder();
   else if (action === 'open-pay') openPayModal();
 });

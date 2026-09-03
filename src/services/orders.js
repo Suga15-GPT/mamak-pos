@@ -30,18 +30,18 @@ async function buildOrderItems(client, rawItems) {
   });
 }
 
-async function insertOrder(tableId, parsed, note, source) {
+async function insertOrder(tableId, parsed, note, source, userId = null) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const o = await client.query(
-      'INSERT INTO orders (table_id, status, source, note) VALUES ($1, $2, $3, $4) RETURNING id',
-      [tableId, 'sent', source, note || null]);
+      'INSERT INTO orders (table_id, status, source, note, opened_by) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [tableId, 'sent', source, note || null, userId]);
     const orderId = o.rows[0].id;
     for (const l of parsed) {
       const oi = await client.query(
-        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
-        [orderId, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null]);
+        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+        [orderId, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, userId]);
       for (const m of l.mods) {
         await client.query(
           'INSERT INTO order_item_mods (order_item_id, name, price_cents) VALUES ($1,$2,$3)',
@@ -51,6 +51,13 @@ async function insertOrder(tableId, parsed, note, source) {
     await client.query('COMMIT');
     return orderId;
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}
+
+// Records one row per mutating action; `detail` is a plain object (serialised to jsonb by pg).
+async function writeAudit(client, { userId, action, entityType, entityId, detail = {} }) {
+  await client.query(
+    'INSERT INTO audit_log (user_id, action, entity_type, entity_id, detail) VALUES ($1,$2,$3,$4,$5)',
+    [userId || null, action, entityType, entityId, detail]);
 }
 
 async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at ASC') {
@@ -67,7 +74,8 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
   const byOrder = {}; orders.forEach(o => { o.items = []; byOrder[o.id] = o; });
   const byItem = {}; iq.rows.forEach(i => { i.mods = []; byItem[i.id] = i; byOrder[i.order_id].items.push(i); });
   mq.rows.forEach(m => byItem[m.order_item_id]?.mods.push(m));
-  const totalCents = o => o.items.reduce((s, i) =>
+  // Voided lines never count toward a total — paid or still open.
+  const totalCents = o => o.items.filter(i => !i.voided_at).reduce((s, i) =>
     s + (i.price_cents + i.mods.reduce((a, m) => a + m.price_cents, 0)) * i.qty, 0);
   return orders.map(o => ({
     id: o.id, table: o.table_name, table_id: o.table_id, status: o.status, source: o.source,
@@ -83,10 +91,11 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
     grand_total: o.total_cents == null ? null : cents2rm(o.total_cents),
     tax_rate_bp: o.tax_rate_bp, svc_rate_bp: o.svc_rate_bp,
     items: o.items.map(i => ({
-      item_id: i.item_id, name: i.name, qty: i.qty, price: cents2rm(i.price_cents), note: i.note,
+      id: i.id, item_id: i.item_id, name: i.name, qty: i.qty, price: cents2rm(i.price_cents), note: i.note,
       mods: i.mods.map(m => ({ name: m.name, price: cents2rm(m.price_cents) })),
+      voided: !!i.voided_at, void_reason: i.void_reason || null,
     })),
   }));
 }
 
-module.exports = { buildOrderItems, insertOrder, ordersWithItems };
+module.exports = { buildOrderItems, insertOrder, ordersWithItems, writeAudit };

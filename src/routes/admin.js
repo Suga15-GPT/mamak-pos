@@ -110,4 +110,17 @@ router.delete('/api/admin/users/:id', adminOnly, awaitH(async (req, res) => {
   res.json({ ok: true });
 }));
 
+router.get('/api/admin/audit', adminOnly, awaitH(async (req, res) => {
+  const limit = Math.min(500, Math.max(1, parseInt(req.query.limit) || 100));
+  const params = [];
+  let where = '';
+  if (req.query.entity_id) { params.push(Number(req.query.entity_id)); where = `WHERE a.entity_id = $${params.length}`; }
+  params.push(limit);
+  const r = await pool.query(
+    `SELECT a.id, a.at, a.user_id, u.name AS user_name, a.action, a.entity_type, a.entity_id, a.detail
+     FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
+     ${where} ORDER BY a.at DESC LIMIT $${params.length}`, params);
+  res.json(r.rows);
+}));
+
 module.exports = router;

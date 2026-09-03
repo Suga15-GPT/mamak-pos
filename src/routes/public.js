@@ -34,8 +34,20 @@ router.post('/api/public/orders', publicH(async (req, res) => {
   const t = await pool.query('SELECT id FROM tables WHERE qr_token = $1', [table_token]);
   if (!t.rows[0]) return res.status(400).json({ error: 'invalid table' });
   const parsed = await buildOrderItems(pool, items);
-  const id = await insertOrder(t.rows[0].id, parsed, String(note || '').slice(0, 300), 'qr');
-  res.json({ id });
+  try {
+    const id = await insertOrder(t.rows[0].id, parsed, String(note || '').slice(0, 300), 'qr');
+    res.status(201).json({ id });
+  } catch (e) {
+    // Same one_open_order_per_table race as staff orders (phase 03): a customer
+    // double-tapping submit, or two phones at one table, must not 500.
+    if (e.code === '23505' && e.constraint === 'one_open_order_per_table') {
+      const existing = await pool.query(
+        "SELECT id FROM orders WHERE table_id = $1 AND status NOT IN ('paid','cancelled') ORDER BY id DESC LIMIT 1",
+        [t.rows[0].id]);
+      return res.status(409).json({ error: 'table already has an open order', order_id: existing.rows[0]?.id });
+    }
+    throw e;
+  }
 }));
 
 module.exports = router;

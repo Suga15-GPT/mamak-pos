@@ -14,7 +14,7 @@ export async function refreshKitchen() {
         return `<div class="k-order ${o.status}">
           <div class="head"><b>#${o.id} · ${esc(o.table)}</b>
             <span><span class="badge ${o.status}">${o.status}</span> <span class="badge" style="background:var(--charcoal)">${mins}m</span></span></div>
-          <ul>${o.items.map(l => `<li><b>${l.qty}×</b> ${esc(l.name)}
+          <ul>${o.items.map(l => `<li${l.voided ? ' style="opacity:.5;text-decoration:line-through"' : ''}><b>${l.qty}×</b> ${esc(l.name)}${l.voided ? ' <b style="color:#dc2626;text-decoration:none">VOID</b>' : ''}
             <small>${l.mods.map(m => m.name + (m.price ? ` +${fmt(m.price)}` : '')).join(' · ')}${l.note ? ` ·  ${esc(l.note)}` : ''}</small></li>`).join('')}</ul>
           <div class="k-actions">
             <button style="background:${o.status === 'sent' ? '#ea580c' : '#d4ccc6'}" data-action="set-status" data-id="${o.id}" data-status="preparing" ${o.status !== 'sent' ? 'disabled' : ''}> Cooking</button>
