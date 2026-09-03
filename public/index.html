@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mamak POS</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  /* Dark mode */
+  body.dark { --cream:#1a1715; --sand:#2d2926; --white:#2d2926; --charcoal:#fdf8f4; --warm-gray:#d4ccc6; --light-gray:#4a423d; --terra-pale:#3d2a24; }
+  body.dark .card,body.dark .table-btn,body.dark .item-btn,body.dark .k-order,body.dark .stat,body.dark .qr-card,body.dark .modal { background:#2d2926; border-color:#4a423d; }
+  body.dark header,body.dark nav { background:#2d2926; }
+  body.dark .field input { background:#1a1715; border-color:#4a423d; color:#fdf8f4; }
+  body.dark .menu-cats button { background:#2d2926; border-color:#4a423d; color:#d4ccc6; }
+  body.dark .login-wrap { background:linear-gradient(160deg,#3d2a24,#1a1715,#2d2926); }
+  
+  /* Theme toggle */
+  .theme-toggle { background:none; border:2px solid var(--light-gray); width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:18px; transition:all .3s var(--bounce); }
+  .theme-toggle:hover { border-color:var(--terra); transform:rotate(180deg); }
+  
+  /* Back button */
+  .back-btn { display:inline-flex; align-items:center; gap:8px; padding:10px 18px; background:var(--sand); border-radius:10px; font-size:14px; font-weight:600; color:var(--warm-gray); margin-bottom:16px; transition:all .3s var(--bounce); }
+  .back-btn:hover { background:var(--terra-pale); color:var(--terra); transform:translateX(-4px); }
+  
+  /* Remark input */
+  .remark-input { width:100%; padding:10px 14px; border:2px solid var(--light-gray); border-radius:10px; font-size:14px; margin-top:8px; background:var(--cream); transition:all .3s; }
+  .remark-input:focus { border-color:var(--terra); background:var(--white); }
+  
+  /* Remark presets */
+  .remark-presets { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+  .remark-presets button { padding:8px 14px; font-size:12px; }
+  
+  /* Kitchen served section */
+  .kitchen-section { margin-bottom:32px; }
+  .kitchen-section h3 { font-family:'Playfair Display',serif; font-size:18px; margin-bottom:14px; color:var(--warm-gray); }
+  
+  /* Fix kitchen button colors */
+  .k-actions button { color:#fff !important; }
+  .k-actions button:disabled { opacity:.4; cursor:not-allowed; transform:none !important; }
+  
+  /* Pay button in cart */
+  .pay-btn { background:var(--sage-deep); margin-top:10px; }
+  .pay-btn:hover { background:#6b8a5e; }
+  
+  /* Table status badge */
+  .table-status { font-size:10px; margin-top:4px; opacity:.8; text-transform:uppercase; letter-spacing:.05em; }
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-view" class="view">
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>Mamak POS</h1>
+      <p>Staff &amp; Admin Login</p>
+      <div class="field"><label>Name</label><input id="lname" value="Admin"></div>
+      <div class="field"><label>PIN</label><input id="lpin" type="password" inputmode="numeric" value="1234"></div>
+      <button class="btn" onclick="doLogin()">Log In</button>
+      <div id="lerr" class="err"></div>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app-view" class="view" style="display:none">
+  <header>
+    <span class="brand">Mamak POS</span>
+    <div class="user">
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">🌙</button>
+      <span id="uname"></span>
+      <button class="logout" onclick="doLogout()">Log Out</button>
+    </div>
+  </header>
+  <nav id="nav"></nav>
+  <main>
+    <!-- POS TAB -->
+    <section id="tab-pos" class="tab">
+      <div id="pos-tables"></div>
+      <div id="pos-workspace" style="display:none">
+        <button class="back-btn" onclick="backToTables()">← Back to Tables</button>
+        <div class="pos-grid">
+          <div class="card">
+            <h3 id="ws-title" style="margin-bottom:14px"></h3>
+            <div id="menu-cats" class="menu-cats"></div>
+            <div id="menu-items" class="menu-items"></div>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:14px">Current Order</h3>
+            <div id="cart-lines"></div>
+            <div id="cart-empty" class="empty">No items yet</div>
+            <div class="totals" id="cart-totals" style="display:none">
+              <div class="row grand"><span>Total</span><span id="cart-total-rm"></span></div>
+            </div>
+            <button class="btn" style="margin-top:16px" onclick="sendOrder()">Send to Kitchen</button>
+            <button class="btn pay-btn" id="pay-btn" style="display:none" onclick="openPayModal()">Mark Paid</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- KITCHEN TAB -->
+    <section id="tab-kitchen" class="tab">
+      <h2 style="margin-bottom:16px">Kitchen Orders</h2>
+      <div id="kitchen-active"></div>
+      <div id="kitchen-served" class="kitchen-section" style="display:none">
+        <h3> Served (Waiting for Payment)</h3>
+        <div id="kitchen-served-list"></div>
+      </div>
+    </section>
+
+    <!-- DASHBOARD TAB -->
+    <section id="tab-dashboard" class="tab">
+      <h2 style="margin-bottom:16px">Sales Dashboard</h2>
+      <div id="dash-stats" class="stats"></div>
+      <div class="card">
+        <h3 style="margin-bottom:12px">Top Items Today</h3>
+        <div id="dash-top"></div>
+      </div>
+    </section>
+
+    <!-- ADMIN TAB -->
+    <section id="tab-admin" class="tab">
+      <h2 style="margin-bottom:16px">Admin Panel</h2>
+      <div class="card" style="margin-bottom:20px">
+        <h3 style="margin-bottom:12px">Menu Availability</h3>
+        <div id="admin-menu"></div>
+      </div>
+      <div class="card" style="margin-bottom:20px">
+        <h3 style="margin-bottom:12px">Modifier Options (Extra Lauk, etc.)</h3>
+        <div id="admin-modifiers"></div>
+      </div>
+      <div class="card" style="margin-bottom:20px">
+        <h3 style="margin-bottom:12px">SST Setting</h3>
+        <div style="display:flex;align-items:center;gap:12px">
+          <label class="switch"><input type="checkbox" id="sst-toggle" onchange="toggleSST()"><span class="slider"></span></label>
+          <span id="sst-label">SST (8%) is OFF</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3 style="margin-bottom:12px">Table QR Codes</h3>
+        <p style="color:var(--warm-gray);font-size:13px;margin-bottom:14px">Right-click any QR image to save/print it.</p>
+        <div id="qr-grid" class="qr-grid"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- KANDAR MODAL -->
+<div id="modal-bg" class="modal-bg" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <h3 id="mod-title"></h3>
+    <div id="mod-body"></div>
+    <div style="margin-top:16px">
+      <label style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:8px">Remark (optional)</label>
+      <input type="text" id="mod-remark" class="remark-input" placeholder="e.g. kurang pedas, no onion">
+      <div class="remark-presets" id="mod-presets"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn small" style="background:#6b7280" onclick="closeModal()">Cancel</button>
+      <button class="btn small" onclick="confirmKandar()">Add to Order</button>
+    </div>
+  </div>
+</div>
+
+<!-- PAYMENT MODAL -->
+<div id="pay-modal" class="modal-bg" onclick="if(event.target===this)closePayModal()">
+  <div class="modal">
+    <h3>Payment</h3>
+    <div id="pay-details" style="margin-bottom:20px"></div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <button class="btn" onclick="processPay('Cash')"> Cash</button>
+      <button class="btn sage" onclick="processPay('Card')">💳 Card</button>
+      <button class="btn charcoal" onclick="processPay('DuitNow/eWallet')"> DuitNow / eWallet</button>
+    </div>
+    <button class="btn outline" style="width:100%;margin-top:12px" onclick="closePayModal()">Cancel</button>
+  </div>
+</div>
+
+<!-- ITEM REMARK MODAL -->
+<div id="remark-modal" class="modal-bg" onclick="if(event.target===this)closeRemarkModal()">
+  <div class="modal">
+    <h3 id="remark-title"></h3>
+    <input type="text" id="remark-input" class="remark-input" placeholder="e.g. kurang manis, less ice, no sugar">
+    <div class="remark-presets" id="remark-presets"></div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn small" style="background:#6b7280" onclick="skipRemark()">Skip</button>
+      <button class="btn small" onclick="confirmRemark()">Add</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="api.js"></script>
+<script>
+/* ===== STATE ===== */
+let menu = { categories:[], items:[], modifier_groups:[], modifier_options:[] };
+let tables = [];
+let cart = [];
+let selTable = null;
+let activeCat = null;
+let kandarItem = null;
+let pollTimer = null;
+let pendingRemarkItem = null;
+
+/* ===== HELPERS ===== */
+const $ = id => document.getElementById(id);
+const fmt = n => 'RM ' + Number(n).toFixed(2);
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2500); }
+function esc(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ===== THEME ===== */
+function toggleTheme(){
+  document.body.classList.toggle('dark');
+  localStorage.setItem('pos_theme', document.body.classList.contains('dark')?'dark':'light');
+}
+if(localStorage.getItem('pos_theme')==='dark') document.body.classList.add('dark');
+
+/* ===== AUTH ===== */
+async function doLogin(){
+  $('lerr').textContent='';
+  try{
+    await API.login($('lname').value.trim(), $('lpin').value.trim());
+    showApp();
+  }catch(e){ $('lerr').textContent=e.message; }
+}
+function doLogout(){ API.logout(); showLogin(); }
+function showLogin(){ $('login-view').style.display=''; $('app-view').style.display='none'; if(pollTimer)clearInterval(pollTimer); }
+function showApp(){
+  $('login-view').style.display='none';
+  $('app-view').style.display='';
+  $('uname').textContent=API.user.name+' ('+API.user.role+')';
+  buildNav();
+  loadAll();
+  pollTimer=setInterval(refreshLive,3000);
+}
+
+/* ===== NAV ===== */
+function buildNav(){
+  const tabs=[
+    {id:'pos',label:'Orders',roles:['admin','staff']},
+    {id:'kitchen',label:'Kitchen',roles:['admin','staff','kitchen']},
+    {id:'dashboard',label:'Dashboard',roles:['admin','staff']},
+    {id:'admin',label:'Admin',roles:['admin']},
+  ];
+  const allowed=tabs.filter(t=>t.roles.includes(API.user.role));
+  $('nav').innerHTML=allowed.map((t,i)=>
+    `<button class="${i===0?'active':''}" onclick="switchTab('${t.id}',this)">${t.label}</button>`
+  ).join('');
+  document.querySelectorAll('.tab').forEach(el=>el.classList.remove('active'));
+  $('tab-'+allowed[0].id).classList.add('active');
+}
+function switchTab(id,btn){
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.tab').forEach(el=>el.classList.remove('active'));
+  $('tab-'+id).classList.add('active');
+  if(id==='kitchen') refreshKitchen();
+  if(id==='dashboard') refreshDashboard();
+  if(id==='admin') refreshAdmin();
+}
+
+/* ===== DATA LOADING ===== */
+async function loadAll(){
+  try{
+    [menu, tables] = await Promise.all([API.get('/api/menu'), API.get('/api/admin/tables')]);
+    activeCat = menu.categories[0]?.id;
+    renderTables();
+    renderMenu();
+  }catch(e){ toast('Failed to load data: '+e.message); }
+}
+
+/* ===== POS: TABLES ===== */
+async function renderTables(){
+  let orders = [];
+  try { orders = await API.get('/api/orders'); } catch(e){}
+  
+  const tableStatus = {};
+  orders.forEach(o => {
+    if(!tableStatus[o.table_id]) tableStatus[o.table_id] = o.status;
+  });
+  
+  $('pos-tables').innerHTML=`<h2 style="margin-bottom:14px">Select a Table</h2>
+    <div class="tables-grid">${tables.map(t=>{
+      const status = tableStatus[t.id];
+      const statusClass = status ? (status==='served'?'busy':'open') : '';
+      const statusLabel = status ? `<div class="table-status">${status}</div>` : '';
+      return `<button class="table-btn ${statusClass}" id="tb-${t.id}" onclick="selectTable(${t.id},'${esc(t.name)}')">
+        ${esc(t.name)}${statusLabel}
+      </button>`;
+    }).join('')}</div>`;
+}
+
+function selectTable(id,name){
+  selTable={id,name};
+  cart=[];
+  $('pos-tables').style.display='none';
+  $('pos-workspace').style.display='';
+  $('ws-title').textContent=name;
+  renderCart();
+  renderMenu();
+  checkOpenOrder();
+}
+
+function backToTables(){
+  $('pos-workspace').style.display='none';
+  $('pos-tables').style.display='';
+  selTable=null;
+  cart=[];
+  renderTables();
+}
+
+async function checkOpenOrder(){
+  try{
+    const orders=await API.get('/api/orders');
+    const open=orders.find(o=>o.table_id===selTable.id);
+    if(open){
+      cart=open.items.map(l=>({item_id:l.item_id||0,name:l.name,price:l.price,qty:l.qty,mods:l.mods,note:l.note||''}));
+      renderCart();
+      $('pay-btn').style.display='';
+      $('pay-btn').dataset.orderId=open.id;
+    }else{
+      $('pay-btn').style.display='none';
+    }
+  }catch(e){}
+}
+
+/* ===== POS: MENU ===== */
+function renderMenu(){
+  if(!activeCat && menu.categories.length) activeCat=menu.categories[0].id;
+  $('menu-cats').innerHTML=menu.categories.map(c=>
+    `<button class="${c.id===activeCat?'active':''}" onclick="activeCat=${c.id};renderMenu()">${esc(c.name)}</button>`
+  ).join('');
+  const items=menu.items.filter(i=>i.category_id===activeCat);
+  $('menu-items').innerHTML=items.map(it=>
+    `<button class="item-btn" onclick='addItem(${JSON.stringify(it).replace(/'/g,"&#39;")})'>
+      <div class="nm">${esc(it.name)}</div><div class="pr">${fmt(it.price)}</div></button>`
+  ).join('')||'<div class="empty">No items in this category</div>';
+}
+
+/* ===== POS: CART ===== */
+function addItem(it){
+  if(it.kandar){ openKandarModal(it); return; }
+  
+  // Determine preset remarks based on category
+  const cat = menu.categories.find(c => c.id === it.category_id);
+  const catName = cat ? cat.name.toLowerCase() : '';
+  let presets = [];
+  
+  if(catName.includes('minuman') || catName.includes('drink')){
+    presets = ['Kurang manis', 'Less ice', 'No ice', 'Extra hot', 'Kurang kurang'];
+  } else {
+    presets = ['Kurang pedas', 'No onion', 'Extra spicy', 'No MSG', 'Kurang minyak'];
+  }
+  
+  pendingRemarkItem = it;
+  $('remark-title').textContent = it.name;
+  $('remark-presets').innerHTML = presets.map(p => 
+    `<button class="btn small outline" onclick="setRemark('${p}')">${p}</button>`
+  ).join('');
+  $('remark-input').value = '';
+  $('remark-modal').classList.add('show');
+  setTimeout(()=>$('remark-input').focus(), 100);
+}
+
+function setRemark(text){
+  $('remark-input').value = text;
+}
+
+function skipRemark(){
+  if(pendingRemarkItem){
+    const ex = cart.find(l => l.item_id === pendingRemarkItem.id && !l.mods.length && !l.note);
+    if(ex) ex.qty++;
+    else cart.push({item_id:pendingRemarkItem.id, name:pendingRemarkItem.name, price:pendingRemarkItem.price, qty:1, mods:[], note:''});
+    pendingRemarkItem = null;
+  }
+  closeRemarkModal();
+  renderCart();
+}
+
+function confirmRemark(){
+  if(pendingRemarkItem){
+    const note = $('remark-input').value.trim();
+    const ex = cart.find(l => l.item_id === pendingRemarkItem.id && !l.mods.length && l.note === note);
+    if(ex) ex.qty++;
+    else cart.push({item_id:pendingRemarkItem.id, name:pendingRemarkItem.name, price:pendingRemarkItem.price, qty:1, mods:[], note});
+    pendingRemarkItem = null;
+  }
+  closeRemarkModal();
+  renderCart();
+}
+
+function closeRemarkModal(){ $('remark-modal').classList.remove('show'); pendingRemarkItem=null; }
+
+function cartQty(idx,d){ cart[idx].qty=Math.max(1,cart[idx].qty+d); renderCart(); }
+function cartDel(idx){ cart.splice(idx,1); renderCart(); }
+
+function renderCart(){
+  if(!cart.length){ $('cart-lines').innerHTML=''; $('cart-empty').style.display=''; $('cart-totals').style.display='none'; return; }
+  $('cart-empty').style.display='none'; $('cart-totals').style.display='';
+  let total=0;
+  $('cart-lines').innerHTML=cart.map((l,i)=>{
+    const lt=(l.price+l.mods.reduce((s,m)=>s+m.price,0))*l.qty; total+=lt;
+    const modStr=l.mods.map(m=>m.name+(m.price?` +${fmt(m.price)}`:'')).join(', ');
+    return `<div class="cart-line">
+      <div><b>${l.qty}×</b> ${esc(l.name)}${modStr?`<br><small style="color:var(--warm-gray)">${esc(modStr)}</small>`:''}${l.note?`<br><small style="color:var(--terra)">📝 ${esc(l.note)}</small>`:''}</div>
+      <div style="display:flex;align-items:center;gap:10px"><span>${fmt(lt)}</span>
+        <div class="qty"><button onclick="cartQty(${i},-1)">−</button><button onclick="cartQty(${i},1)">+</button><button onclick="cartDel(${i})" style="color:var(--red)">✕</button></div>
+      </div></div>`;
+  }).join('');
+  $('cart-total-rm').textContent=fmt(total);
+}
+
+/* ===== KANDAR MODAL ===== */
+function openKandarModal(it){
+  kandarItem=it;
+  $('mod-title').textContent=it.name+' — '+fmt(it.price);
+  const kuahG=menu.modifier_groups.find(g=>g.mode==='radio');
+  const extraG=menu.modifier_groups.find(g=>g.mode==='checkbox');
+  const kuahOpts=menu.modifier_options.filter(o=>o.group_id===kuahG?.id);
+  const extraOpts=menu.modifier_options.filter(o=>o.group_id===extraG?.id);
+  let html='';
+  if(kuahOpts.length){
+    html+=`<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:8px">Kuah</div>`;
+    html+=kuahOpts.map((o,i)=>`<div class="mod-opt"><input type="radio" name="kuah" value="${o.id}" ${i===0?'checked':''}><span>${esc(o.name)}</span></div>`).join('');
+  }
+  if(extraOpts.length){
+    html+=`<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin:14px 0 8px">Extra Lauk</div>`;
+    html+=extraOpts.map(o=>`<div class="mod-opt"><input type="checkbox" name="extra" value="${o.id}" data-price="${o.price}"><span style="flex:1">${esc(o.name)}</span><span style="color:var(--terra);font-weight:700">+${fmt(o.price)}</span></div>`).join('');
+  }
+  $('mod-body').innerHTML=html;
+  $('mod-remark').value='';
+  
+  // Food presets for kandar
+  const presets = ['Kurang pedas', 'No onion', 'Extra spicy', 'Kurang minyak', 'Banjir sikit'];
+  $('mod-presets').innerHTML = presets.map(p => 
+    `<button class="btn small outline" onclick="document.getElementById('mod-remark').value='${p}'">${p}</button>`
+  ).join('');
+  
+  $('modal-bg').classList.add('show');
+}
+
+function closeModal(){ $('modal-bg').classList.remove('show'); kandarItem=null; }
+
+function confirmKandar(){
+  if(!kandarItem) return;
+  const kuahId=document.querySelector('input[name="kuah"]:checked')?.value;
+  const mods=[];
+  if(kuahId){ const o=menu.modifier_options.find(x=>x.id==kuahId); if(o) mods.push({name:o.name,price:o.price}); }
+  document.querySelectorAll('input[name="extra"]:checked').forEach(c=>{
+    const o=menu.modifier_options.find(x=>x.id==c.value); if(o) mods.push({name:o.name,price:o.price});
+  });
+  const note=$('mod-remark').value.trim();
+  cart.push({item_id:kandarItem.id,name:kandarItem.name,price:kandarItem.price,qty:1,mods,note});
+  closeModal(); renderCart();
+}
+
+/* ===== SEND ORDER ===== */
+async function sendOrder(){
+  if(!selTable||!cart.length) return toast('Add items first');
+  try{
+    const orders = await API.get('/api/orders');
+    const existing = orders.find(o => o.table_id === selTable.id);
+    
+    const items = cart.map(l=>({
+      item_id:l.item_id,
+      qty:l.qty,
+      note:l.note,
+      modifier_option_ids:l.mods.map(m=>{
+        const opt=menu.modifier_options.find(o=>o.name===m.name);
+        return opt?opt.id:null;
+      }).filter(Boolean)
+    }));
+    
+    if(existing){
+      await API.post(`/api/orders/${existing.id}/items`, {items});
+      toast('Items added to existing order');
+    } else {
+      await API.post('/api/orders', {table_id:selTable.id, items});
+      toast('Order sent to kitchen!');
+    }
+    
+    cart=[]; renderCart();
+    checkOpenOrder();
+    renderTables();
+  }catch(e){ toast('Error: '+e.message); console.error(e); }
+}
+
+/* ===== PAYMENT ===== */
+async function openPayModal(){
+  const orderId = $('pay-btn').dataset.orderId;
+  if(!orderId) return;
+  
+  try{
+    const orders = await API.get('/api/orders');
+    const order = orders.find(o => o.id == orderId);
+    if(order && ['sent','preparing'].includes(order.status)){
+      if(!confirm(`⚠️ Food is still ${order.status}. Are you sure you want to mark as paid?`)){
+        return;
+      }
+    }
+  }catch(e){}
+  
+  const total = cart.reduce((s,l)=>s+(l.price+l.mods.reduce((a,m)=>a+m.price,0))*l.qty, 0);
+  $('pay-details').innerHTML=`<div style="font-size:14px;color:var(--warm-gray);margin-bottom:8px">Order #${orderId}</div><div style="font-family:'Playfair Display',serif;font-size:28px;font-weight:700;color:var(--terra)">${fmt(total)}</div>`;
+  $('pay-modal').classList.add('show');
+}
+
+function closePayModal(){ $('pay-modal').classList.remove('show'); }
+
+async function processPay(method){
+  const orderId=$('pay-btn').dataset.orderId;
+  try{
+    await API.post(`/api/orders/${orderId}/pay`,{method});
+    closePayModal();
+    cart=[]; renderCart();
+    $('pay-btn').style.display='none';
+    toast(`Paid with ${method}`);
+    renderTables();
+  }catch(e){ toast('Payment failed: '+e.message); }
+}
+
+/* ===== KITCHEN ===== */
+async function refreshKitchen(){
+  try{
+    const orders=await API.get('/api/orders');
+    const active=orders.filter(o=>['sent','preparing','ready'].includes(o.status)).sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+    const served=orders.filter(o=>o.status==='served').sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+    
+    if(!active.length){ $('kitchen-active').innerHTML='<div class="empty">No active orders</div>'; }
+    else{
+      $('kitchen-active').innerHTML=active.map(o=>{
+        const mins=Math.floor((Date.now()-new Date(o.created_at))/60000);
+        return `<div class="k-order ${o.status}">
+          <div class="head"><b>#${o.id} · ${esc(o.table)}</b>
+            <span><span class="badge ${o.status}">${o.status}</span> <span class="badge" style="background:var(--charcoal)">${mins}m</span></span></div>
+          <ul>${o.items.map(l=>`<li><b>${l.qty}×</b> ${esc(l.name)}
+            <small>${l.mods.map(m=>m.name+(m.price?` +${fmt(m.price)}`:'')).join(' · ')}${l.note?` ·  ${esc(l.note)}`:''}</small></li>`).join('')}</ul>
+          <div class="k-actions">
+            <button style="background:${o.status==='sent'?'#ea580c':'#d4ccc6'}" onclick="setSt(${o.id},'preparing')" ${o.status!=='sent'?'disabled':''}> Cooking</button>
+            <button style="background:${o.status==='preparing'?'#16a34a':'#d4ccc6'}" onclick="setSt(${o.id},'ready')" ${o.status!=='preparing'?'disabled':''}>✅ Ready</button>
+            <button style="background:${o.status==='ready'?'#7c3aed':'#d4ccc6'}" onclick="setSt(${o.id},'served')" ${o.status!=='ready'?'disabled':''}>🍽 Served</button>
+          </div></div>`;
+      }).join('');
+    }
+    
+    if(served.length){
+      $('kitchen-served').style.display='';
+      $('kitchen-served-list').innerHTML=served.map(o=>{
+        const mins=Math.floor((Date.now()-new Date(o.created_at))/60000);
+        return `<div class="k-order served">
+          <div class="head"><b>#${o.id} · ${esc(o.table)}</b>
+            <span><span class="badge served">served</span> <span class="badge" style="background:var(--charcoal)">${mins}m</span></span></div>
+          <ul>${o.items.map(l=>`<li><b>${l.qty}×</b> ${esc(l.name)}</li>`).join('')}</ul>
+        </div>`;
+      }).join('');
+    }else{
+      $('kitchen-served').style.display='none';
+    }
+  }catch(e){ console.error(e); }
+}
+
+async function setSt(id,status){
+  try{ await API.patch('/api/orders/'+id,{status}); refreshKitchen(); toast('Status updated'); }catch(e){ toast(e.message); }
+}
+
+/* ===== DASHBOARD ===== */
+async function refreshDashboard(){
+  try{
+    const s=await API.get('/api/summary');
+    $('dash-stats').innerHTML=`
+      <div class="stat"><div class="v">${fmt(s.today.sales)}</div><div class="l">Today (${s.today.orders} orders)</div></div>
+      <div class="stat"><div class="v">${fmt(s.month.sales)}</div><div class="l">This Month (${s.month.orders} orders)</div></div>
+      <div class="stat"><div class="v">${fmt(s.year.sales)}</div><div class="l">This Year (${s.year.orders} orders)</div></div>
+      <div class="stat"><div class="v">${s.open_orders}</div><div class="l">Open Orders</div></div>`;
+    $('dash-top').innerHTML=s.top_items.length
+      ?`<table style="width:100%;border-collapse:collapse;font-size:14px">${s.top_items.map(i=>`<tr><td style="padding:8px 0;border-bottom:1px solid var(--light-gray)">${esc(i.name)}</td><td style="padding:8px 0;border-bottom:1px solid var(--light-gray);text-align:right;font-weight:700">${i.sold}</td></tr>`).join('')}</table>`
+      :'<div class="empty">No sales today yet</div>';
+  }catch(e){ console.error(e); }
+}
+
+/* ===== ADMIN ===== */
+async function refreshAdmin(){
+  try{
+    const [allMenu, settings, qrTables]=await Promise.all([
+      API.get('/api/admin/menu'), API.get('/api/settings'), API.get('/api/admin/tables')
+    ]);
+    $('sst-toggle').checked=settings.sst_on;
+    $('sst-label').textContent=settings.sst_on?'SST (8%) is ON':'SST (8%) is OFF';
+    
+    $('admin-menu').innerHTML=allMenu.items.map(it=>`
+      <div class="admin-row">
+        <div><b>${esc(it.name)}</b><div class="meta">${fmt(it.price_cents/100)} · ${it.kandar?'Nasi Kandar':'Standard'}</div></div>
+        <label class="switch"><input type="checkbox" ${it.available?'checked':''} onchange="toggleAvail(${it.id},this.checked)"><span class="slider"></span></label>
+      </div>`).join('');
+    
+    $('admin-modifiers').innerHTML=allMenu.modifier_options.map(o=>`
+      <div class="admin-row">
+        <div><b>${esc(o.name)}</b><div class="meta">${o.price_cents>0?'+'+fmt(o.price_cents/100):'Free'} · ${allMenu.modifier_groups.find(g=>g.id===o.group_id)?.name||''}</div></div>
+        <label class="switch"><input type="checkbox" ${o.available!==false?'checked':''} onchange="toggleModAvail(${o.id},this.checked)"><span class="slider"></span></label>
+      </div>`).join('');
+    
+    $('qr-grid').innerHTML=qrTables.map(t=>`
+      <div class="qr-card">
+        <img src="/api/admin/tables/${t.id}/qr.png" alt="${esc(t.name)}">
+        <div style="font-weight:700;margin-top:8px">${esc(t.name)}</div>
+        <a href="${t.url}" target="_blank">Open link</a>
+      </div>`).join('');
+  }catch(e){ toast('Admin load error: '+e.message); console.error(e); }
+}
+
+async function toggleAvail(id,avail){
+  try{ await API.patch('/api/admin/items/'+id,{available:avail}); toast(avail?'Item available':'Item sold out'); }catch(e){ toast(e.message); }
+}
+
+async function toggleModAvail(id,avail){
+  try{ await API.patch('/api/admin/modifier_options/'+id,{available:avail}); toast(avail?'Option available':'Option sold out'); }catch(e){ toast(e.message); }
+}
+
+async function toggleSST(){
+  try{ await API.patch('/api/settings',{sst_on:$('sst-toggle').checked}); refreshAdmin(); }catch(e){ toast(e.message); }
+}
+
+/* ===== LIVE REFRESH ===== */
+function refreshLive(){
+  const active=document.querySelector('.tab.active')?.id;
+  if(active==='kitchen') refreshKitchen();
+  if(active==='dashboard') refreshDashboard();
+  if(active==='pos') renderTables();
+}
+
+/* ===== INIT ===== */
+if(API.token && API.user) showApp(); else showLogin();
+</script>
+</body>
+</html>
