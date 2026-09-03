@@ -9,15 +9,18 @@ it touches.
 
 | File | Lines | Contains |
 |---|---|---|
-| `server.js` | ~520 | Everything server-side. Sections in order: helpers & money (17–34), `requireAuth` + rate limiter (36–75), auth routes (78–95), public menu/table/QR-order routes (98–170), `buildOrderItems` + `insertOrder` (110–160), staff order routes (172–260), pay (265–285), `/api/summary` dashboard SQL (288–320), settings (320–335), admin menu/tables/QR/users (337–450), static routes (452–460), seed data + `boot()` (462–520) |
-| `schema.sql` | 89 | All tables. Applied wholesale on every boot by `seed()`. To be replaced by `migrations/` in phase 00 |
-| `migrate.js` | 18 | One-off `ALTER TABLE` for `modifier_options.available`. Redundant — the same ALTER runs in `seed()`. Delete in phase 00 |
+| `server.js` | ~524 | Everything server-side. Sections in order: helpers & money (16–33), `requireAuth` + rate limiter (40–63), auth routes (64–83), public menu/table/QR-order routes (84–193), `buildOrderItems` + `insertOrder` (104–193), staff order routes (194–259), pay (260–282), `/api/summary` dashboard SQL (283–313), settings (314–329), admin menu/tables/QR/users (330–443), static routes (444–470), seed data + `boot()` (471–525). `pool` and `migrate()` now come from `src/db.js` — `seed()` calls `migrate()` instead of reading `schema.sql` wholesale |
+| `migrations/001_baseline.sql` | 90 | The former `schema.sql`, verbatim, plus the `available` column `ALTER` that used to run inline in `seed()`. Applied by `src/db.js`'s `migrate()`. Idempotent — safe against a database that already has these tables |
+| `src/db.js` | 44 | Migration runner. Exports `pool`, `query`, `migrate()`. `migrate()` applies `migrations/*.sql` in filename order inside a transaction per file, tracked in `schema_migrations`; re-running applies nothing |
 | `public/index.html` | ~650 | Staff app. Lines 1–50 dark-mode + local CSS overrides, 50–200 markup for 4 tabs + 3 modals, 200–650 **all application JS inline**: state, auth, nav, POS/cart, kandar modal, send/pay, kitchen, dashboard, admin, live refresh |
 | `public/customer/…` → currently `public/customer.html` | ~390 | QR self-order page. Inline CSS 8–121, markup 123–200, inline JS 200–390 (init from `/t/:token`, menu render, cart, submit) |
 | `public/api.js` | 55 | `API` fetch wrapper: bearer token in `localStorage`, `login`/`logout`, `get/post/patch/del`, `getBlobUrl` for authenticated QR PNGs. **Loaded by the customer page but unused there** |
 | `public/style.css` | 386 | The terracotta design system: tokens (4–26), buttons, login, app shell, cards, table grid, POS layout, cart, kitchen, dashboard, admin, modal, toast, customer extras, responsive. **Keep this — extend, don't replace** |
 | `docker-compose.yml` | 34 | `db` (postgres:16-alpine) + `app`. Secrets via `${VAR}` from `.env` |
 | `Dockerfile` | 7 | Single stage, runs as root. Hardened in phase 11 |
+| `test/helper.js` | ~35 | `withDb(fn)`: creates a random `test_<hex>` schema against `TEST_DATABASE_URL`, points `src/db.js` at it via `PGOPTIONS` search_path, runs `migrate()`, calls `fn(db)`, then drops the schema. Tests never touch `public` |
+| `test/unit/smoke.test.js` | ~90 | Three regression tests (`node --test`): `migrate()` idempotency, admin login + wrong-PIN 401, `GET /api/orders?mode=recent` 200 (audit #9). The login/orders tests boot the real `server.js` on a random port via `fetch` |
+| `.github/workflows/ci.yml` | ~25 | Node 20 + `postgres:16-alpine` service, `npm ci && npm test`, on push and PR |
 
 ## Database tables
 
@@ -72,4 +75,9 @@ DATABASE_URL=postgres://postgres:PASS@localhost:5432/postgres \
 ```
 
 Seeds on first boot: 6 categories, 25 items, 2 modifier groups, 14 tables, and an
-`Admin` user with `ADMIN_PIN`.
+`Admin` user with `ADMIN_PIN`. Boot runs `src/db.js`'s `migrate()` first, applying
+`migrations/*.sql` in order.
+
+```bash
+npm test    # node --test against TEST_DATABASE_URL (default localhost:5432/postgres)
+```

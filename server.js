@@ -1,15 +1,13 @@
 const express = require('express');
-const { Pool } = require('pg');
 const crypto = require('crypto');
-const fs = require('fs');
 const path = require('path');
 const QRCode = require('qrcode');
+const { pool, migrate } = require('./src/db');
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const KL = 'Asia/Kuala_Lumpur';
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 const SESSION_TTL = '12 hours';
@@ -471,13 +469,8 @@ const ITEMS = [
 ];
 
 async function seed() {
-  await pool.query(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
-  
-  // Add available column to modifier_options if not exists
-  try {
-    await pool.query('ALTER TABLE modifier_options ADD COLUMN IF NOT EXISTS available BOOLEAN NOT NULL DEFAULT true');
-  } catch(e) { /* column might already exist */ }
-  
+  await migrate();
+
   const c = await pool.query('SELECT count(*)::int n FROM categories');
   if (c.rows[0].n === 0) {
     const client = await pool.connect();
