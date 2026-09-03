@@ -35,7 +35,9 @@ Non-negotiable:
 - Service charge default **0** (`svc_rate_bp = 0`); mamak shops typically charge none.
 - **Tax applies on top of the service charge**, in that order.
 - Round **once per component**, half-up, in integer cents. Never round the subtotal.
-- 5-sen rounding is **cash only**; card and e-wallet are charged exact.
+- 5-sen rounding is **cash only**; card and e-wallet are charged exact. The
+  adjustment is therefore always in the range −2…+2 cents — if a case in this
+  prompt ever implies ±3, the prompt is wrong and the arithmetic wins.
 - **Snapshot `tax_rate_bp` and `svc_rate_bp` onto the order at payment.** When the
   rate changes, historical receipts must not move. This is the single most
   important line in this prompt.
@@ -104,8 +106,8 @@ These cases specifically; they are where rounding bugs hide:
 | subtotal 1000, tax 600bp, svc 0 | tax 60, total 1060 |
 | subtotal 1000, tax 600bp, svc 1000bp | svc 100, tax 66, total 1166 (tax on 1100) |
 | subtotal 333, tax 600bp | tax 20 (19.98 rounds up), total 353 |
-| cash, gross 1063 | rounding −3, total 1060 |
-| cash, gross 1067 | rounding +3, total 1070 |
+| cash, gross 1063 | rounding **+2**, total **1065** |
+| cash, gross 1067 | rounding **−2**, total **1065** |
 | card, gross 1063 | rounding 0, total 1063 |
 | tax 0, svc 0 | total == subtotal exactly |
 | discount 500 on subtotal 1000, tax 600bp | tax computed on 1000, not 500; total 560 |
