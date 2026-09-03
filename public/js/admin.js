@@ -6,8 +6,8 @@ export async function refreshAdmin() {
     const [allMenu, settings, qrTables] = await Promise.all([
       API.get('/api/admin/menu'), API.get('/api/settings'), API.get('/api/admin/tables')
     ]);
-    $('sst-toggle').checked = settings.sst_on;
-    $('sst-label').textContent = settings.sst_on ? 'SST (8%) is ON' : 'SST (8%) is OFF';
+    $('tax-rate-input').value = (settings.tax_rate_bp / 100).toFixed(2);
+    $('svc-rate-input').value = (settings.svc_rate_bp / 100).toFixed(2);
 
     $('admin-menu').innerHTML = allMenu.items.map(it => `
       <div class="admin-row">
@@ -43,8 +43,12 @@ async function toggleModAvail(id, avail) {
   try { await API.patch('/api/admin/modifier_options/' + id, { available: avail }); toast(avail ? 'Option available' : 'Option sold out'); } catch (e) { toast(e.message); }
 }
 
-async function toggleSST() {
-  try { await API.patch('/api/settings', { sst_on: $('sst-toggle').checked }); refreshAdmin(); } catch (e) { toast(e.message); }
+async function saveRates() {
+  const tax_rate_bp = Math.round(Number($('tax-rate-input').value) * 100);
+  const svc_rate_bp = Math.round(Number($('svc-rate-input').value) * 100);
+  if (!Number.isFinite(tax_rate_bp) || !Number.isFinite(svc_rate_bp)) return toast('Enter valid percentages');
+  try { await API.patch('/api/settings', { tax_rate_bp, svc_rate_bp }); toast('Rates saved'); refreshAdmin(); }
+  catch (e) { toast(e.message); }
 }
 
 $('tab-admin').addEventListener('change', e => {
@@ -55,4 +59,7 @@ $('tab-admin').addEventListener('change', e => {
   else if (action === 'toggle-mod-avail') toggleModAvail(Number(el.dataset.id), el.checked);
 });
 
-$('sst-toggle').addEventListener('change', toggleSST);
+$('tab-admin').addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (el && el.dataset.action === 'save-rates') saveRates();
+});

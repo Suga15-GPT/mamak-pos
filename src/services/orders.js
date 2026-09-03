@@ -73,6 +73,15 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
     id: o.id, table: o.table_name, table_id: o.table_id, status: o.status, source: o.source,
     note: o.note, created_at: o.created_at, updated_at: o.updated_at, paid_at: o.paid_at,
     pay_method: o.pay_method, total: cents2rm(totalCents(o)),
+    // Bill breakdown is only meaningful once paid (snapshotted at payment time);
+    // null on open orders rather than a live, still-changeable recomputation.
+    subtotal: o.subtotal_cents == null ? null : cents2rm(o.subtotal_cents),
+    service_charge: o.service_charge_cents == null ? null : cents2rm(o.service_charge_cents),
+    tax: o.tax_cents == null ? null : cents2rm(o.tax_cents),
+    discount: o.discount_cents == null ? null : cents2rm(o.discount_cents),
+    rounding: o.rounding_cents == null ? null : cents2rm(o.rounding_cents),
+    grand_total: o.total_cents == null ? null : cents2rm(o.total_cents),
+    tax_rate_bp: o.tax_rate_bp, svc_rate_bp: o.svc_rate_bp,
     items: o.items.map(i => ({
       item_id: i.item_id, name: i.name, qty: i.qty, price: cents2rm(i.price_cents), note: i.note,
       mods: i.mods.map(m => ({ name: m.name, price: cents2rm(m.price_cents) })),

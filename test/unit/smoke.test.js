@@ -1,7 +1,10 @@
+const fs = require('fs');
 const path = require('path');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { withDb } = require('../helper');
+
+const MIGRATIONS_DIR = path.join(__dirname, '..', '..', 'migrations');
 
 const SRC_DIR = path.join(__dirname, '..', '..', 'src') + path.sep;
 const DB_MODULE = require.resolve('../../src/db');
@@ -52,8 +55,9 @@ test('migrate() is idempotent', async () => {
   // withDb() already ran migrate() once to set up the schema; confirm that
   // applied the baseline, then re-run it here as the "second run".
   await withDb(async db => {
+    const fileCount = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).length;
     const { rows } = await db.query('SELECT version FROM schema_migrations');
-    assert.equal(rows.length, 1, 'withDb setup should have applied the baseline migration');
+    assert.equal(rows.length, fileCount, 'withDb setup should have applied every migration file');
 
     const second = await db.migrate();
     assert.equal(second, 0, 're-running migrate() must apply zero versions');

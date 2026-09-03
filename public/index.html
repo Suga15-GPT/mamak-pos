@@ -131,10 +131,17 @@
         <div id="admin-modifiers"></div>
       </div>
       <div class="card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">SST Setting</h3>
-        <div style="display:flex;align-items:center;gap:12px">
-          <label class="switch"><input type="checkbox" id="sst-toggle"><span class="slider"></span></label>
-          <span id="sst-label">SST (8%) is OFF</span>
+        <h3 style="margin-bottom:12px">Tax &amp; Service Charge</h3>
+        <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end">
+          <div>
+            <label for="tax-rate-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Service tax (SST) %</label>
+            <input type="number" id="tax-rate-input" min="0" max="100" step="0.01" style="color:var(--charcoal);width:100px">
+          </div>
+          <div>
+            <label for="svc-rate-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Service charge %</label>
+            <input type="number" id="svc-rate-input" min="0" max="100" step="0.01" style="color:var(--charcoal);width:100px">
+          </div>
+          <button class="btn small" id="save-rates-btn" data-action="save-rates">Save</button>
         </div>
       </div>
       <div class="card">
@@ -168,6 +175,11 @@
   <div class="modal">
     <h3>Payment</h3>
     <div id="pay-details" style="margin-bottom:20px"></div>
+    <div id="pay-cash-row" style="display:none;margin-bottom:16px">
+      <label for="cash-received-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Cash received (RM)</label>
+      <input type="number" id="cash-received-input" min="0" step="0.05" class="remark-input" style="color:var(--charcoal)">
+      <div id="pay-change-due" style="margin-top:8px;font-weight:700;color:var(--charcoal)"></div>
+    </div>
     <div style="display:flex;flex-direction:column;gap:10px">
       <button class="btn" data-action="pay" data-method="Cash"> Cash</button>
       <button class="btn sage" data-action="pay" data-method="Card">💳 Card</button>

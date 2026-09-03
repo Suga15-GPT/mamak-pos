@@ -228,7 +228,12 @@ async function sendOrder() {
   } catch (e) { toast('Error: ' + e.message); console.error(e); }
 }
 
-/* ===== PAYMENT ===== */
+/* ===== PAYMENT =====
+   This is an estimate for the cashier's display only — the server never trusts
+   it and recomputes the real bill from order_items at /api/orders/:id/pay. */
+const roundHalfUp = n => (n >= 0 ? Math.floor(n + 0.5) : -Math.floor(-n + 0.5));
+let payPreview = null;
+
 async function openPayModal() {
   const orderId = $('pay-btn').dataset.orderId;
   if (!orderId) return;
@@ -243,21 +248,60 @@ async function openPayModal() {
     }
   } catch (e) {}
 
-  const total = state.cart.reduce((s, l) => s + (l.price + l.mods.reduce((a, m) => a + m.price, 0)) * l.qty, 0);
-  $('pay-details').innerHTML = `<div style="font-size:14px;color:var(--warm-gray);margin-bottom:8px">Order #${orderId}</div><div style="font-family:'Playfair Display',serif;font-size:28px;font-weight:700;color:var(--terra)">${fmt(total)}</div>`;
+  const subtotalCents = Math.round(state.cart.reduce((s, l) =>
+    s + (l.price + l.mods.reduce((a, m) => a + m.price, 0)) * l.qty, 0) * 100);
+  let taxRateBp = 600, svcRateBp = 0;
+  try { const settings = await API.get('/api/settings'); taxRateBp = settings.tax_rate_bp; svcRateBp = settings.svc_rate_bp; } catch (e) {}
+
+  const serviceChargeCents = roundHalfUp(subtotalCents * svcRateBp / 10000);
+  const taxCents = roundHalfUp((subtotalCents + serviceChargeCents) * taxRateBp / 10000);
+  const grossCents = subtotalCents + serviceChargeCents + taxCents;
+  const cashTotalCents = Math.round(grossCents / 5) * 5;
+  const roundingCents = cashTotalCents - grossCents;
+  payPreview = { cashTotalCents };
+
+  const rows = [`<div>Subtotal <span style="float:right">${fmt(subtotalCents / 100)}</span></div>`];
+  if (serviceChargeCents) rows.push(`<div>Service charge <span style="float:right">${fmt(serviceChargeCents / 100)}</span></div>`);
+  rows.push(`<div>SST ${(taxRateBp / 100).toFixed(0)}% <span style="float:right">${fmt(taxCents / 100)}</span></div>`);
+  rows.push(`<div>Rounding (cash) <span style="float:right">${roundingCents >= 0 ? '+' : ''}${fmt(roundingCents / 100)}</span></div>`);
+  rows.push(`<div style="font-weight:700;margin-top:6px">Total (Card/eWallet) <span style="float:right">${fmt(grossCents / 100)}</span></div>`);
+  rows.push(`<div style="font-weight:700">Total (Cash) <span style="float:right">${fmt(cashTotalCents / 100)}</span></div>`);
+
+  $('pay-details').innerHTML = `<div style="font-size:14px;color:var(--warm-gray);margin-bottom:8px">Order #${orderId}</div>${rows.join('')}`;
+  $('cash-received-input').value = '';
+  $('pay-change-due').textContent = '';
+  $('pay-cash-row').style.display = '';
   $('pay-modal').classList.add('show');
 }
 
 function closePayModal() { $('pay-modal').classList.remove('show'); }
 
+function updateChangeDue() {
+  if (!payPreview) return;
+  const receivedCents = Math.round(Number($('cash-received-input').value || 0) * 100);
+  const changeCents = receivedCents - payPreview.cashTotalCents;
+  $('pay-change-due').textContent = receivedCents ? `Change due: ${fmt(Math.max(0, changeCents) / 100)}` : '';
+  $('pay-change-due').style.color = changeCents < 0 ? 'var(--red)' : 'var(--charcoal)';
+}
+
 async function processPay(method) {
   const orderId = $('pay-btn').dataset.orderId;
+  if (method === 'Cash' && payPreview) {
+    const receivedCents = Math.round(Number($('cash-received-input').value || 0) * 100);
+    if (receivedCents < payPreview.cashTotalCents) return toast('Cash received is less than the total due');
+  }
   try {
-    await API.post(`/api/orders/${orderId}/pay`, { method });
+    const r = await API.post(`/api/orders/${orderId}/pay`, { method });
     closePayModal();
     state.cart = []; renderCart();
     $('pay-btn').style.display = 'none';
-    toast(`Paid with ${method}`);
+    if (method === 'Cash') {
+      const receivedCents = Math.round(Number($('cash-received-input').value || 0) * 100);
+      const changeCents = receivedCents - Math.round(r.bill.total * 100);
+      toast(`Paid ${fmt(r.bill.total)} cash — change ${fmt(Math.max(0, changeCents) / 100)}`);
+    } else {
+      toast(`Paid with ${method} — ${fmt(r.bill.total)}`);
+    }
     renderTables();
   } catch (e) { toast('Payment failed: ' + e.message); }
 }
@@ -299,6 +343,8 @@ $('pay-modal').addEventListener('click', e => {
   }
   if (e.target === $('pay-modal')) closePayModal();
 });
+
+$('cash-received-input').addEventListener('input', updateChangeDue);
 
 $('remark-modal').addEventListener('click', e => {
   const el = e.target.closest('[data-action]');

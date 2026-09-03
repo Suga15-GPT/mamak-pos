@@ -2,7 +2,7 @@ const express = require('express');
 const { pool } = require('../db');
 const { requireRole } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
-const { cents2rm, roundCashCents } = require('../lib/money');
+const { cents2rm, computeBill } = require('../lib/money');
 const { buildOrderItems, insertOrder, ordersWithItems } = require('../services/orders');
 
 const router = express.Router();
@@ -75,18 +75,44 @@ router.post('/api/orders/:id/pay', requireRole('admin', 'staff'), awaitH(async (
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!['served', 'ready', 'preparing', 'sent'].includes(o.rows[0].status))
     return res.status(400).json({ error: 'order already closed' });
-  const t = await pool.query(`
-    SELECT COALESCE(SUM((oi.price_cents + COALESCE(m.mx, 0)) * oi.qty), 0) AS c
-    FROM order_items oi
-    LEFT JOIN (SELECT order_item_id, SUM(price_cents) mx FROM order_item_mods GROUP BY 1) m
-      ON m.order_item_id = oi.id
-    WHERE oi.order_id = $1`, [o.rows[0].id]);
-  let cents = Number(t.rows[0].c);
-  if (method === 'Cash') cents = roundCashCents(cents);
+
+  // Recompute from order_items/order_item_mods server-side; never trust a client total.
+  const items = await pool.query('SELECT id, price_cents, qty FROM order_items WHERE order_id = $1', [o.rows[0].id]);
+  const mods = items.rows.length
+    ? await pool.query('SELECT order_item_id, price_cents FROM order_item_mods WHERE order_item_id = ANY($1::int[])',
+        [items.rows.map(i => i.id)])
+    : { rows: [] };
+  const modsByItem = {};
+  mods.rows.forEach(m => (modsByItem[m.order_item_id] ||= []).push(m));
+  const lines = items.rows.map(i => ({ price_cents: i.price_cents, qty: i.qty, mods: modsByItem[i.id] || [] }));
+
+  const rateRows = await pool.query("SELECT key, value FROM settings WHERE key IN ('tax_rate_bp', 'svc_rate_bp')");
+  const rates = Object.fromEntries(rateRows.rows.map(r => [r.key, Number(r.value)]));
+  const taxRateBp = rates.tax_rate_bp || 0;
+  const svcRateBp = rates.svc_rate_bp || 0;
+
+  const bill = computeBill({ lines, taxRateBp, svcRateBp, discountCents: 0, method });
+
   await pool.query(
-    'UPDATE orders SET status = $1, paid_at = now(), updated_at = now(), pay_method = $2, pay_total_cents = $3 WHERE id = $4',
-    ['paid', method, cents, o.rows[0].id]);
-  res.json({ ok: true, paid: cents2rm(cents) });
+    `UPDATE orders SET status = 'paid', paid_at = now(), updated_at = now(), pay_method = $1, pay_total_cents = $2,
+       subtotal_cents = $3, service_charge_cents = $4, tax_cents = $5, discount_cents = $6,
+       rounding_cents = $7, total_cents = $8, tax_rate_bp = $9, svc_rate_bp = $10
+     WHERE id = $11`,
+    [method, bill.total_cents, bill.subtotal_cents, bill.service_charge_cents, bill.tax_cents,
+     bill.discount_cents, bill.rounding_cents, bill.total_cents, taxRateBp, svcRateBp, o.rows[0].id]);
+
+  res.json({
+    ok: true,
+    paid: cents2rm(bill.total_cents),
+    bill: {
+      subtotal: cents2rm(bill.subtotal_cents),
+      service_charge: cents2rm(bill.service_charge_cents),
+      tax: cents2rm(bill.tax_cents),
+      discount: cents2rm(bill.discount_cents),
+      rounding: cents2rm(bill.rounding_cents),
+      total: cents2rm(bill.total_cents),
+    },
+  });
 }));
 
 module.exports = router;
