@@ -59,7 +59,7 @@ async function checkOpenOrder() {
       /* lines already on the order are marked sent: they must never be re-submitted */
       state.cart = open.items.map(l => ({
         id: l.id, item_id: l.item_id || 0, name: l.name, price: l.price, qty: l.qty, mods: l.mods,
-        note: l.note || '', sent: true, voided: l.voided, void_reason: l.void_reason,
+        note: l.note || '', seat: l.seat, sent: true, voided: l.voided, void_reason: l.void_reason,
       }));
       $('pay-btn').dataset.orderStatus = open.status;
       renderCart();
@@ -153,13 +153,23 @@ function renderCart() {
     const controls = l.voided ? ''
       : l.sent ? `<button data-action="void-line" data-id="${i}" style="color:var(--red)">Void</button>`
       : `<div class="qty"><button data-action="cart-qty" data-id="${i}" data-delta="-1">−</button><button data-action="cart-qty" data-id="${i}" data-delta="1">+</button><button data-action="cart-del" data-id="${i}" style="color:var(--red)">✕</button></div>`;
+    const seatBadge = l.seat != null ? `<br><small style="color:var(--warm-gray)">Seat ${esc(String(l.seat))}</small>` : '';
+    const seatInput = (l.voided || l.sent) ? '' :
+      `<input type="number" min="1" placeholder="Seat" value="${l.seat ?? ''}" data-action="set-seat" data-id="${i}"
+        style="width:56px;color:var(--charcoal);margin-top:6px;font-size:12px;padding:4px 6px">`;
     return `<div class="cart-line"${l.voided ? ' style="opacity:.55"' : ''}>
-      <div><b>${l.qty}×</b> ${esc(l.name)}${tag}${modStr ? `<br><small style="color:var(--warm-gray)">${esc(modStr)}</small>` : ''}${l.note ? `<br><small style="color:var(--terra)">📝 ${esc(l.note)}</small>` : ''}</div>
+      <div><b>${l.qty}×</b> ${esc(l.name)}${tag}${modStr ? `<br><small style="color:var(--warm-gray)">${esc(modStr)}</small>` : ''}${l.note ? `<br><small style="color:var(--terra)">📝 ${esc(l.note)}</small>` : ''}${seatBadge}${seatInput}</div>
       <div style="display:flex;align-items:center;gap:10px"><span${l.voided ? ' style="text-decoration:line-through"' : ''}>${fmt(lt)}</span>
         ${controls}
       </div></div>`;
   }).join('');
   $('cart-total-rm').textContent = fmt(total);
+}
+
+function setSeat(idx, value) {
+  if (state.cart[idx].sent) return;
+  const n = parseInt(value);
+  state.cart[idx].seat = n > 0 ? n : null;
 }
 
 async function voidLine(idx) {
@@ -249,6 +259,7 @@ async function sendOrder() {
       item_id: l.item_id,
       qty: l.qty,
       note: l.note,
+      seat: l.seat || null,
       modifier_option_ids: l.mods.map(m => {
         const opt = state.menu.modifier_options.find(o => o.name === m.name);
         return opt ? opt.id : null;
@@ -272,7 +283,7 @@ async function sendOrder() {
     if (e.status === 409 && e.body?.order_id) {
       try {
         const items = pending.map(l => ({
-          item_id: l.item_id, qty: l.qty, note: l.note,
+          item_id: l.item_id, qty: l.qty, note: l.note, seat: l.seat || null,
           modifier_option_ids: l.mods.map(m => {
             const opt = state.menu.modifier_options.find(o => o.name === m.name);
             return opt ? opt.id : null;
@@ -291,81 +302,172 @@ async function sendOrder() {
 }
 
 /* ===== PAYMENT =====
-   This is an estimate for the cashier's display only — the server never trusts
-   it and recomputes the real bill from order_items at /api/orders/:id/pay. */
-const roundHalfUp = n => (n >= 0 ? Math.floor(n + 0.5) : -Math.floor(-n + 0.5));
-let payPreview = null;
+   Everything shown here (subtotal/tax/total/amount_due/payments-so-far) comes
+   straight from the order, which the server keeps recomputed on every change
+   (phase 05) — no client-side bill math to duplicate or get out of sync. */
+let currentOrder = null;
+// A split view the cashier is actively working through — {title, items:[{label,amount}]}.
+// Computed once from the balance at split time; paying a share removes just that
+// entry (never a fresh re-split of the shrinking remainder, which would silently
+// change the numbers the cashier was just shown and told to collect).
+let pendingShares = null;
+
+async function refreshPayModal() {
+  const orderId = $('pay-btn').dataset.orderId;
+  if (!orderId) return false;
+  const orders = await API.get('/api/orders').catch(() => []);
+  const order = orders.find(o => o.id == orderId);
+  if (!order) return false;
+  currentOrder = order;
+  renderPayModal();
+  return true;
+}
 
 async function openPayModal() {
-  const orderId = $('pay-btn').dataset.orderId;
-  if (!orderId) return;
-
-  try {
-    const orders = await API.get('/api/orders');
-    const order = orders.find(o => o.id == orderId);
-    if (order && ['sent', 'preparing'].includes(order.status)) {
-      if (!confirm(`⚠️ Food is still ${order.status}. Are you sure you want to mark as paid?`)) {
-        return;
-      }
-    }
-  } catch (e) {}
-
-  const subtotalCents = Math.round(state.cart.reduce((s, l) =>
-    s + (l.price + l.mods.reduce((a, m) => a + m.price, 0)) * l.qty, 0) * 100);
-  let taxRateBp = 600, svcRateBp = 0;
-  try { const settings = await API.get('/api/settings'); taxRateBp = settings.tax_rate_bp; svcRateBp = settings.svc_rate_bp; } catch (e) {}
-
-  const serviceChargeCents = roundHalfUp(subtotalCents * svcRateBp / 10000);
-  const taxCents = roundHalfUp((subtotalCents + serviceChargeCents) * taxRateBp / 10000);
-  const grossCents = subtotalCents + serviceChargeCents + taxCents;
-  const cashTotalCents = Math.round(grossCents / 5) * 5;
-  const roundingCents = cashTotalCents - grossCents;
-  payPreview = { cashTotalCents };
-
-  const rows = [`<div>Subtotal <span style="float:right">${fmt(subtotalCents / 100)}</span></div>`];
-  if (serviceChargeCents) rows.push(`<div>Service charge <span style="float:right">${fmt(serviceChargeCents / 100)}</span></div>`);
-  rows.push(`<div>SST ${(taxRateBp / 100).toFixed(0)}% <span style="float:right">${fmt(taxCents / 100)}</span></div>`);
-  rows.push(`<div>Rounding (cash) <span style="float:right">${roundingCents >= 0 ? '+' : ''}${fmt(roundingCents / 100)}</span></div>`);
-  rows.push(`<div style="font-weight:700;margin-top:6px">Total (Card/eWallet) <span style="float:right">${fmt(grossCents / 100)}</span></div>`);
-  rows.push(`<div style="font-weight:700">Total (Cash) <span style="float:right">${fmt(cashTotalCents / 100)}</span></div>`);
-
-  $('pay-details').innerHTML = `<div style="font-size:14px;color:var(--warm-gray);margin-bottom:8px">Order #${orderId}</div>${rows.join('')}`;
-  $('cash-received-input').value = '';
-  $('pay-change-due').textContent = '';
-  $('pay-cash-row').style.display = '';
+  pendingShares = null;
+  if (!(await refreshPayModal())) return toast('Order not found');
+  // Only ask once, when the modal is first opened — not on every refresh after a
+  // partial payment, which would otherwise re-prompt on each split-payment leg.
+  if (['sent', 'preparing'].includes(currentOrder.status)) {
+    if (!confirm(`⚠️ Food is still ${currentOrder.status}. Are you sure you want to mark as paid?`)) return;
+  }
   $('pay-modal').classList.add('show');
 }
 
-function closePayModal() { $('pay-modal').classList.remove('show'); }
+function renderPayModal() {
+  const o = currentOrder;
+  const rows = [`<div>Subtotal <span style="float:right">${fmt(o.subtotal)}</span></div>`];
+  if (o.service_charge) rows.push(`<div>Service charge <span style="float:right">${fmt(o.service_charge)}</span></div>`);
+  rows.push(`<div>SST <span style="float:right">${fmt(o.tax)}</span></div>`);
+  if (o.discount) rows.push(`<div>Discount <span style="float:right">-${fmt(o.discount)}</span></div>`);
+  rows.push(`<div style="font-weight:700;margin-top:6px">Total <span style="float:right">${fmt(o.grand_total)}</span></div>`);
+
+  if (o.payments?.length) {
+    rows.push(`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--light-gray)"><b>Paid so far</b></div>`);
+    o.payments.forEach(p => rows.push(`<div><small>${esc(p.method)}</small> <span style="float:right"><small>${fmt(p.amount)}</small></span></div>`));
+  }
+  rows.push(`<div style="font-weight:700;color:var(--terra);margin-top:6px">Remaining <span style="float:right">${fmt(o.amount_due)}</span></div>`);
+
+  $('pay-details').innerHTML = `<div style="font-size:14px;color:var(--warm-gray);margin-bottom:8px">Order #${o.id}</div>${rows.join('')}`;
+  $('pay-amount-input').value = '';
+  $('cash-received-input').value = '';
+  $('pay-change-due').textContent = '';
+  $('pay-cash-row').style.display = '';
+  $('pay-amount-row').style.display = '';
+  renderSplitResult();
+}
+
+function renderSplitResult() {
+  if (!pendingShares || !pendingShares.items.length) { $('pay-split-result').innerHTML = ''; return; }
+  $('pay-split-result').innerHTML = `<div style="margin-top:10px"><b>${esc(pendingShares.title)}</b></div>` +
+    pendingShares.items.map((s, i) => `
+      <div class="cart-line"><div>${esc(s.label)}: ${fmt(s.amount)}</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn small" data-action="pay-share" data-idx="${i}">Pay cash</button>
+          <button class="btn small sage" data-action="pay-share" data-idx="${i}" data-method="Card">Pay card</button>
+        </div></div>`).join('');
+}
+
+function closePayModal() { $('pay-modal').classList.remove('show'); currentOrder = null; pendingShares = null; }
 
 function updateChangeDue() {
-  if (!payPreview) return;
+  if (!currentOrder) return;
+  const amount = Number($('pay-amount-input').value || currentOrder.amount_due);
   const receivedCents = Math.round(Number($('cash-received-input').value || 0) * 100);
-  const changeCents = receivedCents - payPreview.cashTotalCents;
+  const changeCents = receivedCents - Math.round(amount * 100);
   $('pay-change-due').textContent = receivedCents ? `Change due: ${fmt(Math.max(0, changeCents) / 100)}` : '';
   $('pay-change-due').style.color = changeCents < 0 ? 'var(--red)' : 'var(--charcoal)';
 }
 
-async function processPay(method) {
+/* method === null pays the full remaining balance; otherwise `amount`/`tendered`
+   (RM) pay exactly that much — used for split-by-amount and split-by-seat. */
+async function processPay(method, amount, tendered) {
   const orderId = $('pay-btn').dataset.orderId;
-  if (method === 'Cash' && payPreview) {
-    const receivedCents = Math.round(Number($('cash-received-input').value || 0) * 100);
-    if (receivedCents < payPreview.cashTotalCents) return toast('Cash received is less than the total due');
-  }
   try {
-    const r = await API.post(`/api/orders/${orderId}/pay`, { method });
-    closePayModal();
-    state.cart = []; renderCart();
-    $('pay-btn').style.display = 'none';
-    if (method === 'Cash') {
-      const receivedCents = Math.round(Number($('cash-received-input').value || 0) * 100);
-      const changeCents = receivedCents - Math.round(r.bill.total * 100);
-      toast(`Paid ${fmt(r.bill.total)} cash — change ${fmt(Math.max(0, changeCents) / 100)}`);
+    const body = { method };
+    if (amount != null) body.amount = amount;
+    if (method === 'Cash' && tendered != null) body.tendered = tendered;
+    const r = await API.post(`/api/orders/${orderId}/pay`, body);
+    if (r.settled) {
+      closePayModal();
+      state.cart = []; renderCart();
+      $('pay-btn').style.display = 'none';
+      toast(r.change > 0 ? `Paid in full — change ${fmt(r.change)}` : 'Paid in full');
+      renderTables();
     } else {
-      toast(`Paid with ${method} — ${fmt(r.bill.total)}`);
+      toast(`Paid ${fmt(r.paid)} — ${fmt(r.remaining)} remaining`);
+      await refreshPayModal(); // update the modal with the new remaining balance, no re-prompt
     }
-    renderTables();
   } catch (e) { toast('Payment failed: ' + e.message); }
+}
+
+async function payFull(method) {
+  const tenderedInput = $('cash-received-input').value;
+  if (method === 'Cash' && tenderedInput) {
+    const tenderedCents = Math.round(Number(tenderedInput) * 100);
+    if (tenderedCents < Math.round(currentOrder.amount_due * 100)) return toast('Cash received is less than the amount due');
+    return processPay('Cash', null, Number(tenderedInput));
+  }
+  return processPay(method, null, null);
+}
+
+function payAmount(method) {
+  const amount = Number($('pay-amount-input').value);
+  if (!(amount > 0)) return toast('Enter an amount to pay');
+  if (amount > currentOrder.amount_due + 0.001) return toast('Amount is more than what is remaining');
+  // tendered is left unset (not forced equal to amount): cash can't physically be
+  // tendered in exact sen the way a typed amount can, so when this leg settles the
+  // order the server rounds to the nearest 5 sen and treats it as exact — forcing
+  // tendered=amount here would instead reject a leg that needs rounding up.
+  return processPay(method, amount, null);
+}
+
+// Pay off one previously-computed split share; the leg amount is fixed at split
+// time, so this never re-derives it from the (now smaller) remaining balance.
+async function paySplitShare(idx, method) {
+  const share = pendingShares?.items[idx];
+  if (!share) return;
+  const orderId = $('pay-btn').dataset.orderId;
+  try {
+    // Same reasoning as payAmount: no forced tendered for Cash — a split share
+    // like RM3.33 isn't payable in exact coins, so let the server round the final
+    // leg to the nearest 5 sen automatically instead of rejecting the payment.
+    const body = { method, amount: share.amount };
+    const r = await API.post(`/api/orders/${orderId}/pay`, body);
+    pendingShares.items.splice(idx, 1);
+    if (r.settled) {
+      closePayModal();
+      state.cart = []; renderCart();
+      $('pay-btn').style.display = 'none';
+      toast('Paid in full');
+      renderTables();
+    } else {
+      toast(`Paid ${fmt(r.paid)} — ${fmt(r.remaining)} remaining`);
+      await refreshPayModal();
+    }
+  } catch (e) { toast('Payment failed: ' + e.message); }
+}
+
+async function splitEvenlyUI() {
+  const ways = parseInt(prompt('Split the remaining balance evenly — how many ways?', '2'));
+  if (!ways || ways < 1) return;
+  const orderId = $('pay-btn').dataset.orderId;
+  try {
+    const { shares } = await API.get(`/api/orders/${orderId}/split?ways=${ways}`);
+    pendingShares = { title: `${ways}-way split`, items: shares.map((amt, i) => ({ label: `Share ${i + 1}`, amount: amt })) };
+    renderSplitResult();
+  } catch (e) { toast(e.message); }
+}
+
+async function splitBySeatUI() {
+  const orderId = $('pay-btn').dataset.orderId;
+  try {
+    const { seats } = await API.get(`/api/orders/${orderId}/split?by=seat`);
+    const entries = Object.entries(seats);
+    if (!entries.length) return toast('No lines have a seat assigned');
+    pendingShares = { title: 'By seat', items: entries.map(([seat, amt]) => ({ label: `Seat ${seat}`, amount: amt })) };
+    renderSplitResult();
+  } catch (e) { toast(e.message); }
 }
 
 /* ===== EVENT WIRING ===== */
@@ -382,6 +484,10 @@ $('tab-pos').addEventListener('click', e => {
   else if (action === 'void-line') voidLine(Number(el.dataset.id));
   else if (action === 'send-order') sendOrder();
   else if (action === 'open-pay') openPayModal();
+});
+
+$('tab-pos').addEventListener('change', e => {
+  if (e.target.matches('input[data-action="set-seat"]')) setSeat(Number(e.target.dataset.id), e.target.value);
 });
 
 $('modal-bg').addEventListener('click', e => {
@@ -404,7 +510,11 @@ $('pay-modal').addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
   if (el) {
     const action = el.dataset.action;
-    if (action === 'pay') processPay(el.dataset.method);
+    if (action === 'pay') payFull(el.dataset.method);
+    else if (action === 'pay-amount') payAmount(el.dataset.method || 'Cash');
+    else if (action === 'pay-share') paySplitShare(Number(el.dataset.idx), el.dataset.method || 'Cash');
+    else if (action === 'split-evenly') splitEvenlyUI();
+    else if (action === 'split-by-seat') splitBySeatUI();
     else if (action === 'close-pay-modal') closePayModal();
     return;
   }

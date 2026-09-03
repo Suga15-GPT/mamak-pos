@@ -203,7 +203,7 @@
     <h3>Payment</h3>
     <div id="pay-details" style="margin-bottom:20px"></div>
     <div id="pay-cash-row" style="display:none;margin-bottom:16px">
-      <label for="cash-received-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Cash received (RM)</label>
+      <label for="cash-received-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Cash received (RM) — for the full remaining balance</label>
       <input type="number" id="cash-received-input" min="0" step="0.05" class="remark-input" style="color:var(--charcoal)">
       <div id="pay-change-due" style="margin-top:8px;font-weight:700;color:var(--charcoal)"></div>
     </div>
@@ -212,6 +212,25 @@
       <button class="btn sage" data-action="pay" data-method="Card">💳 Card</button>
       <button class="btn charcoal" data-action="pay" data-method="DuitNow/eWallet"> DuitNow / eWallet</button>
     </div>
+
+    <div id="pay-amount-row" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--light-gray)">
+      <label for="pay-amount-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Pay a specific amount (RM)</label>
+      <input type="number" id="pay-amount-input" min="0" step="0.01" class="remark-input" style="color:var(--charcoal);margin-bottom:8px">
+      <div style="display:flex;gap:8px">
+        <button class="btn small" data-action="pay-amount">Apply cash</button>
+        <button class="btn small sage" data-action="pay-amount" data-method="Card">Apply card</button>
+        <button class="btn small charcoal" data-action="pay-amount" data-method="DuitNow/eWallet">Apply eWallet</button>
+      </div>
+    </div>
+
+    <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--light-gray)">
+      <div style="display:flex;gap:8px">
+        <button class="btn small outline" style="flex:1" data-action="split-evenly">Split evenly</button>
+        <button class="btn small outline" style="flex:1" data-action="split-by-seat">Split by seat</button>
+      </div>
+      <div id="pay-split-result"></div>
+    </div>
+
     <button class="btn outline" style="width:100%;margin-top:12px" data-action="close-pay-modal">Cancel</button>
   </div>
 </div>

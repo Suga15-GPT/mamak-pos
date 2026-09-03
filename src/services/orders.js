@@ -63,7 +63,8 @@ async function buildOrderItems(client, rawItems) {
       }
     }
 
-    return { item: it, qty, mods, note: String(li.note || '').slice(0, 200) };
+    const seat = li.seat == null || li.seat === '' ? null : Math.max(1, parseInt(li.seat) || 0) || null;
+    return { item: it, qty, mods, note: String(li.note || '').slice(0, 200), seat };
   });
 }
 
@@ -77,8 +78,8 @@ async function insertOrder(tableId, parsed, note, source, userId = null) {
     const orderId = o.rows[0].id;
     for (const l of parsed) {
       const oi = await client.query(
-        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
-        [orderId, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, userId]);
+        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by, seat) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+        [orderId, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, userId, l.seat]);
       for (const m of l.mods) {
         await client.query(
           'INSERT INTO order_item_mods (order_item_id, name, price_cents) VALUES ($1,$2,$3)',
@@ -128,7 +129,7 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
     grand_total: o.total_cents == null ? null : cents2rm(o.total_cents),
     tax_rate_bp: o.tax_rate_bp, svc_rate_bp: o.svc_rate_bp,
     items: o.items.map(i => ({
-      id: i.id, item_id: i.item_id, name: i.name, qty: i.qty, price: cents2rm(i.price_cents), note: i.note,
+      id: i.id, item_id: i.item_id, name: i.name, qty: i.qty, price: cents2rm(i.price_cents), note: i.note, seat: i.seat,
       mods: i.mods.map(m => ({ name: m.name, price: cents2rm(m.price_cents) })),
       voided: !!i.voided_at, void_reason: i.void_reason || null,
     })),

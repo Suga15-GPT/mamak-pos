@@ -1,18 +1,38 @@
 const express = require('express');
+const crypto = require('crypto');
 const { pool } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireRole, verifyPin } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
-const { cents2rm, computeBill } = require('../lib/money');
+const { cents2rm, rm2cents } = require('../lib/money');
 const { buildOrderItems, insertOrder, ordersWithItems, writeAudit } = require('../services/orders');
+const {
+  recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, splitEvenly, splitBySeat,
+} = require('../services/billing');
 
 const router = express.Router();
 
+// Short-lived, one-use authorization for a staff member to apply a discount that
+// requires admin sign-off (Do #4) — an admin's PIN, not a full login session.
+// In-memory is deliberate: same pattern as rateLimit in lib/auth.js, and these
+// tokens are only ever meant to live for the next couple of minutes.
+const discountAuthTokens = new Map();
+
 router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
-  if (req.query.mode === 'recent') {
-    res.json(await ordersWithItems('', [], 'ORDER BY o.id DESC LIMIT 15'));
-  } else {
-    res.json(await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled')", []));
+  const orders = req.query.mode === 'recent'
+    ? await ordersWithItems('', [], 'ORDER BY o.id DESC LIMIT 15')
+    : await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled')", []);
+
+  // Live payments-so-far + remaining balance, for the "RM X.XX remaining" display
+  // and the payment modal's split/partial flows.
+  for (const o of orders) {
+    const [payments, dueCents] = await Promise.all([listPayments(o.id), amountDue(o.id)]);
+    o.payments = payments.map(p => ({
+      method: p.method, amount: cents2rm(p.amount_cents),
+      tendered: p.tendered_cents == null ? null : cents2rm(p.tendered_cents), at: p.at,
+    }));
+    o.amount_due = cents2rm(Math.max(0, dueCents));
   }
+  res.json(orders);
 }));
 
 /* tables for staff/kitchen: names only, no qr_token (that stays admin-only) */
@@ -26,6 +46,7 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
   const parsed = await buildOrderItems(pool, items);
   try {
     const id = await insertOrder(Number(table_id), parsed, String(note || '').slice(0, 300), 'staff', req.user.id);
+    await recomputeOrderBill(id);
     await writeAudit(pool, {
       userId: req.user.id, action: 'order.create', entityType: 'order', entityId: id,
       detail: { table_id: Number(table_id), source: 'staff' },
@@ -49,14 +70,18 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0] || ['paid', 'cancelled'].includes(o.rows[0].status))
     return res.status(400).json({ error: 'order closed' });
+  // Once any payment is recorded against the order, its total is being settled —
+  // adding more lines would make what was just paid for wrong.
+  if (await hasPayments(o.rows[0].id)) return res.status(409).json({ error: 'order has a payment recorded; cannot add items' });
+
   const parsed = await buildOrderItems(pool, req.body.items);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     for (const l of parsed) {
       const oi = await client.query(
-        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
-        [o.rows[0].id, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, req.user.id]);
+        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by, seat) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+        [o.rows[0].id, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, req.user.id, l.seat]);
       for (const m of l.mods)
         await client.query('INSERT INTO order_item_mods (order_item_id, name, price_cents) VALUES ($1,$2,$3)',
           [oi.rows[0].id, m.name, m.price_cents]);
@@ -67,8 +92,10 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
       detail: { items: parsed.map(l => ({ item_id: l.item.id, name: l.item.name, qty: l.qty })) },
     });
     await client.query('COMMIT');
-    res.json({ ok: true });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+
+  await recomputeOrderBill(o.rows[0].id);
+  res.json({ ok: true });
 }));
 
 /* void a sent line — never deleted, just marked. staff may void while the order is
@@ -95,6 +122,7 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
     userId: req.user.id, action: 'order.void_line', entityType: 'order_item', entityId: li.rows[0].id,
     detail: { order_id: o.rows[0].id, name: li.rows[0].name, qty: li.rows[0].qty, price_cents: li.rows[0].price_cents, reason },
   });
+  await recomputeOrderBill(o.rows[0].id);
   res.json({ ok: true });
 }));
 
@@ -132,57 +160,82 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
   res.json({ ok: true });
 }));
 
+/* One payment leg. Body: { method, amount?, tendered? } — amount (RM) defaults to
+   the full remaining balance, so the old "click a method to pay in full" flow keeps
+   working unchanged. tendered (RM, cash only) drives change due. Over-tendering in
+   cash settles the order and returns change; over-amount by card/e-wallet is 400. */
 router.post('/api/orders/:id/pay', requireRole('admin', 'staff'), awaitH(async (req, res) => {
-  const method = req.body?.method;
-  if (!['Cash', 'Card', 'DuitNow/eWallet'].includes(method)) return res.status(400).json({ error: 'bad method' });
+  const { method, amount, tendered } = req.body || {};
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!['served', 'ready', 'preparing', 'sent'].includes(o.rows[0].status))
     return res.status(400).json({ error: 'order already closed' });
 
-  // Recompute from order_items/order_item_mods server-side; never trust a client total.
-  // Voided lines are excluded — they were never actually served.
-  const items = await pool.query('SELECT id, price_cents, qty FROM order_items WHERE order_id = $1 AND voided_at IS NULL', [o.rows[0].id]);
-  const mods = items.rows.length
-    ? await pool.query('SELECT order_item_id, price_cents FROM order_item_mods WHERE order_item_id = ANY($1::int[])',
-        [items.rows.map(i => i.id)])
-    : { rows: [] };
-  const modsByItem = {};
-  mods.rows.forEach(m => (modsByItem[m.order_item_id] ||= []).push(m));
-  const lines = items.rows.map(i => ({ price_cents: i.price_cents, qty: i.qty, mods: modsByItem[i.id] || [] }));
-
-  const rateRows = await pool.query("SELECT key, value FROM settings WHERE key IN ('tax_rate_bp', 'svc_rate_bp')");
-  const rates = Object.fromEntries(rateRows.rows.map(r => [r.key, Number(r.value)]));
-  const taxRateBp = rates.tax_rate_bp || 0;
-  const svcRateBp = rates.svc_rate_bp || 0;
-
-  const bill = computeBill({ lines, taxRateBp, svcRateBp, discountCents: 0, method });
-
-  await pool.query(
-    `UPDATE orders SET status = 'paid', paid_at = now(), updated_at = now(), pay_method = $1, pay_total_cents = $2,
-       subtotal_cents = $3, service_charge_cents = $4, tax_cents = $5, discount_cents = $6,
-       rounding_cents = $7, total_cents = $8, tax_rate_bp = $9, svc_rate_bp = $10, paid_by = $11
-     WHERE id = $12`,
-    [method, bill.total_cents, bill.subtotal_cents, bill.service_charge_cents, bill.tax_cents,
-     bill.discount_cents, bill.rounding_cents, bill.total_cents, taxRateBp, svcRateBp, req.user.id, o.rows[0].id]);
-
-  await writeAudit(pool, {
-    userId: req.user.id, action: 'order.pay', entityType: 'order', entityId: o.rows[0].id,
-    detail: { method, total_cents: bill.total_cents },
+  const result = await addPayment(o.rows[0].id, {
+    method,
+    amountCents: amount != null ? rm2cents(amount) : null,
+    tenderedCents: tendered != null ? rm2cents(tendered) : null,
+    userId: req.user.id,
   });
 
+  const after = (await pool.query('SELECT * FROM orders WHERE id = $1', [o.rows[0].id])).rows[0];
   res.json({
     ok: true,
-    paid: cents2rm(bill.total_cents),
+    paid: cents2rm(result.amount_cents),
+    change: cents2rm(result.change_cents),
+    remaining: cents2rm(result.remaining_cents),
+    settled: result.settled,
     bill: {
-      subtotal: cents2rm(bill.subtotal_cents),
-      service_charge: cents2rm(bill.service_charge_cents),
-      tax: cents2rm(bill.tax_cents),
-      discount: cents2rm(bill.discount_cents),
-      rounding: cents2rm(bill.rounding_cents),
-      total: cents2rm(bill.total_cents),
+      subtotal: cents2rm(after.subtotal_cents),
+      service_charge: cents2rm(after.service_charge_cents),
+      tax: cents2rm(after.tax_cents),
+      discount: cents2rm(after.discount_cents),
+      rounding: cents2rm(after.rounding_cents),
+      total: cents2rm(after.total_cents),
     },
   });
+}));
+
+/* Preview only — does not record anything. ?ways=N for an even split of the
+   remaining balance, or ?by=seat for a per-seat breakdown. */
+router.get('/api/orders/:id/split', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  if (req.query.by === 'seat') {
+    const bySeat = await splitBySeat(req.params.id);
+    return res.json({ seats: Object.fromEntries(Object.entries(bySeat).map(([k, v]) => [k, cents2rm(v)])) });
+  }
+  const ways = parseInt(req.query.ways);
+  if (!ways) return res.status(400).json({ error: 'ways or by=seat required' });
+  const due = await amountDue(req.params.id);
+  const shares = splitEvenly(due, ways);
+  res.json({ shares: shares.map(cents2rm) });
+}));
+
+/* Staff can't self-approve a discount — an admin types their PIN here, which
+   returns a short-lived, one-use token authorizing exactly one discount action. */
+router.post('/api/discounts/authorize', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  const name = String(req.body?.name || '');
+  const u = await pool.query("SELECT id, pin_hash FROM users WHERE name = $1 AND role = 'admin'", [name]);
+  if (!u.rows[0] || !verifyPin(req.body?.pin, u.rows[0].pin_hash)) return res.status(401).json({ error: 'invalid admin credentials' });
+  const token = crypto.randomBytes(24).toString('hex');
+  discountAuthTokens.set(token, { adminId: u.rows[0].id, expires: Date.now() + 2 * 60 * 1000 });
+  res.json({ token, expires_in: 120 });
+}));
+
+router.post('/api/orders/:id/discounts', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  const { kind, value, reason, authorize_token } = req.body || {};
+  let approverId = req.user.id;
+  if (req.user.role !== 'admin') {
+    const auth = authorize_token && discountAuthTokens.get(authorize_token);
+    if (!auth || auth.expires < Date.now()) return res.status(403).json({ error: 'admin authorization required' });
+    discountAuthTokens.delete(authorize_token); // one-use
+    approverId = auth.adminId;
+  }
+  // value at the API boundary is RM/percent for humans; billing.js works in cents/bp.
+  const valueForBilling = kind === 'percent' ? Math.round(Number(value) * 100)
+    : kind === 'amount' ? rm2cents(value)
+    : 0;
+  const result = await addDiscount(req.params.id, { kind, value: valueForBilling, reason, userId: approverId });
+  res.json({ ok: true, id: result.id, amount: cents2rm(result.amount_cents) });
 }));
 
 module.exports = router;
