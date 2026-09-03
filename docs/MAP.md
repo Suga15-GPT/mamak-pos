@@ -2,25 +2,45 @@
 
 **Read this instead of exploring.** Every prompt in `docs/prompts/` names the files
 it needs; this file tells you what is in them and roughly where. Keep it accurate —
-phase 01 rewrites it after the module split, and every later phase updates the rows
-it touches.
+every phase updates the rows it touches.
 
-## Current state (before phase 01)
+## Current state (after phase 01 — module split)
 
 | File | Lines | Contains |
 |---|---|---|
-| `server.js` | ~524 | Everything server-side. Sections in order: helpers & money (16–33), `requireAuth` + rate limiter (40–63), auth routes (64–83), public menu/table/QR-order routes (84–193), `buildOrderItems` + `insertOrder` (104–193), staff order routes (194–259), pay (260–282), `/api/summary` dashboard SQL (283–313), settings (314–329), admin menu/tables/QR/users (330–443), static routes (444–470), seed data + `boot()` (471–525). `pool` and `migrate()` now come from `src/db.js` — `seed()` calls `migrate()` instead of reading `schema.sql` wholesale |
-| `migrations/001_baseline.sql` | 90 | The former `schema.sql`, verbatim, plus the `available` column `ALTER` that used to run inline in `seed()`. Applied by `src/db.js`'s `migrate()`. Idempotent — safe against a database that already has these tables |
+| `src/server.js` | 47 | Express app wiring only: json/static middleware, mounts the five route routers, the `/t/:token` customer-page route, `/`, `/api/health`, and `boot()` (seed, session-cleanup interval, `app.listen`) |
 | `src/db.js` | 44 | Migration runner. Exports `pool`, `query`, `migrate()`. `migrate()` applies `migrations/*.sql` in filename order inside a transaction per file, tracked in `schema_migrations`; re-running applies nothing |
-| `public/index.html` | ~650 | Staff app. Lines 1–50 dark-mode + local CSS overrides, 50–200 markup for 4 tabs + 3 modals, 200–650 **all application JS inline**: state, auth, nav, POS/cart, kandar modal, send/pay, kitchen, dashboard, admin, live refresh |
-| `public/customer/…` → currently `public/customer.html` | ~390 | QR self-order page. Inline CSS 8–121, markup 123–200, inline JS 200–390 (init from `/t/:token`, menu render, cart, submit) |
-| `public/api.js` | 55 | `API` fetch wrapper: bearer token in `localStorage`, `login`/`logout`, `get/post/patch/del`, `getBlobUrl` for authenticated QR PNGs. **Loaded by the customer page but unused there** |
-| `public/style.css` | 386 | The terracotta design system: tokens (4–26), buttons, login, app shell, cards, table grid, POS layout, cart, kitchen, dashboard, admin, modal, toast, customer extras, responsive. **Keep this — extend, don't replace** |
+| `src/lib/errors.js` | 14 | `AppError(message, status)`, `awaitH` (wraps an authenticated route handler), `publicH` (same, but hides internal error text on public routes) |
+| `src/lib/auth.js` | 43 | `hashPin`/`verifyPin` (scrypt), `requireRole(...roles)` — a plain Express middleware factory (`router.get(path, requireRole('admin'), awaitH(...))`) that looks up the bearer session and checks `SESSION_TTL`, `rateLimit(key,max,windowMs)` — an in-memory sliding-window limiter |
+| `src/lib/money.js` | 5 | `cents2rm`, `rm2cents`, `roundCashCents` — grows in phase 02 |
+| `src/routes/auth.js` | 28 | `POST /api/login` (rate-limited), `POST /api/logout` |
+| `src/routes/public.js` | 41 | `GET /api/menu`, `GET /api/t/:token`, `POST /api/public/orders` (rate-limited QR ordering) |
+| `src/routes/orders.js` | 92 | `GET /api/orders[?mode=recent]`, `GET /api/tables` (staff/kitchen, names only), `POST /api/orders`, `POST /api/orders/:id/items`, `PATCH /api/orders/:id` (status, `TRANSITIONS` map lives here), `POST /api/orders/:id/pay` |
+| `src/routes/admin.js` | 113 | All `/api/admin/*`: menu CRUD, categories, modifier options, tables + QR PNG, users |
+| `src/routes/reports.js` | 51 | `GET /api/summary` (dashboard SQL, `KL` timezone constant lives here), `GET|PATCH /api/settings` |
+| `src/services/orders.js` | 83 | `buildOrderItems` (validates + prices a cart against the DB), `insertOrder`, `ordersWithItems` (joins orders+items+mods, computes totals) — shared by `routes/public.js` and `routes/orders.js` |
+| `src/seed.js` | 61 | `CATS`/`ITEMS` arrays and `seed()` (calls `migrate()`, then seeds categories/items/modifiers/tables/admin user if empty) |
+| `migrations/001_baseline.sql` | 90 | The former `schema.sql`, verbatim, plus the `available` column `ALTER`. Applied by `src/db.js`'s `migrate()`. Idempotent — safe against a database that already has these tables |
+| `public/index.html` | 198 | Staff app shell: markup only (4 tabs + 3 modals), a small inline `<style>` for dark mode / theme-toggle / layout tweaks not yet folded into `style.css`. Every interactive element carries `data-action` (+ `data-id` etc.) instead of `onclick`. Loads `api.js` (classic script, defines the global `API`) then `js/main.js` as `type="module"` |
+| `public/js/state.js` | 25 | The shared `state` object (`menu`, `tables`, `cart`, `selTable`, `activeCat`, `kandarItem`, `pollTimer`, `pendingRemarkItem`) plus `$`, `fmt`, `esc`, `toast` |
+| `public/js/pos.js` | 313 | Everything POS-tab: table select, menu/cart rendering, kandar + remark modals, send-to-kitchen, payment modal/flow. Owns the delegated click listeners for `#tab-pos`, `#modal-bg`, `#pay-modal`, `#remark-modal`. Exports `loadAll`, `renderTables` |
+| `public/js/kitchen.js` | 51 | `refreshKitchen`, `setSt`; delegated click listener on `#tab-kitchen` |
+| `public/js/dashboard.js` | 16 | `refreshDashboard` |
+| `public/js/admin.js` | 58 | `refreshAdmin`, `toggleAvail`, `toggleModAvail`, `toggleSST`; delegated `change` listener on `#tab-admin` plus a direct listener on `#sst-toggle` |
+| `public/js/nav.js` | 45 | `buildNav`, `switchTab`, `refreshLive` (the 3s poll dispatcher); delegated click listener on `#nav` |
+| `public/js/main.js` | 46 | Theme toggle, login/logout, `showApp`/`showLogin`, wires the poll timer, page init. Exposes `window.showLogin` because `api.js` (a classic script) calls it directly on a 401 |
+| `public/customer/index.html` | 156 | QR self-order page shell. Local `<style>` holds only the rules that are genuinely different from `style.css` for this page (sticky category bar, customer item-btn layout, `#cart-bar` sub-selectors, mobile bottom-sheet modal, loading spinner) — everything duplicated with `style.css` (`.c-header`, `.c-wrap`, `.c-success*`, base `#cart-bar`, `.remark-presets`) was moved there instead. Does **not** load `api.js` (unused on this page; its 401 handler called a `showLogin()` that doesn't exist here) |
+| `public/customer/customer.js` | 212 | Init from `/t/:token`, menu render, cart, kandar/remark modals, submit — `type="module"`, imports `$`/`fmt`/`esc` from `../js/state.js`. All interactive elements use `data-action`, one delegated listener on `document.body` |
+| `public/api.js` | 57 | `API` fetch wrapper: bearer token in `localStorage`, `login`/`logout`, `get/post/patch/del`, `getBlobUrl` for authenticated QR PNGs. Loaded only by the staff app now |
+| `public/style.css` | 410 | The terracotta design system: tokens, buttons, login, app shell, cards, table grid, POS layout, cart, kitchen, dashboard, admin, modal, `.remark-presets`, toast, customer-page extras (now the authoritative versions — see `public/customer/index.html` above), responsive. **Keep this — extend, don't replace** |
 | `docker-compose.yml` | 34 | `db` (postgres:16-alpine) + `app`. Secrets via `${VAR}` from `.env` |
-| `Dockerfile` | 7 | Single stage, runs as root. Hardened in phase 11 |
+| `Dockerfile` | 7 | Single stage, runs as root, `CMD ["node", "src/server.js"]`. Hardened in phase 11 |
 | `test/helper.js` | ~35 | `withDb(fn)`: creates a random `test_<hex>` schema against `TEST_DATABASE_URL`, points `src/db.js` at it via `PGOPTIONS` search_path, runs `migrate()`, calls `fn(db)`, then drops the schema. Tests never touch `public` |
-| `test/unit/smoke.test.js` | ~90 | Three regression tests (`node --test`): `migrate()` idempotency, admin login + wrong-PIN 401, `GET /api/orders?mode=recent` 200 (audit #9). The login/orders tests boot the real `server.js` on a random port via `fetch` |
-| `.github/workflows/ci.yml` | ~25 | Node 20 + `postgres:16-alpine` service, `npm ci && npm test`, on push and PR |
+| `test/unit/smoke.test.js` | ~100 | Three regression tests (`node --test`): `migrate()` idempotency, admin login + wrong-PIN 401, `GET /api/orders?mode=recent` 200 (audit #9). `startApp()` clears the require-cache for every module under `src/` (except `db.js`, which `withDb()` already refreshed) before re-requiring `src/server.js`, so the route/service/lib tree picks up the current test's pool instead of a previous test's closed one |
+| `playwright.config.js` | 36 | E2E config: single worker, `webServer` runs `node test/e2e/reset-db.js && node src/server.js` against a dedicated `mamak_e2e` database, `launchOptions.executablePath` points at a sandbox-preinstalled Chromium when present (falls back to Playwright's own resolution otherwise) |
+| `test/e2e/reset-db.js` | 26 | Drops + recreates the `mamak_e2e` database before the app boots, so every E2E run starts from the same seeded, orders-empty state |
+| `test/e2e/journeys.spec.js` | 76 | The six journeys named in `_CONVENTIONS.md`. **Implemented:** staff login → order → kitchen → pay; QR customer order. **Pending** (`test.skip`, with the phase that adds them): split bill (05), void a line (03), offline order reconciles (07), shift open → close (09) |
+| `.github/workflows/ci.yml` | ~25 | Node 20 + `postgres:16-alpine` service, `npm ci && npm test`, on push and PR. Does not yet run the Playwright suite |
 
 ## Database tables
 
@@ -58,12 +78,20 @@ Admin only: `GET /api/admin/menu` · `POST|PATCH|DELETE /api/admin/items` ·
 ## Conventions in the existing code
 
 - `awaitH(fn)` wraps an authenticated route; `publicH(fn)` wraps a public one and
-  hides internal error text. Thrown errors carrying `.status` become that response.
-- Auth is used as `const auth = await requireAuth('admin'); await auth(req,res,()=>{}); if (res.headersSent) return;`
-  — an odd factory pattern. Phase 01 converts it to plain Express middleware.
-- Money is integer cents in the DB; `cents2rm`/`rm2cents` convert at the edges only.
-- Client-side, every string rendered into HTML goes through `esc()`. Handlers take
-  an **id** and look the record up — never interpolate a name into an attribute.
+  hides internal error text. Thrown errors carrying `.status` become that response
+  — throw them via `AppError(message, status)` (`src/lib/errors.js`).
+- Auth is plain Express middleware: `router.get('/path', requireRole('admin'), awaitH(...))`.
+  `requireRole(...roles)` (`src/lib/auth.js`) looks up the bearer session and 403s
+  if the user's role isn't in the list; pass no roles to just require *a* session.
+- Money is integer cents in the DB; `cents2rm`/`rm2cents` (`src/lib/money.js`)
+  convert at the edges only.
+- Client-side, every string rendered into HTML goes through `esc()` (`public/js/state.js`
+  on the staff app, `../js/state.js` re-imported on the customer page). Dynamic
+  markup uses `data-action`/`data-id` attributes plus one delegated `click` (or
+  `change`) listener per container — never an inline `onclick`/`onchange`.
+- Shared staff-app state (`menu`, `tables`, `cart`, `selTable`, `activeCat`, …) lives
+  in the single `state` object exported by `public/js/state.js`; import and mutate
+  `state.foo`, don't reassign a destructured local.
 
 ## Local development
 
@@ -71,7 +99,7 @@ Admin only: `GET /api/admin/menu` · `POST|PATCH|DELETE /api/admin/items` ·
 docker compose up                      # full stack
 # or against a local postgres:
 DATABASE_URL=postgres://postgres:PASS@localhost:5432/postgres \
-  ADMIN_PIN=1234 BASE_URL=http://localhost:3000 node server.js
+  ADMIN_PIN=1234 BASE_URL=http://localhost:3000 node src/server.js
 ```
 
 Seeds on first boot: 6 categories, 25 items, 2 modifier groups, 14 tables, and an
@@ -79,5 +107,6 @@ Seeds on first boot: 6 categories, 25 items, 2 modifier groups, 14 tables, and a
 `migrations/*.sql` in order.
 
 ```bash
-npm test    # node --test against TEST_DATABASE_URL (default localhost:5432/postgres)
+npm test              # node --test against TEST_DATABASE_URL (default localhost:5432/postgres)
+npx playwright test   # six E2E journeys against a dedicated mamak_e2e database (auto-booted)
 ```

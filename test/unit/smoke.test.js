@@ -1,11 +1,26 @@
+const path = require('path');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { withDb } = require('../helper');
 
-const SERVER_MODULE = require.resolve('../../server');
+const SRC_DIR = path.join(__dirname, '..', '..', 'src') + path.sep;
+const DB_MODULE = require.resolve('../../src/db');
+const SERVER_MODULE = require.resolve('../../src/server');
 
 function randomPort() {
   return 20000 + Math.floor(Math.random() * 30000);
+}
+
+// server.js now pulls in a tree of route/service/lib modules under src/, each
+// of which captures `pool` from src/db.js at require time. withDb() already
+// refreshes src/db.js's cache entry for the current test's schema; clearing
+// every *other* src/ module here forces them to re-require it and pick up
+// that same fresh pool, instead of running against a previous test's (by now
+// ended) pool.
+function clearSrcCache() {
+  for (const key of Object.keys(require.cache)) {
+    if (key.startsWith(SRC_DIR) && key !== DB_MODULE) delete require.cache[key];
+  }
 }
 
 async function waitReady(base, retries = 50) {
@@ -26,7 +41,7 @@ async function startApp() {
   const port = randomPort();
   process.env.PORT = String(port);
   process.env.ADMIN_PIN = '1234';
-  delete require.cache[SERVER_MODULE];
+  clearSrcCache();
   require(SERVER_MODULE);
   const base = `http://localhost:${port}`;
   await waitReady(base);

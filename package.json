@@ -2,14 +2,17 @@
   "name": "mamak-pos",
   "version": "0.1.0",
   "private": true,
-  "main": "server.js",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node src/server.js",
     "test": "node --test --test-force-exit test/unit/**/*.test.js"
   },
   "dependencies": {
     "express": "^4.19.2",
     "pg": "^8.12.0",
     "qrcode": "^1.5.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
   }
 }
