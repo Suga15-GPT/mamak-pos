@@ -50,6 +50,7 @@ Ordered by business impact. These are the backlog that `docs/REBUILD-PLAN.md` sc
 | 33 | Low | Table tile colours are inverted — a table with food cooking renders green/`open`, a served table renders `busy`. |
 | 34 | Low | 440 lines of inline JS in `index.html`, duplicated CSS between `style.css` and `customer.html`, `api.js` calling a global `showLogin()` that does not exist on the customer page. |
 | 35 | Low | No sold-out ("86") daily reset, no item images, no BM/English toggle, no order-level note UI for staff, no QR token rotation. |
+| 36 | **High** | **No staff management and no way to change a PIN.** The API can create and delete users but never update one, and the Admin tab has no user screen at all — so the only way to change the admin PIN today is to delete every user row and let the app re-seed. That workaround stops working the moment phase 03 lands, because orders will reference the staff who took them. There is also no deactivation: a departing waiter can only be deleted, which would erase the name attached to their past bills. Restaurants have constant staff turnover; scheduled into phase 11. |
 
 ## Not bugs (checked, working as intended)
 

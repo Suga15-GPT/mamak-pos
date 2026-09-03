@@ -5,14 +5,23 @@ Read `docs/prompts/_CONVENTIONS.md` first.
 
 ## Why
 
-Audit #26, #27, #29, #30, #31. The app now handles money and staff accountability;
-it should stop storing its session token where any script can read it, stop
-locking out the whole restaurant behind a proxy, and stop running as root.
+Audit #26, #27, #29, #30, #31, #36. The app now handles money and staff
+accountability; it should stop storing its session token where any script can read
+it, stop locking out the whole restaurant behind a proxy, and stop running as root.
+
+It also has **no way to manage staff or change a PIN** — the API can create and
+delete users but never update one, and the Admin tab has no user screen at all.
+Today the only way to change the admin PIN is to delete every user row and let the
+app re-seed. After phase 03 that stops working entirely, because orders reference
+the staff who took them. A restaurant hires and loses people constantly; this is
+not optional.
 
 ## Files
 
-Read: `src/server.js`, `src/lib/auth.js`, `public/js/api.js`, `Dockerfile`,
-`docker-compose.yml`. Create: `migrations/009_sessions.sql`, `scripts/backup.sh`.
+Read: `src/server.js`, `src/lib/auth.js`, `src/routes/auth.js`, `src/routes/admin.js`,
+`public/js/api.js`, `public/js/admin.js`, `Dockerfile`, `docker-compose.yml`.
+Create: `migrations/009_sessions.sql`, `migrations/010_staff.sql`,
+`public/js/staff.js`, `scripts/backup.sh`, `test/unit/staff.test.js`.
 
 ## Do
 
@@ -82,13 +91,86 @@ shop if the server dies (the answer is paper — write it down).
 `POSTGRES_PASSWORD` and `ADMIN_PIN` must be rotated, and make the app refuse to
 boot with the default PIN `1234` when `NODE_ENV=production`.
 
+**9. Staff & PINs screen.** The user table becomes manageable, and deletion becomes
+deactivation — after phase 03 a user with orders against them cannot be deleted at
+all, and their name must stay readable on old bills.
+
+```sql
+-- migrations/010_staff.sql
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS active          BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN IF NOT EXISTS must_change_pin BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS pin_changed_at  TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS created_at      TIMESTAMPTZ NOT NULL DEFAULT now();
+
+-- a deactivated "Ali" must not block hiring a new Ali, so the uniqueness
+-- constraint applies only to active staff, and matches login's case handling
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_name_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_users_name_active
+  ON users (lower(name)) WHERE active;
+
+-- the seeded admin is still on the default PIN until proven otherwise
+UPDATE users SET must_change_pin = true WHERE pin_changed_at IS NULL;
+```
+
+Endpoints:
+
+| Route | Who | Does |
+|---|---|---|
+| `GET /api/admin/users` | admin | id, name, role, active, created_at, last_seen_at. **Never** `pin_hash` |
+| `POST /api/admin/users` | admin | create; always sets `must_change_pin = true` |
+| `PATCH /api/admin/users/:id` | admin | name, role, active |
+| `POST /api/admin/users/:id/reset-pin` | admin | set a new PIN for someone who forgot theirs |
+| `POST /api/me/pin` | **any role** | change your own PIN; requires your current PIN |
+
+Replace `DELETE /api/admin/users/:id` with `PATCH … {active:false}`. Keep the route
+returning `410 Gone` with a message pointing at the new one.
+
+Rules — each one is a test:
+- **Never lock the shop out.** Deactivating or demoting the last active admin is a
+  400. So is deactivating yourself.
+- **Inactive users cannot log in**, and an inactive user's existing sessions stop
+  working immediately — add `AND u.active` to the session lookup, so deactivating
+  someone mid-shift ejects them rather than waiting for their session to expire.
+- **Changing a PIN invalidates sessions.** Your own change kills all your sessions
+  except the current one; an admin reset kills all of that user's sessions. A PIN
+  change that leaves a stolen session alive has achieved nothing.
+- **`must_change_pin` blocks everything.** While set, every endpoint except
+  `POST /api/me/pin` and `POST /api/logout` returns `403 pin_change_required`, and
+  the UI shows a change-PIN dialog that cannot be dismissed.
+- **PIN policy:** 4–8 digits; reject all-same (`0000`, `1111`), sequential runs
+  (`1234`, `4321`, `2345`), and reuse of the current PIN. Do not go further than
+  this — staff type this a hundred times a shift, and the real defence is the login
+  rate limit plus the audit trail, not PIN entropy.
+- Every create, role change, deactivation and PIN reset writes an `audit_log` row
+  (phase 03). Never log the PIN itself, hashed or otherwise.
+
+UI:
+- **Admin tab → "Staff & PINs" card.** A table of name / role / status / last active,
+  with Edit, Reset PIN and Deactivate per row. Former staff collapsed underneath in a
+  "Former staff" section, showing name, role and when they left — they stay visible
+  because old bills still carry their name.
+- **"Change my PIN" in the header user menu, for every role** — not buried in the
+  Admin tab, which waiters and kitchen staff cannot open. This is the part people
+  forget, and it is the one every staff member actually needs.
+- Adding staff takes name, role, PIN and confirm-PIN, and says plainly that the new
+  person will be asked to choose their own PIN at first login.
+
 ## Verify
 
 ```bash
 npm test
+node --test test/unit/staff.test.js
 curl -sI localhost:3000/ | grep -i "content-security\|x-frame\|nosniff"
 docker compose up --build          # healthcheck goes healthy, app runs as node
 ```
+
+`test/unit/staff.test.js` must cover: last-admin deactivation → 400; self
+deactivation → 400; inactive user login → 401; a live session dying the moment its
+user is deactivated; own PIN change with a wrong current PIN → 401; policy
+rejecting `1234`/`0000`/`4321` and accepting `7392`; reset-pin clearing that user's
+sessions and setting `must_change_pin`; `must_change_pin` returning 403 everywhere
+until changed; and deactivating "Ali" then successfully creating a new "Ali".
 
 Confirm: login sets an httpOnly cookie and `localStorage` holds no token; a POST
 without the CSRF header is rejected; a restored backup matches the source row

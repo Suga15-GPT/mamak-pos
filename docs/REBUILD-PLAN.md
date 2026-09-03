@@ -133,7 +133,7 @@ leaves the app working. **Run them in order** — later phases assume earlier sc
 | 08 | Printing — kitchen chit + receipt over ESC/POS | Audit #17 | Sonnet 5, medium |
 | 09 | Shifts & reports — open/close, float, drawer count, X/Z, CSV export | Audit #18 | Sonnet 5, medium |
 | 10 | UX pass — POS ergonomics, kitchen display, customer QR, BM/EN | Layout & function polish | Sonnet 5, medium |
-| 11 | Hardening — cookies+CSRF, helmet/CSP, trust proxy, non-root Docker, backups | Audit #26–27, #31 | Sonnet 5, medium |
+| 11 | Hardening — cookies+CSRF, helmet/CSP, trust proxy, non-root Docker, backups, **Staff & PINs screen** | Audit #26–27, #31, #36 | Sonnet 5, medium |
 
 **Where to spend a bigger model.** If there is budget for Opus on only three phases,
 spend it on **02 (money), 03 (order integrity), and 07 (offline sync)** — the three
