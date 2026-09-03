@@ -2,6 +2,12 @@ const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
 
+// "Orderable" = available and not sold out today (sold_out_until resets itself
+// at KL midnight rather than requiring an admin to remember to flip it back).
+// A bare boolean expression — callers alias it in a SELECT list or use it
+// directly in a WHERE clause.
+const ORDERABLE_SQL = `(available AND (sold_out_until IS NULL OR sold_out_until < (now() AT TIME ZONE 'Asia/Kuala_Lumpur')::date))`;
+
 async function buildOrderItems(client, rawItems) {
   if (!Array.isArray(rawItems) || rawItems.length === 0 || rawItems.length > 60)
     throw AppError('invalid items', 400);
@@ -10,22 +16,53 @@ async function buildOrderItems(client, rawItems) {
   const optIds = [...new Set(rawItems.flatMap(i => (i.modifier_option_ids || []).map(Number)))].filter(id => id > 0);
 
   const im = new Map(itemIds.length
-    ? (await client.query('SELECT * FROM items WHERE id = ANY($1::int[])', [itemIds])).rows.map(x => [x.id, x])
+    ? (await client.query(`SELECT *, ${ORDERABLE_SQL} AS orderable FROM items WHERE id = ANY($1::int[])`, [itemIds])).rows.map(x => [x.id, x])
     : []);
 
   const om = new Map(optIds.length
     ? (await client.query('SELECT * FROM modifier_options WHERE id = ANY($1::int[])', [optIds])).rows.map(x => [x.id, x])
     : []);
 
+  // Groups actually attached to each referenced item, with their min/max rules —
+  // the server, not the client, decides which options an item may offer.
+  const igRows = itemIds.length
+    ? (await client.query(
+        `SELECT img.item_id, mg.id AS group_id, mg.name, mg.min_select, mg.max_select
+         FROM item_modifier_groups img JOIN modifier_groups mg ON mg.id = img.group_id
+         WHERE img.item_id = ANY($1::int[])`, [itemIds])).rows
+    : [];
+  const groupsByItem = new Map();
+  igRows.forEach(r => {
+    if (!groupsByItem.has(r.item_id)) groupsByItem.set(r.item_id, []);
+    groupsByItem.get(r.item_id).push(r);
+  });
+
   return rawItems.map(li => {
     const it = im.get(Number(li.item_id));
-    if (!it || !it.available) throw AppError('item unavailable', 400);
+    if (!it || !it.orderable) throw AppError('item unavailable', 400);
     const qty = Math.min(20, Math.max(1, parseInt(li.qty) || 1));
+
     const mods = (li.modifier_option_ids || []).slice(0, 12).map(id => {
       const o = om.get(Number(id));
       if (!o || !o.available) throw AppError('modifier unavailable', 400);
       return o;
     });
+
+    const attachedGroups = groupsByItem.get(it.id) || [];
+    const attachedGroupIds = new Set(attachedGroups.map(g => g.group_id));
+    for (const o of mods) {
+      if (!attachedGroupIds.has(o.group_id)) throw AppError(`${o.name} is not offered on ${it.name}`, 400);
+    }
+    for (const g of attachedGroups) {
+      const count = mods.filter(o => o.group_id === g.group_id).length;
+      if (count < g.min_select || count > g.max_select) {
+        const msg = g.min_select === g.max_select ? `${g.name}: choose exactly ${g.min_select}`
+          : count < g.min_select ? `${g.name}: choose at least ${g.min_select}`
+          : `${g.name}: choose at most ${g.max_select}`;
+        throw AppError(msg, 400);
+      }
+    }
+
     return { item: it, qty, mods, note: String(li.note || '').slice(0, 200) };
   });
 }
@@ -98,4 +135,4 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
   }));
 }
 
-module.exports = { buildOrderItems, insertOrder, ordersWithItems, writeAudit };
+module.exports = { buildOrderItems, insertOrder, ordersWithItems, writeAudit, ORDERABLE_SQL };

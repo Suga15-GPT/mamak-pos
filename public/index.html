@@ -123,8 +123,31 @@
     <section id="tab-admin" class="tab">
       <h2 style="margin-bottom:16px">Admin Panel</h2>
       <div class="card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">Menu Availability</h3>
+        <h3 style="margin-bottom:12px">Categories</h3>
+        <div id="admin-categories"></div>
+      </div>
+      <div class="card" style="margin-bottom:20px">
+        <h3 style="margin-bottom:12px">Menu Items</h3>
+        <p style="color:var(--warm-gray);font-size:13px;margin-bottom:14px">Chips select which modifier groups a customer is prompted with for that item.</p>
         <div id="admin-menu"></div>
+      </div>
+      <div class="card" style="margin-bottom:20px">
+        <h3 style="margin-bottom:12px">Modifier Groups</h3>
+        <div id="admin-groups"></div>
+        <div style="display:flex;gap:8px;align-items:flex-end;margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
+          <div style="flex:1">
+            <label for="new-group-name" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">New group name</label>
+            <input type="text" id="new-group-name" style="color:var(--charcoal);width:100%" placeholder="e.g. Sauce">
+          </div>
+          <div>
+            <label for="new-group-mode" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Mode</label>
+            <select id="new-group-mode" style="color:var(--charcoal)">
+              <option value="radio">radio (pick one)</option>
+              <option value="checkbox">checkbox (pick several)</option>
+            </select>
+          </div>
+          <button class="btn small" data-action="create-group">Add group</button>
+        </div>
       </div>
       <div class="card" style="margin-bottom:20px">
         <h3 style="margin-bottom:12px">Modifier Options (Extra Lauk, etc.)</h3>
@@ -157,7 +180,7 @@
   </main>
 </div>
 
-<!-- KANDAR MODAL -->
+<!-- MODIFIER-GROUP MODAL: rendered entirely from the item's attached groups -->
 <div id="modal-bg" class="modal-bg">
   <div class="modal">
     <h3 id="mod-title"></h3>
@@ -168,8 +191,8 @@
       <div class="remark-presets" id="mod-presets"></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:16px">
-      <button class="btn small" style="background:#6b7280" data-action="close-kandar-modal">Cancel</button>
-      <button class="btn small" data-action="confirm-kandar">Add to Order</button>
+      <button class="btn small" style="background:#6b7280" data-action="close-mod-modal">Cancel</button>
+      <button class="btn small" id="mod-confirm-btn" data-action="confirm-mods">Add to Order</button>
     </div>
   </div>
 </div>

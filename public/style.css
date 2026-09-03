@@ -66,6 +66,8 @@ input,select,textarea { font-family:inherit; outline:none; }
 .btn:hover { transform:translateY(-2px); box-shadow:var(--shadow-md); background:var(--terra-deep); }
 .btn:hover::after { opacity:1; }
 .btn:active { transform:translateY(0) scale(.97); }
+.btn:disabled { background:var(--light-gray); color:var(--warm-gray); box-shadow:none; cursor:not-allowed; transform:none; }
+.btn:disabled:hover { background:var(--light-gray); transform:none; box-shadow:none; }
 .btn.small { padding:10px 18px; font-size:13px; border-radius:10px; }
 .btn.outline { background:transparent; color:var(--terra); border:2px solid var(--terra); box-shadow:none; }
 .btn.outline:hover { background:var(--terra-pale); transform:translateY(-2px); }

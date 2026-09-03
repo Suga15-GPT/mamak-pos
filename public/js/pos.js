@@ -88,7 +88,7 @@ function renderMenu() {
 function addItem(id) {
   const it = state.menu.items.find(i => i.id === id);
   if (!it) return;
-  if (it.kandar) { openKandarModal(it); return; }
+  if ((it.modifier_group_ids || []).length) { openModifierModal(it); return; }
 
   // Determine preset remarks based on category
   const cat = state.menu.categories.find(c => c.id === it.category_id);
@@ -177,47 +177,62 @@ async function voidLine(idx) {
   } catch (e) { toast('Void failed: ' + e.message); }
 }
 
-/* ===== KANDAR MODAL ===== */
-function openKandarModal(it) {
-  state.kandarItem = it;
+/* ===== MODIFIER-GROUP MODAL =====
+   Driven entirely by the item's attached groups (menu.modifier_group_ids) and
+   each group's mode/min_select/max_select — nothing here is kandar-specific;
+   `kandar` is display-only from phase 04 on. */
+function modifierGroupsFor(it) {
+  return (it.modifier_group_ids || [])
+    .map(gid => state.menu.modifier_groups.find(g => g.id === gid))
+    .filter(Boolean);
+}
+
+function openModifierModal(it) {
+  state.modItem = it;
   $('mod-title').textContent = it.name + ' — ' + fmt(it.price);
-  const kuahG = state.menu.modifier_groups.find(g => g.mode === 'radio');
-  const extraG = state.menu.modifier_groups.find(g => g.mode === 'checkbox');
-  const kuahOpts = state.menu.modifier_options.filter(o => o.group_id === kuahG?.id);
-  const extraOpts = state.menu.modifier_options.filter(o => o.group_id === extraG?.id);
   let html = '';
-  if (kuahOpts.length) {
-    html += `<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:8px">Kuah</div>`;
-    html += kuahOpts.map((o, i) => `<div class="mod-opt"><input type="radio" name="kuah" value="${o.id}" ${i === 0 ? 'checked' : ''}><span>${esc(o.name)}</span></div>`).join('');
-  }
-  if (extraOpts.length) {
-    html += `<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin:14px 0 8px">Extra Lauk</div>`;
-    html += extraOpts.map(o => `<div class="mod-opt"><input type="checkbox" name="extra" value="${o.id}" data-price="${o.price}"><span style="flex:1">${esc(o.name)}</span><span style="color:var(--terra);font-weight:700">+${fmt(o.price)}</span></div>`).join('');
-  }
+  modifierGroupsFor(it).forEach(g => {
+    const opts = state.menu.modifier_options.filter(o => o.group_id === g.id);
+    const inputType = g.mode === 'radio' ? 'radio' : 'checkbox';
+    const label = g.min_select > 0 ? `${esc(g.name)} (choose ${g.min_select === g.max_select ? g.min_select : `${g.min_select}-${g.max_select}`})` : esc(g.name);
+    html += `<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin:14px 0 8px">${label}</div>`;
+    html += opts.map(o => `<div class="mod-opt"><input type="${inputType}" name="grp-${g.id}" data-group="${g.id}" value="${o.id}"><span style="flex:1">${esc(o.name)}</span>${o.price ? `<span style="color:var(--terra);font-weight:700">+${fmt(o.price)}</span>` : ''}</div>`).join('');
+  });
   $('mod-body').innerHTML = html;
   $('mod-remark').value = '';
 
-  // Food presets for kandar
   const presets = ['Kurang pedas', 'No onion', 'Extra spicy', 'Kurang minyak', 'Banjir sikit'];
   $('mod-presets').innerHTML = presets.map(p =>
     `<button class="btn small outline" data-action="set-mod-remark" data-value="${esc(p)}">${esc(p)}</button>`
   ).join('');
 
+  updateModifierValidity();
   $('modal-bg').classList.add('show');
 }
 
-function closeModal() { $('modal-bg').classList.remove('show'); state.kandarItem = null; }
+function updateModifierValidity() {
+  const btn = $('mod-confirm-btn');
+  if (!state.modItem || !btn) return;
+  const ok = modifierGroupsFor(state.modItem).every(g => {
+    const count = document.querySelectorAll(`input[data-group="${g.id}"]:checked`).length;
+    return count >= g.min_select && count <= g.max_select;
+  });
+  btn.disabled = !ok;
+}
 
-function confirmKandar() {
-  if (!state.kandarItem) return;
-  const kuahId = document.querySelector('input[name="kuah"]:checked')?.value;
+function closeModal() { $('modal-bg').classList.remove('show'); state.modItem = null; }
+
+function confirmModifiers() {
+  if (!state.modItem) return;
   const mods = [];
-  if (kuahId) { const o = state.menu.modifier_options.find(x => x.id == kuahId); if (o) mods.push({ name: o.name, price: o.price }); }
-  document.querySelectorAll('input[name="extra"]:checked').forEach(c => {
-    const o = state.menu.modifier_options.find(x => x.id == c.value); if (o) mods.push({ name: o.name, price: o.price });
+  modifierGroupsFor(state.modItem).forEach(g => {
+    document.querySelectorAll(`input[data-group="${g.id}"]:checked`).forEach(inp => {
+      const o = state.menu.modifier_options.find(x => x.id == inp.value);
+      if (o) mods.push({ name: o.name, price: o.price });
+    });
   });
   const note = $('mod-remark').value.trim();
-  state.cart.push({ item_id: state.kandarItem.id, name: state.kandarItem.name, price: state.kandarItem.price, qty: 1, mods, note });
+  state.cart.push({ item_id: state.modItem.id, name: state.modItem.name, price: state.modItem.price, qty: 1, mods, note });
   closeModal(); renderCart();
 }
 
@@ -374,11 +389,15 @@ $('modal-bg').addEventListener('click', e => {
   if (el) {
     const action = el.dataset.action;
     if (action === 'set-mod-remark') $('mod-remark').value = el.dataset.value;
-    else if (action === 'close-kandar-modal') closeModal();
-    else if (action === 'confirm-kandar') confirmKandar();
+    else if (action === 'close-mod-modal') closeModal();
+    else if (action === 'confirm-mods') confirmModifiers();
     return;
   }
   if (e.target === $('modal-bg')) closeModal();
+});
+
+$('modal-bg').addEventListener('change', e => {
+  if (e.target.matches('input[data-group]')) updateModifierValidity();
 });
 
 $('pay-modal').addEventListener('click', e => {

@@ -5,7 +5,7 @@ export const state = {
   cart: [],
   selTable: null,
   activeCat: null,
-  kandarItem: null,
+  modItem: null,
   pollTimer: null,
   pendingRemarkItem: null,
 };

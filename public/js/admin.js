@@ -1,18 +1,61 @@
 import { $, fmt, esc, toast } from './state.js';
 
+let lastMenu = null;
+
 /* ===== ADMIN ===== */
 export async function refreshAdmin() {
   try {
     const [allMenu, settings, qrTables, audit] = await Promise.all([
       API.get('/api/admin/menu'), API.get('/api/settings'), API.get('/api/admin/tables'), API.get('/api/admin/audit?limit=100')
     ]);
+    lastMenu = allMenu;
     $('tax-rate-input').value = (settings.tax_rate_bp / 100).toFixed(2);
     $('svc-rate-input').value = (settings.svc_rate_bp / 100).toFixed(2);
 
-    $('admin-menu').innerHTML = allMenu.items.map(it => `
+    $('admin-categories').innerHTML = allMenu.categories.map((c, i) => `
       <div class="admin-row">
-        <div><b>${esc(it.name)}</b><div class="meta">${fmt(it.price_cents / 100)} · ${it.kandar ? 'Nasi Kandar' : 'Standard'}</div></div>
-        <label class="switch"><input type="checkbox" ${it.available ? 'checked' : ''} data-action="toggle-avail" data-id="${it.id}"><span class="slider"></span></label>
+        <div><b>${esc(c.name)}</b></div>
+        <div style="display:flex;gap:4px">
+          <button class="btn small outline" data-action="cat-move" data-id="${c.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button class="btn small outline" data-action="cat-move" data-id="${c.id}" data-dir="1" ${i === allMenu.categories.length - 1 ? 'disabled' : ''}>↓</button>
+        </div>
+      </div>`).join('');
+
+    const groupsByItem = {};
+    allMenu.item_modifier_groups.forEach(ig => { (groupsByItem[ig.item_id] ||= new Set()).add(ig.group_id); });
+
+    $('admin-menu').innerHTML = allMenu.items.map((it, i) => {
+      const attached = groupsByItem[it.id] || new Set();
+      const chips = allMenu.modifier_groups.map(g => `
+        <button class="btn small ${attached.has(g.id) ? '' : 'outline'}" data-action="toggle-item-group" data-item="${it.id}" data-group="${g.id}" data-attached="${attached.has(g.id)}">${esc(g.name)}</button>
+      `).join('');
+      return `
+      <div class="admin-row">
+        <div style="flex:1">
+          <b>${esc(it.name)}</b>
+          <div class="meta">${fmt(it.price_cents / 100)} · ${it.kandar ? 'Nasi Kandar' : 'Standard'}${it.sold_out_until ? ' · Sold out today' : ''}</div>
+          <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px">${chips || '<span class="meta">No modifier groups attached</span>'}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
+          <div style="display:flex;gap:4px">
+            <button class="btn small outline" data-action="item-move" data-id="${it.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>↑</button>
+            <button class="btn small outline" data-action="item-move" data-id="${it.id}" data-dir="1" ${i === allMenu.items.length - 1 ? 'disabled' : ''}>↓</button>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--warm-gray)">
+            <input type="checkbox" ${it.sold_out_until ? 'checked' : ''} data-action="toggle-sold-out-today" data-id="${it.id}"> Sold out today
+          </label>
+          <label class="switch" title="Sold out indefinitely"><input type="checkbox" ${it.available ? 'checked' : ''} data-action="toggle-avail" data-id="${it.id}"><span class="slider"></span></label>
+        </div>
+      </div>`;
+    }).join('');
+
+    $('admin-groups').innerHTML = allMenu.modifier_groups.map(g => `
+      <div class="admin-row">
+        <div style="flex:1"><b>${esc(g.name)}</b><div class="meta">${esc(g.mode)}</div></div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <label style="font-size:12px;color:var(--warm-gray)">Min <input type="number" min="0" style="width:56px;color:var(--charcoal)" value="${g.min_select}" data-action="group-min" data-id="${g.id}"></label>
+          <label style="font-size:12px;color:var(--warm-gray)">Max <input type="number" min="0" style="width:56px;color:var(--charcoal)" value="${g.max_select}" data-action="group-max" data-id="${g.id}"></label>
+        </div>
       </div>`).join('');
 
     $('admin-modifiers').innerHTML = allMenu.modifier_options.map(o => `
@@ -44,11 +87,63 @@ export async function refreshAdmin() {
 }
 
 async function toggleAvail(id, avail) {
-  try { await API.patch('/api/admin/items/' + id, { available: avail }); toast(avail ? 'Item available' : 'Item sold out'); } catch (e) { toast(e.message); }
+  try { await API.patch('/api/admin/items/' + id, { available: avail }); toast(avail ? 'Item available' : 'Item sold out indefinitely'); } catch (e) { toast(e.message); }
 }
 
 async function toggleModAvail(id, avail) {
   try { await API.patch('/api/admin/modifier_options/' + id, { available: avail }); toast(avail ? 'Option available' : 'Option sold out'); } catch (e) { toast(e.message); }
+}
+
+async function toggleSoldOutToday(id, on) {
+  try { await API.patch('/api/admin/items/' + id, { sold_out_today: on }); toast(on ? 'Sold out for today' : 'Back on the menu'); refreshAdmin(); }
+  catch (e) { toast(e.message); }
+}
+
+async function toggleItemGroup(itemId, groupId, attached) {
+  try {
+    if (attached) await API.del(`/api/admin/item_modifier_groups/${itemId}/${groupId}`);
+    else await API.post('/api/admin/item_modifier_groups', { item_id: itemId, group_id: groupId });
+    refreshAdmin();
+  } catch (e) { toast(e.message); }
+}
+
+async function moveItem(id, dir) {
+  if (!lastMenu) return;
+  const items = [...lastMenu.items];
+  const idx = items.findIndex(i => i.id === id);
+  const swapIdx = idx + dir;
+  if (idx < 0 || swapIdx < 0 || swapIdx >= items.length) return;
+  [items[idx], items[swapIdx]] = [items[swapIdx], items[idx]];
+  try {
+    await Promise.all(items.map((it, i) => API.patch('/api/admin/items/' + it.id, { sort: i })));
+    refreshAdmin();
+  } catch (e) { toast(e.message); }
+}
+
+async function moveCategory(id, dir) {
+  if (!lastMenu) return;
+  const cats = [...lastMenu.categories];
+  const idx = cats.findIndex(c => c.id === id);
+  const swapIdx = idx + dir;
+  if (idx < 0 || swapIdx < 0 || swapIdx >= cats.length) return;
+  [cats[idx], cats[swapIdx]] = [cats[swapIdx], cats[idx]];
+  try {
+    await Promise.all(cats.map((c, i) => API.patch('/api/admin/categories/' + c.id, { sort: i })));
+    refreshAdmin();
+  } catch (e) { toast(e.message); }
+}
+
+async function updateGroupSelect(id, field, value) {
+  const n = Math.max(0, parseInt(value) || 0);
+  try { await API.patch('/api/admin/modifier_groups/' + id, { [field]: n }); toast('Saved'); } catch (e) { toast(e.message); }
+}
+
+async function createGroup() {
+  const name = $('new-group-name').value.trim();
+  const mode = $('new-group-mode').value;
+  if (!name) return toast('Enter a group name');
+  try { await API.post('/api/admin/modifier_groups', { name, mode }); $('new-group-name').value = ''; toast('Group created'); refreshAdmin(); }
+  catch (e) { toast(e.message); }
 }
 
 async function saveRates() {
@@ -65,9 +160,18 @@ $('tab-admin').addEventListener('change', e => {
   const action = el.dataset.action;
   if (action === 'toggle-avail') toggleAvail(Number(el.dataset.id), el.checked);
   else if (action === 'toggle-mod-avail') toggleModAvail(Number(el.dataset.id), el.checked);
+  else if (action === 'toggle-sold-out-today') toggleSoldOutToday(Number(el.dataset.id), el.checked);
+  else if (action === 'group-min') updateGroupSelect(Number(el.dataset.id), 'min_select', el.value);
+  else if (action === 'group-max') updateGroupSelect(Number(el.dataset.id), 'max_select', el.value);
 });
 
 $('tab-admin').addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
-  if (el && el.dataset.action === 'save-rates') saveRates();
+  if (!el) return;
+  const action = el.dataset.action;
+  if (action === 'save-rates') saveRates();
+  else if (action === 'item-move') moveItem(Number(el.dataset.id), Number(el.dataset.dir));
+  else if (action === 'cat-move') moveCategory(Number(el.dataset.id), Number(el.dataset.dir));
+  else if (action === 'toggle-item-group') toggleItemGroup(Number(el.dataset.item), Number(el.dataset.group), el.dataset.attached === 'true');
+  else if (action === 'create-group') createGroup();
 });
