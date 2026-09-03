@@ -6,7 +6,8 @@ const { awaitH } = require('../lib/errors');
 const { cents2rm, rm2cents } = require('../lib/money');
 const { buildOrderItems, insertOrder, ordersWithItems, writeAudit } = require('../services/orders');
 const {
-  recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, splitEvenly, splitBySeat,
+  recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
+  splitEvenly, splitBySeat, paidCentsFor, guardAgainstShortfall, settleIfMatchesPaid, previewBillExcludingLine,
 } = require('../services/billing');
 
 const router = express.Router();
@@ -23,14 +24,18 @@ router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async
     : await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled')", []);
 
   // Live payments-so-far + remaining balance, for the "RM X.XX remaining" display
-  // and the payment modal's split/partial flows.
+  // and the payment modal's split/partial flows; discounts-so-far, so the payment
+  // modal can show each applied discount with its reason and let an admin remove one.
   for (const o of orders) {
-    const [payments, dueCents] = await Promise.all([listPayments(o.id), amountDue(o.id)]);
+    const [payments, dueCents, discounts] = await Promise.all([listPayments(o.id), amountDue(o.id), listDiscounts(o.id)]);
     o.payments = payments.map(p => ({
       method: p.method, amount: cents2rm(p.amount_cents),
       tendered: p.tendered_cents == null ? null : cents2rm(p.tendered_cents), at: p.at,
     }));
     o.amount_due = cents2rm(Math.max(0, dueCents));
+    o.discounts = discounts.map(d => ({
+      id: d.id, kind: d.kind, amount: cents2rm(d.amount_cents), reason: d.reason, at: d.at,
+    }));
   }
   res.json(orders);
 }));
@@ -114,6 +119,13 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
   if (!li.rows[0]) return res.status(404).json({ error: 'line not found' });
   if (li.rows[0].voided_at) return res.status(400).json({ error: 'already voided' });
 
+  // A partially-paid order's status stays 'sent' — voiding a line can drop the
+  // total below what's already been paid, which the status check alone (paid
+  // orders only) never catches. Guard before committing anything.
+  const paidCents = await paidCentsFor(o.rows[0].id);
+  const preview = await previewBillExcludingLine(o.rows[0].id, li.rows[0].id);
+  guardAgainstShortfall('voiding this line', preview.total_cents, paidCents);
+
   await pool.query(
     'UPDATE order_items SET voided_at = now(), voided_by = $1, void_reason = $2 WHERE id = $3',
     [req.user.id, reason, li.rows[0].id]);
@@ -122,7 +134,8 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
     userId: req.user.id, action: 'order.void_line', entityType: 'order_item', entityId: li.rows[0].id,
     detail: { order_id: o.rows[0].id, name: li.rows[0].name, qty: li.rows[0].qty, price_cents: li.rows[0].price_cents, reason },
   });
-  await recomputeOrderBill(o.rows[0].id);
+  const bill = await recomputeOrderBill(o.rows[0].id);
+  await settleIfMatchesPaid(o.rows[0].id, bill.total_cents, paidCents, req.user.id, 'void');
   res.json({ ok: true });
 }));
 
@@ -236,6 +249,15 @@ router.post('/api/orders/:id/discounts', requireRole('admin', 'staff'), awaitH(a
     : 0;
   const result = await addDiscount(req.params.id, { kind, value: valueForBilling, reason, userId: approverId });
   res.json({ ok: true, id: result.id, amount: cents2rm(result.amount_cents) });
+}));
+
+/* Undo a discount applied by mistake — admin only, and only before any payment is
+   recorded against the order (removing a discount only ever raises the total, so
+   there's no shortfall to guard against; the restriction is about not undoing
+   something the customer was already charged against). */
+router.delete('/api/orders/:id/discounts/:discountId', requireRole('admin'), awaitH(async (req, res) => {
+  await removeDiscount(req.params.id, req.params.discountId, { userId: req.user.id });
+  res.json({ ok: true });
 }));
 
 module.exports = router;
