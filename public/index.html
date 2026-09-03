@@ -225,7 +225,7 @@ async function doLogin(){
     showApp();
   }catch(e){ $('lerr').textContent=e.message; }
 }
-function doLogout(){ API.logout(); showLogin(); }
+async function doLogout(){ await API.logout(); showLogin(); }
 function showLogin(){ $('login-view').style.display=''; $('app-view').style.display='none'; if(pollTimer)clearInterval(pollTimer); }
 function showApp(){
   $('login-view').style.display='none';
@@ -603,10 +603,15 @@ async function refreshAdmin(){
     
     $('qr-grid').innerHTML=qrTables.map(t=>`
       <div class="qr-card">
-        <img src="/api/admin/tables/${t.id}/qr.png" alt="${esc(t.name)}">
+        <img id="qr-img-${t.id}" alt="${esc(t.name)}">
         <div style="font-weight:700;margin-top:8px">${esc(t.name)}</div>
         <a href="${t.url}" target="_blank">Open link</a>
       </div>`).join('');
+    qrTables.forEach(t=>{
+      API.getBlobUrl(`/api/admin/tables/${t.id}/qr.png`)
+        .then(url=>{ const img=$('qr-img-'+t.id); if(img) img.src=url; })
+        .catch(()=>{});
+    });
   }catch(e){ toast('Admin load error: '+e.message); console.error(e); }
 }
 

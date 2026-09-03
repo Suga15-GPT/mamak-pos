@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS modifier_options (
   group_id INT NOT NULL REFERENCES modifier_groups(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   price_cents INT NOT NULL DEFAULT 0,
+  available BOOLEAN NOT NULL DEFAULT true,
   sort INT NOT NULL DEFAULT 0
 );
 

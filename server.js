@@ -12,6 +12,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const KL = 'Asia/Kuala_Lumpur';
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const SESSION_TTL = '12 hours';
 
 /* ---------- helpers ---------- */
 const cents2rm = c => Math.round(c) / 100;
@@ -31,15 +32,23 @@ function verifyPin(pin, stored) {
   } catch { return false; }
 }
 const awaitH = fn => (req, res) => fn(req, res).catch(e => { console.error(e); res.status(500).json({ error: e.message || 'server error' }); });
+/* like awaitH, but never leaks internal error details to unauthenticated callers */
+const publicH = fn => (req, res) => fn(req, res).catch(e => {
+  if (e.status) return res.status(e.status).json({ error: e.message });
+  console.error(e);
+  res.status(500).json({ error: 'server error' });
+});
 
 async function requireAuth(...roles) {
   return async (req, res, next) => {
     const token = (req.headers.authorization || '').replace(/^Bearer /, '');
     if (!token) return res.status(401).json({ error: 'login required' });
     const r = await pool.query(
-      'SELECT u.id, u.name, u.role FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = $1', [token]);
+      `SELECT u.id, u.name, u.role FROM sessions s JOIN users u ON u.id = s.user_id
+       WHERE s.token = $1 AND s.created_at > now() - interval '${SESSION_TTL}'`, [token]);
     if (!r.rows[0]) return res.status(401).json({ error: 'invalid session' });
     req.user = r.rows[0];
+    req.token = token;
     if (roles.length && !roles.includes(req.user.role)) return res.status(403).json({ error: 'forbidden' });
     next();
   };
@@ -55,6 +64,8 @@ function rateLimit(key, max, windowMs) {
 
 /* ---------- auth ---------- */
 app.post('/api/login', awaitH(async (req, res) => {
+  if (!rateLimit('login:' + req.ip, 10, 10 * 60 * 1000))
+    return res.status(429).json({ error: 'too many login attempts, try again later' });
   const { name, pin } = req.body || {};
   if (!name || !pin) return res.status(400).json({ error: 'name and pin required' });
   const r = await pool.query('SELECT * FROM users WHERE lower(name) = lower($1)', [name.trim()]);
@@ -65,8 +76,14 @@ app.post('/api/login', awaitH(async (req, res) => {
   res.json({ token, name: u.name, role: u.role });
 }));
 
+app.post('/api/logout', awaitH(async (req, res) => {
+  const token = (req.headers.authorization || '').replace(/^Bearer /, '');
+  if (token) await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
+  res.json({ ok: true });
+}));
+
 /* ---------- public: menu + customer table + QR ordering ---------- */
-app.get('/api/menu', awaitH(async (req, res) => {
+app.get('/api/menu', publicH(async (req, res) => {
   const cats = await pool.query('SELECT id, name FROM categories ORDER BY sort, id');
   const items = await pool.query(
     'SELECT id, category_id, name, price_cents, kandar FROM items WHERE available ORDER BY sort, id');
@@ -80,7 +97,7 @@ app.get('/api/menu', awaitH(async (req, res) => {
   });
 }));
 
-app.get('/api/t/:token', awaitH(async (req, res) => {
+app.get('/api/t/:token', publicH(async (req, res) => {
   const r = await pool.query('SELECT id, name FROM tables WHERE qr_token = $1', [req.params.token]);
   if (!r.rows[0]) return res.status(404).json({ error: 'unknown table QR' });
   res.json({ table: r.rows[0] });
@@ -138,7 +155,7 @@ async function insertOrder(tableId, parsed, note, source) {
 }
 
 /* customer QR order (public, rate-limited) */
-app.post('/api/public/orders', awaitH(async (req, res) => {
+app.post('/api/public/orders', publicH(async (req, res) => {
   if (!rateLimit(req.ip, 20, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many orders, please ask staff' });
   const { table_token, items, note } = req.body || {};
   const t = await pool.query('SELECT id FROM tables WHERE qr_token = $1', [table_token]);
@@ -390,6 +407,7 @@ app.post('/api/admin/tables', awaitH(async (req, res) => {
 }));
 
 app.get('/api/admin/tables/:id/qr.png', awaitH(async (req, res) => {
+  const auth = await adminOnly(); await auth(req, res, () => {}); if (res.headersSent) return;
   const r = await pool.query('SELECT qr_token FROM tables WHERE id = $1', [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   const buf = await QRCode.toBuffer(`${BASE_URL}/t/${r.rows[0].qr_token}`, { width: 512, margin: 1 });
@@ -492,6 +510,10 @@ async function seed() {
 async function boot(retries = 15) {
   try {
     await seed();
+    setInterval(() => {
+      pool.query(`DELETE FROM sessions WHERE created_at < now() - interval '${SESSION_TTL}'`)
+        .catch(e => console.error('session cleanup failed:', e.message));
+    }, 60 * 60 * 1000);
     const port = process.env.PORT || 3000;
     app.listen(port, () => console.log(`POS API + static on :${port}`));
   } catch (e) {
