@@ -1,4 +1,4 @@
-import { state, $, fmt, esc, toast } from './state.js';
+import { state, $, fmt, esc, toast, onStreamEvent } from './state.js';
 
 /* ===== DATA LOADING ===== */
 export async function loadAll() {
@@ -635,4 +635,12 @@ $('remark-modal').addEventListener('click', e => {
     return;
   }
   if (e.target === $('remark-modal')) closeRemarkModal();
+});
+
+/* Realtime: a change on any table's order should update the table grid live, or —
+   if this device is sitting inside that table's workspace — its cart/pay button. */
+onStreamEvent(() => {
+  if (!document.getElementById('tab-pos')?.classList.contains('active')) return;
+  if (!state.selTable) renderTables();
+  else checkOpenOrder();
 });

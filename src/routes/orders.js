@@ -5,6 +5,7 @@ const { requireRole, verifyPin } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
 const { cents2rm, rm2cents } = require('../lib/money');
 const { buildOrderItems, insertOrder, ordersWithItems, writeAudit } = require('../services/orders');
+const { publish } = require('../lib/events');
 const {
   recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
   splitEvenly, splitBySeat, paidCentsFor, guardAgainstShortfall, settleIfMatchesPaid, previewBillExcludingLine,
@@ -56,6 +57,7 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
       userId: req.user.id, action: 'order.create', entityType: 'order', entityId: id,
       detail: { table_id: Number(table_id), source: 'staff' },
     });
+    publish('order.created', { order_id: id, table_id: Number(table_id) });
     res.status(201).json({ id });
   } catch (e) {
     // one_open_order_per_table: a second tablet raced us to the same table.
@@ -100,6 +102,7 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 
   await recomputeOrderBill(o.rows[0].id);
+  publish('order.updated', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
   res.json({ ok: true });
 }));
 
@@ -136,6 +139,7 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
   });
   const bill = await recomputeOrderBill(o.rows[0].id);
   await settleIfMatchesPaid(o.rows[0].id, bill.total_cents, paidCents, req.user.id, 'void');
+  publish('order.voided', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
   res.json({ ok: true });
 }));
 
@@ -170,6 +174,7 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
       detail: { from: cur, to: status },
     });
   }
+  publish('order.updated', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
   res.json({ ok: true });
 }));
 
@@ -192,6 +197,7 @@ router.post('/api/orders/:id/pay', requireRole('admin', 'staff'), awaitH(async (
   });
 
   const after = (await pool.query('SELECT * FROM orders WHERE id = $1', [o.rows[0].id])).rows[0];
+  publish('order.paid', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
   res.json({
     ok: true,
     paid: cents2rm(result.amount_cents),

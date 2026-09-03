@@ -44,6 +44,12 @@
   /* Cart line already sent to the kitchen (read-only, still billed) */
   .sent-tag { background:var(--sage-deep); color:#fff; padding:2px 8px; border-radius:20px; font-size:10px;
               font-weight:700; text-transform:uppercase; letter-spacing:.05em; vertical-align:middle; }
+
+  /* Realtime connection indicator (phase 06) */
+  .conn-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:10px; background:#9ca3af; transition:background .3s; }
+  .conn-dot.connected { background:#16a34a; }
+  .conn-dot.reconnecting { background:#f59e0b; }
+  .conn-dot.offline { background:#dc2626; }
 </style>
 </head>
 <body>
@@ -67,6 +73,7 @@
   <header>
     <span class="brand">Mamak POS</span>
     <div class="user">
+      <span id="conn-dot" class="conn-dot offline" title="Live connection status"></span>
       <button class="theme-toggle" data-action="toggle-theme" title="Toggle dark mode">🌙</button>
       <span id="uname"></span>
       <button class="logout" data-action="logout">Log Out</button>

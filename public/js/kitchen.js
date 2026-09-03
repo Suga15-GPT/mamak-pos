@@ -1,4 +1,4 @@
-import { $, fmt, esc, toast } from './state.js';
+import { $, fmt, esc, toast, onStreamEvent } from './state.js';
 
 /* ===== KITCHEN ===== */
 export async function refreshKitchen() {
@@ -48,4 +48,10 @@ $('tab-kitchen').addEventListener('click', e => {
   const el = e.target.closest('[data-action="set-status"]');
   if (!el) return;
   setSt(Number(el.dataset.id), el.dataset.status);
+});
+
+/* Realtime: refresh the kitchen ticket the moment an order changes, without
+   waiting for the 3s poll — this is the screen latency is felt on most. */
+onStreamEvent(() => {
+  if (document.getElementById('tab-kitchen')?.classList.contains('active')) refreshKitchen();
 });
