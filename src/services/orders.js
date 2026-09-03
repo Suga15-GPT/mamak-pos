@@ -2,6 +2,12 @@ const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
 
+// "Orderable" = available and not sold out today (sold_out_until resets itself
+// at KL midnight rather than requiring an admin to remember to flip it back).
+// A bare boolean expression — callers alias it in a SELECT list or use it
+// directly in a WHERE clause.
+const ORDERABLE_SQL = `(available AND (sold_out_until IS NULL OR sold_out_until < (now() AT TIME ZONE 'Asia/Kuala_Lumpur')::date))`;
+
 async function buildOrderItems(client, rawItems) {
   if (!Array.isArray(rawItems) || rawItems.length === 0 || rawItems.length > 60)
     throw AppError('invalid items', 400);
@@ -10,38 +16,70 @@ async function buildOrderItems(client, rawItems) {
   const optIds = [...new Set(rawItems.flatMap(i => (i.modifier_option_ids || []).map(Number)))].filter(id => id > 0);
 
   const im = new Map(itemIds.length
-    ? (await client.query('SELECT * FROM items WHERE id = ANY($1::int[])', [itemIds])).rows.map(x => [x.id, x])
+    ? (await client.query(`SELECT *, ${ORDERABLE_SQL} AS orderable FROM items WHERE id = ANY($1::int[])`, [itemIds])).rows.map(x => [x.id, x])
     : []);
 
   const om = new Map(optIds.length
     ? (await client.query('SELECT * FROM modifier_options WHERE id = ANY($1::int[])', [optIds])).rows.map(x => [x.id, x])
     : []);
 
+  // Groups actually attached to each referenced item, with their min/max rules —
+  // the server, not the client, decides which options an item may offer.
+  const igRows = itemIds.length
+    ? (await client.query(
+        `SELECT img.item_id, mg.id AS group_id, mg.name, mg.min_select, mg.max_select
+         FROM item_modifier_groups img JOIN modifier_groups mg ON mg.id = img.group_id
+         WHERE img.item_id = ANY($1::int[])`, [itemIds])).rows
+    : [];
+  const groupsByItem = new Map();
+  igRows.forEach(r => {
+    if (!groupsByItem.has(r.item_id)) groupsByItem.set(r.item_id, []);
+    groupsByItem.get(r.item_id).push(r);
+  });
+
   return rawItems.map(li => {
     const it = im.get(Number(li.item_id));
-    if (!it || !it.available) throw AppError('item unavailable', 400);
+    if (!it || !it.orderable) throw AppError('item unavailable', 400);
     const qty = Math.min(20, Math.max(1, parseInt(li.qty) || 1));
+
     const mods = (li.modifier_option_ids || []).slice(0, 12).map(id => {
       const o = om.get(Number(id));
       if (!o || !o.available) throw AppError('modifier unavailable', 400);
       return o;
     });
-    return { item: it, qty, mods, note: String(li.note || '').slice(0, 200) };
+
+    const attachedGroups = groupsByItem.get(it.id) || [];
+    const attachedGroupIds = new Set(attachedGroups.map(g => g.group_id));
+    for (const o of mods) {
+      if (!attachedGroupIds.has(o.group_id)) throw AppError(`${o.name} is not offered on ${it.name}`, 400);
+    }
+    for (const g of attachedGroups) {
+      const count = mods.filter(o => o.group_id === g.group_id).length;
+      if (count < g.min_select || count > g.max_select) {
+        const msg = g.min_select === g.max_select ? `${g.name}: choose exactly ${g.min_select}`
+          : count < g.min_select ? `${g.name}: choose at least ${g.min_select}`
+          : `${g.name}: choose at most ${g.max_select}`;
+        throw AppError(msg, 400);
+      }
+    }
+
+    const seat = li.seat == null || li.seat === '' ? null : Math.max(1, parseInt(li.seat) || 0) || null;
+    return { item: it, qty, mods, note: String(li.note || '').slice(0, 200), seat };
   });
 }
 
-async function insertOrder(tableId, parsed, note, source) {
+async function insertOrder(tableId, parsed, note, source, userId = null) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const o = await client.query(
-      'INSERT INTO orders (table_id, status, source, note) VALUES ($1, $2, $3, $4) RETURNING id',
-      [tableId, 'sent', source, note || null]);
+      'INSERT INTO orders (table_id, status, source, note, opened_by) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [tableId, 'sent', source, note || null, userId]);
     const orderId = o.rows[0].id;
     for (const l of parsed) {
       const oi = await client.query(
-        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
-        [orderId, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null]);
+        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by, seat) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+        [orderId, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, userId, l.seat]);
       for (const m of l.mods) {
         await client.query(
           'INSERT INTO order_item_mods (order_item_id, name, price_cents) VALUES ($1,$2,$3)',
@@ -51,6 +89,13 @@ async function insertOrder(tableId, parsed, note, source) {
     await client.query('COMMIT');
     return orderId;
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}
+
+// Records one row per mutating action; `detail` is a plain object (serialised to jsonb by pg).
+async function writeAudit(client, { userId, action, entityType, entityId, detail = {} }) {
+  await client.query(
+    'INSERT INTO audit_log (user_id, action, entity_type, entity_id, detail) VALUES ($1,$2,$3,$4,$5)',
+    [userId || null, action, entityType, entityId, detail]);
 }
 
 async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at ASC') {
@@ -67,17 +112,28 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
   const byOrder = {}; orders.forEach(o => { o.items = []; byOrder[o.id] = o; });
   const byItem = {}; iq.rows.forEach(i => { i.mods = []; byItem[i.id] = i; byOrder[i.order_id].items.push(i); });
   mq.rows.forEach(m => byItem[m.order_item_id]?.mods.push(m));
-  const totalCents = o => o.items.reduce((s, i) =>
+  // Voided lines never count toward a total — paid or still open.
+  const totalCents = o => o.items.filter(i => !i.voided_at).reduce((s, i) =>
     s + (i.price_cents + i.mods.reduce((a, m) => a + m.price_cents, 0)) * i.qty, 0);
   return orders.map(o => ({
     id: o.id, table: o.table_name, table_id: o.table_id, status: o.status, source: o.source,
     note: o.note, created_at: o.created_at, updated_at: o.updated_at, paid_at: o.paid_at,
     pay_method: o.pay_method, total: cents2rm(totalCents(o)),
+    // Bill breakdown is only meaningful once paid (snapshotted at payment time);
+    // null on open orders rather than a live, still-changeable recomputation.
+    subtotal: o.subtotal_cents == null ? null : cents2rm(o.subtotal_cents),
+    service_charge: o.service_charge_cents == null ? null : cents2rm(o.service_charge_cents),
+    tax: o.tax_cents == null ? null : cents2rm(o.tax_cents),
+    discount: o.discount_cents == null ? null : cents2rm(o.discount_cents),
+    rounding: o.rounding_cents == null ? null : cents2rm(o.rounding_cents),
+    grand_total: o.total_cents == null ? null : cents2rm(o.total_cents),
+    tax_rate_bp: o.tax_rate_bp, svc_rate_bp: o.svc_rate_bp,
     items: o.items.map(i => ({
-      item_id: i.item_id, name: i.name, qty: i.qty, price: cents2rm(i.price_cents), note: i.note,
+      id: i.id, item_id: i.item_id, name: i.name, qty: i.qty, price: cents2rm(i.price_cents), note: i.note, seat: i.seat,
       mods: i.mods.map(m => ({ name: m.name, price: cents2rm(m.price_cents) })),
+      voided: !!i.voided_at, void_reason: i.void_reason || null,
     })),
   }));
 }
 
-module.exports = { buildOrderItems, insertOrder, ordersWithItems };
+module.exports = { buildOrderItems, insertOrder, ordersWithItems, writeAudit, ORDERABLE_SQL };

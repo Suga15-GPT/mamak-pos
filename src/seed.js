@@ -33,12 +33,21 @@ async function seed() {
       for (const [ci, name, cents, kandar] of ITEMS)
         await client.query('INSERT INTO items (category_id, name, price_cents, kandar) VALUES ($1,$2,$3,$4)',
           [catIds[ci], name, cents, kandar]);
-      const g1 = (await client.query("INSERT INTO modifier_groups (name, mode) VALUES ('Kuah','radio') RETURNING id")).rows[0].id;
-      const g2 = (await client.query("INSERT INTO modifier_groups (name, mode) VALUES ('Extra Lauk','checkbox') RETURNING id")).rows[0].id;
+      // min_select/max_select match what migrations/004_menu.sql backfills onto
+      // pre-existing radio/checkbox groups — a fresh seed should behave the same.
+      const g1 = (await client.query(
+        "INSERT INTO modifier_groups (name, mode, min_select, max_select) VALUES ('Kuah','radio',1,1) RETURNING id")).rows[0].id;
+      const g2 = (await client.query(
+        "INSERT INTO modifier_groups (name, mode, min_select, max_select) VALUES ('Extra Lauk','checkbox',0,99) RETURNING id")).rows[0].id;
       for (const n of ['Banjir', 'Asing', 'Lebih Kuah'])
         await client.query('INSERT INTO modifier_options (group_id, name, price_cents, available) VALUES ($1,$2,0,true)', [g1, n]);
       for (const [n, p] of [['Telur', 250], ['Bendi', 200], ['Sambal', 150], ['Lebih Nasi', 200]])
         await client.query('INSERT INTO modifier_options (group_id, name, price_cents, available) VALUES ($1,$2,$3,true)', [g2, n, p]);
+      // Same backfill migrations/004_menu.sql does for existing rows — needed here too
+      // because on a fresh install, seed() creates items *after* migrate() already ran,
+      // so the migration's own backfill (which runs against an empty items table) attaches nothing.
+      await client.query('INSERT INTO item_modifier_groups (item_id, group_id) SELECT id, $1 FROM items WHERE kandar ON CONFLICT DO NOTHING', [g1]);
+      await client.query('INSERT INTO item_modifier_groups (item_id, group_id) SELECT id, $1 FROM items WHERE kandar ON CONFLICT DO NOTHING', [g2]);
       await client.query('COMMIT');
       console.log('Seeded menu + modifiers');
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }

@@ -4,7 +4,7 @@ let menu = { categories: [], items: [], modifier_groups: [], modifier_options: [
 let tableToken = null, tableName = '', tableId = null;
 let cart = [];
 let activeCat = null;
-let kandarItem = null;
+let modItem = null;
 let pendingItem = null;
 
 async function init() {
@@ -40,7 +40,7 @@ function renderItems() {
     `<button class="item-btn" data-action="add-item" data-id="${it.id}">
       <div class="info">
         <div class="nm">${esc(it.name)}</div>
-        ${it.kandar ? '<div class="customisable">Customisable</div>' : ''}
+        ${(it.modifier_group_ids || []).length ? '<div class="customisable">Customisable</div>' : ''}
       </div>
       <div class="pr">${fmt(it.price)}</div>
     </button>`
@@ -50,7 +50,7 @@ function renderItems() {
 function addItem(id) {
   const it = menu.items.find(i => i.id === id);
   if (!it) return;
-  if (it.kandar) { openKandar(it); return; }
+  if ((it.modifier_group_ids || []).length) { openModifiers(it); return; }
 
   const cat = menu.categories.find(c => c.id === it.category_id);
   const catName = cat ? cat.name.toLowerCase() : '';
@@ -93,22 +93,25 @@ function confirmRemark() {
 
 function closeRemarkModal() { $('remark-modal').classList.remove('show'); pendingItem = null; }
 
-function openKandar(it) {
-  kandarItem = it;
+// Rendered entirely from the item's attached groups — nothing here is
+// kandar-specific; `kandar` is display-only from phase 04 on.
+function modifierGroupsFor(it) {
+  return (it.modifier_group_ids || [])
+    .map(gid => menu.modifier_groups.find(g => g.id === gid))
+    .filter(Boolean);
+}
+
+function openModifiers(it) {
+  modItem = it;
   $('km-title').textContent = it.name + ' — ' + fmt(it.price);
-  const kuahG = menu.modifier_groups.find(g => g.mode === 'radio');
-  const extraG = menu.modifier_groups.find(g => g.mode === 'checkbox');
-  const kuahOpts = menu.modifier_options.filter(o => o.group_id === kuahG?.id);
-  const extraOpts = menu.modifier_options.filter(o => o.group_id === extraG?.id);
   let html = '';
-  if (kuahOpts.length) {
-    html += `<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:10px">Kuah</div>`;
-    html += kuahOpts.map((o, i) => `<div class="mod-opt"><input type="radio" name="ckuah" value="${o.id}" ${i === 0 ? 'checked' : ''}><span>${esc(o.name)}</span></div>`).join('');
-  }
-  if (extraOpts.length) {
-    html += `<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin:18px 0 10px">Extra Lauk</div>`;
-    html += extraOpts.map(o => `<div class="mod-opt"><input type="checkbox" name="cextra" value="${o.id}" data-price="${o.price}"><span style="flex:1">${esc(o.name)}</span><span style="color:var(--terra);font-weight:700">+${fmt(o.price)}</span></div>`).join('');
-  }
+  modifierGroupsFor(it).forEach(g => {
+    const opts = menu.modifier_options.filter(o => o.group_id === g.id);
+    const inputType = g.mode === 'radio' ? 'radio' : 'checkbox';
+    const label = g.min_select > 0 ? `${esc(g.name)} (choose ${g.min_select === g.max_select ? g.min_select : `${g.min_select}-${g.max_select}`})` : esc(g.name);
+    html += `<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin:18px 0 10px">${label}</div>`;
+    html += opts.map(o => `<div class="mod-opt"><input type="${inputType}" name="grp-${g.id}" data-group="${g.id}" value="${o.id}"><span style="flex:1">${esc(o.name)}</span>${o.price ? `<span style="color:var(--terra);font-weight:700">+${fmt(o.price)}</span>` : ''}</div>`).join('');
+  });
   $('km-body').innerHTML = html;
   $('km-remark').value = '';
 
@@ -117,21 +120,33 @@ function openKandar(it) {
     `<button class="btn small outline" data-action="set-mod-remark" data-value="${esc(p)}">${esc(p)}</button>`
   ).join('');
 
+  updateModifierValidity();
   $('kandar-modal').classList.add('show');
 }
 
-function closeKandar() { $('kandar-modal').classList.remove('show'); kandarItem = null; }
+function updateModifierValidity() {
+  const btn = $('km-confirm-btn');
+  if (!modItem || !btn) return;
+  const ok = modifierGroupsFor(modItem).every(g => {
+    const count = document.querySelectorAll(`input[data-group="${g.id}"]:checked`).length;
+    return count >= g.min_select && count <= g.max_select;
+  });
+  btn.disabled = !ok;
+}
 
-function confirmKandar() {
-  if (!kandarItem) return;
+function closeKandar() { $('kandar-modal').classList.remove('show'); modItem = null; }
+
+function confirmModifiers() {
+  if (!modItem) return;
   const mods = [];
-  const kId = document.querySelector('input[name="ckuah"]:checked')?.value;
-  if (kId) { const o = menu.modifier_options.find(x => x.id == kId); if (o) mods.push({ name: o.name, price: o.price }); }
-  document.querySelectorAll('input[name="cextra"]:checked').forEach(c => {
-    const o = menu.modifier_options.find(x => x.id == c.value); if (o) mods.push({ name: o.name, price: o.price });
+  modifierGroupsFor(modItem).forEach(g => {
+    document.querySelectorAll(`input[data-group="${g.id}"]:checked`).forEach(inp => {
+      const o = menu.modifier_options.find(x => x.id == inp.value);
+      if (o) mods.push({ name: o.name, price: o.price });
+    });
   });
   const note = $('km-remark').value.trim();
-  cart.push({ item_id: kandarItem.id, name: kandarItem.name, price: kandarItem.price, qty: 1, mods, note });
+  cart.push({ item_id: modItem.id, name: modItem.name, price: modItem.price, qty: 1, mods, note });
   closeKandar(); updateBar();
 }
 
@@ -197,8 +212,8 @@ document.body.addEventListener('click', e => {
   else if (action === 'cart-qty') cq(Number(el.dataset.id), Number(el.dataset.delta));
   else if (action === 'cart-del') cd(Number(el.dataset.id));
   else if (action === 'reload') location.reload();
-  else if (action === 'close-kandar') closeKandar();
-  else if (action === 'confirm-kandar') confirmKandar();
+  else if (action === 'close-mods') closeKandar();
+  else if (action === 'confirm-mods') confirmModifiers();
   else if (action === 'set-mod-remark') $('km-remark').value = el.dataset.value;
   else if (action === 'skip-remark') skipRemark();
   else if (action === 'confirm-remark') confirmRemark();
@@ -207,6 +222,7 @@ document.body.addEventListener('click', e => {
 
 $('cart-modal').addEventListener('click', e => { if (e.target === $('cart-modal')) closeCartModal(); });
 $('kandar-modal').addEventListener('click', e => { if (e.target === $('kandar-modal')) closeKandar(); });
+$('kandar-modal').addEventListener('change', e => { if (e.target.matches('input[data-group]')) updateModifierValidity(); });
 $('remark-modal').addEventListener('click', e => { if (e.target === $('remark-modal')) closeRemarkModal(); });
 
 init();

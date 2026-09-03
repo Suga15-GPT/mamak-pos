@@ -34,7 +34,9 @@ test('staff login → order → kitchen → pay', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Orders', exact: true }).click();
   await page.getByRole('button', { name: 'Mark Paid' }).click();
-  await page.getByRole('button', { name: 'Cash' }).click();
+  // exact: true — phase 05's payment modal added a "pay a specific amount" section
+  // whose per-method buttons also contain the word "Cash" as a substring.
+  await page.getByRole('button', { name: 'Cash', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Mark Paid' })).toBeHidden();
 });
 

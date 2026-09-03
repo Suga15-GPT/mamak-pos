@@ -17,7 +17,7 @@ const API = {
       throw new Error('Session expired. Please log in again.');
     }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Request failed');
+    if (!res.ok) throw Object.assign(new Error(data.error || 'Request failed'), { status: res.status, body: data });
     return data;
   },
 

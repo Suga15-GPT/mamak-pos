@@ -57,7 +57,11 @@ async function checkOpenOrder() {
     const open = orders.find(o => o.table_id === state.selTable.id);
     if (open) {
       /* lines already on the order are marked sent: they must never be re-submitted */
-      state.cart = open.items.map(l => ({ item_id: l.item_id || 0, name: l.name, price: l.price, qty: l.qty, mods: l.mods, note: l.note || '', sent: true }));
+      state.cart = open.items.map(l => ({
+        id: l.id, item_id: l.item_id || 0, name: l.name, price: l.price, qty: l.qty, mods: l.mods,
+        note: l.note || '', seat: l.seat, sent: true, voided: l.voided, void_reason: l.void_reason,
+      }));
+      $('pay-btn').dataset.orderStatus = open.status;
       renderCart();
       $('pay-btn').style.display = '';
       $('pay-btn').dataset.orderId = open.id;
@@ -84,7 +88,7 @@ function renderMenu() {
 function addItem(id) {
   const it = state.menu.items.find(i => i.id === id);
   if (!it) return;
-  if (it.kandar) { openKandarModal(it); return; }
+  if ((it.modifier_group_ids || []).length) { openModifierModal(it); return; }
 
   // Determine preset remarks based on category
   const cat = state.menu.categories.find(c => c.id === it.category_id);
@@ -140,58 +144,105 @@ function renderCart() {
   $('cart-empty').style.display = 'none'; $('cart-totals').style.display = '';
   let total = 0;
   $('cart-lines').innerHTML = state.cart.map((l, i) => {
-    const lt = (l.price + l.mods.reduce((s, m) => s + m.price, 0)) * l.qty; total += lt;
+    const lt = (l.price + l.mods.reduce((s, m) => s + m.price, 0)) * l.qty;
+    if (!l.voided) total += lt;
     const modStr = l.mods.map(m => m.name + (m.price ? ` +${fmt(m.price)}` : '')).join(', ');
-    return `<div class="cart-line">
-      <div><b>${l.qty}×</b> ${esc(l.name)}${l.sent ? ' <small class="sent-tag">sent</small>' : ''}${modStr ? `<br><small style="color:var(--warm-gray)">${esc(modStr)}</small>` : ''}${l.note ? `<br><small style="color:var(--terra)">📝 ${esc(l.note)}</small>` : ''}</div>
-      <div style="display:flex;align-items:center;gap:10px"><span>${fmt(lt)}</span>
-        ${l.sent ? '' : `<div class="qty"><button data-action="cart-qty" data-id="${i}" data-delta="-1">−</button><button data-action="cart-qty" data-id="${i}" data-delta="1">+</button><button data-action="cart-del" data-id="${i}" style="color:var(--red)">✕</button></div>`}
+    const tag = l.voided
+      ? ` <small class="sent-tag" style="color:var(--red)">VOID${l.void_reason ? ': ' + esc(l.void_reason) : ''}</small>`
+      : (l.sent ? ' <small class="sent-tag">sent</small>' : '');
+    const controls = l.voided ? ''
+      : l.sent ? `<button data-action="void-line" data-id="${i}" style="color:var(--red)">Void</button>`
+      : `<div class="qty"><button data-action="cart-qty" data-id="${i}" data-delta="-1">−</button><button data-action="cart-qty" data-id="${i}" data-delta="1">+</button><button data-action="cart-del" data-id="${i}" style="color:var(--red)">✕</button></div>`;
+    const seatBadge = l.seat != null ? `<br><small style="color:var(--warm-gray)">Seat ${esc(String(l.seat))}</small>` : '';
+    const seatInput = (l.voided || l.sent) ? '' :
+      `<input type="number" min="1" placeholder="Seat" value="${l.seat ?? ''}" data-action="set-seat" data-id="${i}"
+        style="width:56px;color:var(--charcoal);margin-top:6px;font-size:12px;padding:4px 6px">`;
+    return `<div class="cart-line"${l.voided ? ' style="opacity:.55"' : ''}>
+      <div><b>${l.qty}×</b> ${esc(l.name)}${tag}${modStr ? `<br><small style="color:var(--warm-gray)">${esc(modStr)}</small>` : ''}${l.note ? `<br><small style="color:var(--terra)">📝 ${esc(l.note)}</small>` : ''}${seatBadge}${seatInput}</div>
+      <div style="display:flex;align-items:center;gap:10px"><span${l.voided ? ' style="text-decoration:line-through"' : ''}>${fmt(lt)}</span>
+        ${controls}
       </div></div>`;
   }).join('');
   $('cart-total-rm').textContent = fmt(total);
 }
 
-/* ===== KANDAR MODAL ===== */
-function openKandarModal(it) {
-  state.kandarItem = it;
+function setSeat(idx, value) {
+  if (state.cart[idx].sent) return;
+  const n = parseInt(value);
+  state.cart[idx].seat = n > 0 ? n : null;
+}
+
+async function voidLine(idx) {
+  const line = state.cart[idx];
+  if (!line || !line.sent || line.voided) return;
+  const reason = prompt('Reason for voiding this line (3-200 characters):');
+  if (reason === null) return;
+  if (reason.trim().length < 3) return toast('Reason must be at least 3 characters');
+  const orderId = $('pay-btn').dataset.orderId;
+  try {
+    await API.post(`/api/orders/${orderId}/items/${line.id}/void`, { reason: reason.trim() });
+    toast('Line voided');
+    checkOpenOrder();
+    renderTables();
+  } catch (e) { toast('Void failed: ' + e.message); }
+}
+
+/* ===== MODIFIER-GROUP MODAL =====
+   Driven entirely by the item's attached groups (menu.modifier_group_ids) and
+   each group's mode/min_select/max_select — nothing here is kandar-specific;
+   `kandar` is display-only from phase 04 on. */
+function modifierGroupsFor(it) {
+  return (it.modifier_group_ids || [])
+    .map(gid => state.menu.modifier_groups.find(g => g.id === gid))
+    .filter(Boolean);
+}
+
+function openModifierModal(it) {
+  state.modItem = it;
   $('mod-title').textContent = it.name + ' — ' + fmt(it.price);
-  const kuahG = state.menu.modifier_groups.find(g => g.mode === 'radio');
-  const extraG = state.menu.modifier_groups.find(g => g.mode === 'checkbox');
-  const kuahOpts = state.menu.modifier_options.filter(o => o.group_id === kuahG?.id);
-  const extraOpts = state.menu.modifier_options.filter(o => o.group_id === extraG?.id);
   let html = '';
-  if (kuahOpts.length) {
-    html += `<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:8px">Kuah</div>`;
-    html += kuahOpts.map((o, i) => `<div class="mod-opt"><input type="radio" name="kuah" value="${o.id}" ${i === 0 ? 'checked' : ''}><span>${esc(o.name)}</span></div>`).join('');
-  }
-  if (extraOpts.length) {
-    html += `<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin:14px 0 8px">Extra Lauk</div>`;
-    html += extraOpts.map(o => `<div class="mod-opt"><input type="checkbox" name="extra" value="${o.id}" data-price="${o.price}"><span style="flex:1">${esc(o.name)}</span><span style="color:var(--terra);font-weight:700">+${fmt(o.price)}</span></div>`).join('');
-  }
+  modifierGroupsFor(it).forEach(g => {
+    const opts = state.menu.modifier_options.filter(o => o.group_id === g.id);
+    const inputType = g.mode === 'radio' ? 'radio' : 'checkbox';
+    const label = g.min_select > 0 ? `${esc(g.name)} (choose ${g.min_select === g.max_select ? g.min_select : `${g.min_select}-${g.max_select}`})` : esc(g.name);
+    html += `<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin:14px 0 8px">${label}</div>`;
+    html += opts.map(o => `<div class="mod-opt"><input type="${inputType}" name="grp-${g.id}" data-group="${g.id}" value="${o.id}"><span style="flex:1">${esc(o.name)}</span>${o.price ? `<span style="color:var(--terra);font-weight:700">+${fmt(o.price)}</span>` : ''}</div>`).join('');
+  });
   $('mod-body').innerHTML = html;
   $('mod-remark').value = '';
 
-  // Food presets for kandar
   const presets = ['Kurang pedas', 'No onion', 'Extra spicy', 'Kurang minyak', 'Banjir sikit'];
   $('mod-presets').innerHTML = presets.map(p =>
     `<button class="btn small outline" data-action="set-mod-remark" data-value="${esc(p)}">${esc(p)}</button>`
   ).join('');
 
+  updateModifierValidity();
   $('modal-bg').classList.add('show');
 }
 
-function closeModal() { $('modal-bg').classList.remove('show'); state.kandarItem = null; }
+function updateModifierValidity() {
+  const btn = $('mod-confirm-btn');
+  if (!state.modItem || !btn) return;
+  const ok = modifierGroupsFor(state.modItem).every(g => {
+    const count = document.querySelectorAll(`input[data-group="${g.id}"]:checked`).length;
+    return count >= g.min_select && count <= g.max_select;
+  });
+  btn.disabled = !ok;
+}
 
-function confirmKandar() {
-  if (!state.kandarItem) return;
-  const kuahId = document.querySelector('input[name="kuah"]:checked')?.value;
+function closeModal() { $('modal-bg').classList.remove('show'); state.modItem = null; }
+
+function confirmModifiers() {
+  if (!state.modItem) return;
   const mods = [];
-  if (kuahId) { const o = state.menu.modifier_options.find(x => x.id == kuahId); if (o) mods.push({ name: o.name, price: o.price }); }
-  document.querySelectorAll('input[name="extra"]:checked').forEach(c => {
-    const o = state.menu.modifier_options.find(x => x.id == c.value); if (o) mods.push({ name: o.name, price: o.price });
+  modifierGroupsFor(state.modItem).forEach(g => {
+    document.querySelectorAll(`input[data-group="${g.id}"]:checked`).forEach(inp => {
+      const o = state.menu.modifier_options.find(x => x.id == inp.value);
+      if (o) mods.push({ name: o.name, price: o.price });
+    });
   });
   const note = $('mod-remark').value.trim();
-  state.cart.push({ item_id: state.kandarItem.id, name: state.kandarItem.name, price: state.kandarItem.price, qty: 1, mods, note });
+  state.cart.push({ item_id: state.modItem.id, name: state.modItem.name, price: state.modItem.price, qty: 1, mods, note });
   closeModal(); renderCart();
 }
 
@@ -208,6 +259,7 @@ async function sendOrder() {
       item_id: l.item_id,
       qty: l.qty,
       note: l.note,
+      seat: l.seat || null,
       modifier_option_ids: l.mods.map(m => {
         const opt = state.menu.modifier_options.find(o => o.name === m.name);
         return opt ? opt.id : null;
@@ -225,41 +277,197 @@ async function sendOrder() {
     state.cart = []; renderCart();
     checkOpenOrder();
     renderTables();
-  } catch (e) { toast('Error: ' + e.message); console.error(e); }
+  } catch (e) {
+    // Another tablet won the race to open this table first (one_open_order_per_table).
+    // Join that order instead of failing outright.
+    if (e.status === 409 && e.body?.order_id) {
+      try {
+        const items = pending.map(l => ({
+          item_id: l.item_id, qty: l.qty, note: l.note, seat: l.seat || null,
+          modifier_option_ids: l.mods.map(m => {
+            const opt = state.menu.modifier_options.find(o => o.name === m.name);
+            return opt ? opt.id : null;
+          }).filter(Boolean),
+        }));
+        await API.post(`/api/orders/${e.body.order_id}/items`, { items });
+        toast('Another order was already open for this table — joined it');
+        state.cart = []; renderCart();
+        checkOpenOrder();
+        renderTables();
+        return;
+      } catch (e2) { toast('Error: ' + e2.message); console.error(e2); return; }
+    }
+    toast('Error: ' + e.message); console.error(e);
+  }
 }
 
-/* ===== PAYMENT ===== */
-async function openPayModal() {
+/* ===== PAYMENT =====
+   Everything shown here (subtotal/tax/total/amount_due/payments-so-far) comes
+   straight from the order, which the server keeps recomputed on every change
+   (phase 05) — no client-side bill math to duplicate or get out of sync. */
+let currentOrder = null;
+// A split view the cashier is actively working through — {title, items:[{label,amount}]}.
+// Computed once from the balance at split time; paying a share removes just that
+// entry (never a fresh re-split of the shrinking remainder, which would silently
+// change the numbers the cashier was just shown and told to collect).
+let pendingShares = null;
+
+async function refreshPayModal() {
   const orderId = $('pay-btn').dataset.orderId;
-  if (!orderId) return;
+  if (!orderId) return false;
+  const orders = await API.get('/api/orders').catch(() => []);
+  const order = orders.find(o => o.id == orderId);
+  if (!order) return false;
+  currentOrder = order;
+  renderPayModal();
+  return true;
+}
 
-  try {
-    const orders = await API.get('/api/orders');
-    const order = orders.find(o => o.id == orderId);
-    if (order && ['sent', 'preparing'].includes(order.status)) {
-      if (!confirm(`⚠️ Food is still ${order.status}. Are you sure you want to mark as paid?`)) {
-        return;
-      }
-    }
-  } catch (e) {}
-
-  const total = state.cart.reduce((s, l) => s + (l.price + l.mods.reduce((a, m) => a + m.price, 0)) * l.qty, 0);
-  $('pay-details').innerHTML = `<div style="font-size:14px;color:var(--warm-gray);margin-bottom:8px">Order #${orderId}</div><div style="font-family:'Playfair Display',serif;font-size:28px;font-weight:700;color:var(--terra)">${fmt(total)}</div>`;
+async function openPayModal() {
+  pendingShares = null;
+  if (!(await refreshPayModal())) return toast('Order not found');
+  // Only ask once, when the modal is first opened — not on every refresh after a
+  // partial payment, which would otherwise re-prompt on each split-payment leg.
+  if (['sent', 'preparing'].includes(currentOrder.status)) {
+    if (!confirm(`⚠️ Food is still ${currentOrder.status}. Are you sure you want to mark as paid?`)) return;
+  }
   $('pay-modal').classList.add('show');
 }
 
-function closePayModal() { $('pay-modal').classList.remove('show'); }
+function renderPayModal() {
+  const o = currentOrder;
+  const rows = [`<div>Subtotal <span style="float:right">${fmt(o.subtotal)}</span></div>`];
+  if (o.service_charge) rows.push(`<div>Service charge <span style="float:right">${fmt(o.service_charge)}</span></div>`);
+  rows.push(`<div>SST <span style="float:right">${fmt(o.tax)}</span></div>`);
+  if (o.discount) rows.push(`<div>Discount <span style="float:right">-${fmt(o.discount)}</span></div>`);
+  rows.push(`<div style="font-weight:700;margin-top:6px">Total <span style="float:right">${fmt(o.grand_total)}</span></div>`);
 
-async function processPay(method) {
+  if (o.payments?.length) {
+    rows.push(`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--light-gray)"><b>Paid so far</b></div>`);
+    o.payments.forEach(p => rows.push(`<div><small>${esc(p.method)}</small> <span style="float:right"><small>${fmt(p.amount)}</small></span></div>`));
+  }
+  rows.push(`<div style="font-weight:700;color:var(--terra);margin-top:6px">Remaining <span style="float:right">${fmt(o.amount_due)}</span></div>`);
+
+  $('pay-details').innerHTML = `<div style="font-size:14px;color:var(--warm-gray);margin-bottom:8px">Order #${o.id}</div>${rows.join('')}`;
+  $('pay-amount-input').value = '';
+  $('cash-received-input').value = '';
+  $('pay-change-due').textContent = '';
+  $('pay-cash-row').style.display = '';
+  $('pay-amount-row').style.display = '';
+  renderSplitResult();
+}
+
+function renderSplitResult() {
+  if (!pendingShares || !pendingShares.items.length) { $('pay-split-result').innerHTML = ''; return; }
+  $('pay-split-result').innerHTML = `<div style="margin-top:10px"><b>${esc(pendingShares.title)}</b></div>` +
+    pendingShares.items.map((s, i) => `
+      <div class="cart-line"><div>${esc(s.label)}: ${fmt(s.amount)}</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn small" data-action="pay-share" data-idx="${i}">Pay cash</button>
+          <button class="btn small sage" data-action="pay-share" data-idx="${i}" data-method="Card">Pay card</button>
+        </div></div>`).join('');
+}
+
+function closePayModal() { $('pay-modal').classList.remove('show'); currentOrder = null; pendingShares = null; }
+
+function updateChangeDue() {
+  if (!currentOrder) return;
+  const amount = Number($('pay-amount-input').value || currentOrder.amount_due);
+  const receivedCents = Math.round(Number($('cash-received-input').value || 0) * 100);
+  const changeCents = receivedCents - Math.round(amount * 100);
+  $('pay-change-due').textContent = receivedCents ? `Change due: ${fmt(Math.max(0, changeCents) / 100)}` : '';
+  $('pay-change-due').style.color = changeCents < 0 ? 'var(--red)' : 'var(--charcoal)';
+}
+
+/* method === null pays the full remaining balance; otherwise `amount`/`tendered`
+   (RM) pay exactly that much — used for split-by-amount and split-by-seat. */
+async function processPay(method, amount, tendered) {
   const orderId = $('pay-btn').dataset.orderId;
   try {
-    await API.post(`/api/orders/${orderId}/pay`, { method });
-    closePayModal();
-    state.cart = []; renderCart();
-    $('pay-btn').style.display = 'none';
-    toast(`Paid with ${method}`);
-    renderTables();
+    const body = { method };
+    if (amount != null) body.amount = amount;
+    if (method === 'Cash' && tendered != null) body.tendered = tendered;
+    const r = await API.post(`/api/orders/${orderId}/pay`, body);
+    if (r.settled) {
+      closePayModal();
+      state.cart = []; renderCart();
+      $('pay-btn').style.display = 'none';
+      toast(r.change > 0 ? `Paid in full — change ${fmt(r.change)}` : 'Paid in full');
+      renderTables();
+    } else {
+      toast(`Paid ${fmt(r.paid)} — ${fmt(r.remaining)} remaining`);
+      await refreshPayModal(); // update the modal with the new remaining balance, no re-prompt
+    }
   } catch (e) { toast('Payment failed: ' + e.message); }
+}
+
+async function payFull(method) {
+  const tenderedInput = $('cash-received-input').value;
+  if (method === 'Cash' && tenderedInput) {
+    const tenderedCents = Math.round(Number(tenderedInput) * 100);
+    if (tenderedCents < Math.round(currentOrder.amount_due * 100)) return toast('Cash received is less than the amount due');
+    return processPay('Cash', null, Number(tenderedInput));
+  }
+  return processPay(method, null, null);
+}
+
+function payAmount(method) {
+  const amount = Number($('pay-amount-input').value);
+  if (!(amount > 0)) return toast('Enter an amount to pay');
+  if (amount > currentOrder.amount_due + 0.001) return toast('Amount is more than what is remaining');
+  // tendered is left unset (not forced equal to amount): cash can't physically be
+  // tendered in exact sen the way a typed amount can, so when this leg settles the
+  // order the server rounds to the nearest 5 sen and treats it as exact — forcing
+  // tendered=amount here would instead reject a leg that needs rounding up.
+  return processPay(method, amount, null);
+}
+
+// Pay off one previously-computed split share; the leg amount is fixed at split
+// time, so this never re-derives it from the (now smaller) remaining balance.
+async function paySplitShare(idx, method) {
+  const share = pendingShares?.items[idx];
+  if (!share) return;
+  const orderId = $('pay-btn').dataset.orderId;
+  try {
+    // Same reasoning as payAmount: no forced tendered for Cash — a split share
+    // like RM3.33 isn't payable in exact coins, so let the server round the final
+    // leg to the nearest 5 sen automatically instead of rejecting the payment.
+    const body = { method, amount: share.amount };
+    const r = await API.post(`/api/orders/${orderId}/pay`, body);
+    pendingShares.items.splice(idx, 1);
+    if (r.settled) {
+      closePayModal();
+      state.cart = []; renderCart();
+      $('pay-btn').style.display = 'none';
+      toast('Paid in full');
+      renderTables();
+    } else {
+      toast(`Paid ${fmt(r.paid)} — ${fmt(r.remaining)} remaining`);
+      await refreshPayModal();
+    }
+  } catch (e) { toast('Payment failed: ' + e.message); }
+}
+
+async function splitEvenlyUI() {
+  const ways = parseInt(prompt('Split the remaining balance evenly — how many ways?', '2'));
+  if (!ways || ways < 1) return;
+  const orderId = $('pay-btn').dataset.orderId;
+  try {
+    const { shares } = await API.get(`/api/orders/${orderId}/split?ways=${ways}`);
+    pendingShares = { title: `${ways}-way split`, items: shares.map((amt, i) => ({ label: `Share ${i + 1}`, amount: amt })) };
+    renderSplitResult();
+  } catch (e) { toast(e.message); }
+}
+
+async function splitBySeatUI() {
+  const orderId = $('pay-btn').dataset.orderId;
+  try {
+    const { seats } = await API.get(`/api/orders/${orderId}/split?by=seat`);
+    const entries = Object.entries(seats);
+    if (!entries.length) return toast('No lines have a seat assigned');
+    pendingShares = { title: 'By seat', items: entries.map(([seat, amt]) => ({ label: `Seat ${seat}`, amount: amt })) };
+    renderSplitResult();
+  } catch (e) { toast(e.message); }
 }
 
 /* ===== EVENT WIRING ===== */
@@ -273,8 +481,13 @@ $('tab-pos').addEventListener('click', e => {
   else if (action === 'add-item') addItem(Number(el.dataset.id));
   else if (action === 'cart-qty') cartQty(Number(el.dataset.id), Number(el.dataset.delta));
   else if (action === 'cart-del') cartDel(Number(el.dataset.id));
+  else if (action === 'void-line') voidLine(Number(el.dataset.id));
   else if (action === 'send-order') sendOrder();
   else if (action === 'open-pay') openPayModal();
+});
+
+$('tab-pos').addEventListener('change', e => {
+  if (e.target.matches('input[data-action="set-seat"]')) setSeat(Number(e.target.dataset.id), e.target.value);
 });
 
 $('modal-bg').addEventListener('click', e => {
@@ -282,23 +495,33 @@ $('modal-bg').addEventListener('click', e => {
   if (el) {
     const action = el.dataset.action;
     if (action === 'set-mod-remark') $('mod-remark').value = el.dataset.value;
-    else if (action === 'close-kandar-modal') closeModal();
-    else if (action === 'confirm-kandar') confirmKandar();
+    else if (action === 'close-mod-modal') closeModal();
+    else if (action === 'confirm-mods') confirmModifiers();
     return;
   }
   if (e.target === $('modal-bg')) closeModal();
+});
+
+$('modal-bg').addEventListener('change', e => {
+  if (e.target.matches('input[data-group]')) updateModifierValidity();
 });
 
 $('pay-modal').addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
   if (el) {
     const action = el.dataset.action;
-    if (action === 'pay') processPay(el.dataset.method);
+    if (action === 'pay') payFull(el.dataset.method);
+    else if (action === 'pay-amount') payAmount(el.dataset.method || 'Cash');
+    else if (action === 'pay-share') paySplitShare(Number(el.dataset.idx), el.dataset.method || 'Cash');
+    else if (action === 'split-evenly') splitEvenlyUI();
+    else if (action === 'split-by-seat') splitBySeatUI();
     else if (action === 'close-pay-modal') closePayModal();
     return;
   }
   if (e.target === $('pay-modal')) closePayModal();
 });
+
+$('cash-received-input').addEventListener('input', updateChangeDue);
 
 $('remark-modal').addEventListener('click', e => {
   const el = e.target.closest('[data-action]');

@@ -38,13 +38,19 @@ router.get('/api/summary', requireRole('admin', 'staff'), awaitH(async (req, res
 }));
 
 router.get('/api/settings', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
-  const r = await pool.query("SELECT value FROM settings WHERE key = 'sst_on'");
-  res.json({ sst_on: r.rows[0]?.value === 'true' });
+  const r = await pool.query("SELECT key, value FROM settings WHERE key IN ('tax_rate_bp', 'svc_rate_bp')");
+  const rates = Object.fromEntries(r.rows.map(row => [row.key, Number(row.value)]));
+  res.json({ tax_rate_bp: rates.tax_rate_bp || 0, svc_rate_bp: rates.svc_rate_bp || 0 });
 }));
 router.patch('/api/settings', requireRole('admin'), awaitH(async (req, res) => {
+  const taxRateBp = Number(req.body?.tax_rate_bp);
+  const svcRateBp = Number(req.body?.svc_rate_bp);
+  if (!Number.isInteger(taxRateBp) || taxRateBp < 0 || taxRateBp > 10000) return res.status(400).json({ error: 'bad tax_rate_bp' });
+  if (!Number.isInteger(svcRateBp) || svcRateBp < 0 || svcRateBp > 10000) return res.status(400).json({ error: 'bad svc_rate_bp' });
   await pool.query(
-    "INSERT INTO settings (key, value) VALUES ('sst_on', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-    [req.body?.sst_on ? 'true' : 'false']);
+    `INSERT INTO settings (key, value) VALUES ('tax_rate_bp', $1), ('svc_rate_bp', $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [String(taxRateBp), String(svcRateBp)]);
   res.json({ ok: true });
 }));
 

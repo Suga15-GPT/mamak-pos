@@ -1,18 +1,38 @@
 const express = require('express');
+const crypto = require('crypto');
 const { pool } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireRole, verifyPin } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
-const { cents2rm, roundCashCents } = require('../lib/money');
-const { buildOrderItems, insertOrder, ordersWithItems } = require('../services/orders');
+const { cents2rm, rm2cents } = require('../lib/money');
+const { buildOrderItems, insertOrder, ordersWithItems, writeAudit } = require('../services/orders');
+const {
+  recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, splitEvenly, splitBySeat,
+} = require('../services/billing');
 
 const router = express.Router();
 
+// Short-lived, one-use authorization for a staff member to apply a discount that
+// requires admin sign-off (Do #4) — an admin's PIN, not a full login session.
+// In-memory is deliberate: same pattern as rateLimit in lib/auth.js, and these
+// tokens are only ever meant to live for the next couple of minutes.
+const discountAuthTokens = new Map();
+
 router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
-  if (req.query.mode === 'recent') {
-    res.json(await ordersWithItems('', [], 'ORDER BY o.id DESC LIMIT 15'));
-  } else {
-    res.json(await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled')", []));
+  const orders = req.query.mode === 'recent'
+    ? await ordersWithItems('', [], 'ORDER BY o.id DESC LIMIT 15')
+    : await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled')", []);
+
+  // Live payments-so-far + remaining balance, for the "RM X.XX remaining" display
+  // and the payment modal's split/partial flows.
+  for (const o of orders) {
+    const [payments, dueCents] = await Promise.all([listPayments(o.id), amountDue(o.id)]);
+    o.payments = payments.map(p => ({
+      method: p.method, amount: cents2rm(p.amount_cents),
+      tendered: p.tendered_cents == null ? null : cents2rm(p.tendered_cents), at: p.at,
+    }));
+    o.amount_due = cents2rm(Math.max(0, dueCents));
   }
+  res.json(orders);
 }));
 
 /* tables for staff/kitchen: names only, no qr_token (that stays admin-only) */
@@ -24,8 +44,25 @@ router.get('/api/tables', requireRole('admin', 'staff', 'kitchen'), awaitH(async
 router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res) => {
   const { table_id, items, note } = req.body || {};
   const parsed = await buildOrderItems(pool, items);
-  const id = await insertOrder(Number(table_id), parsed, String(note || '').slice(0, 300), 'staff');
-  res.json({ id });
+  try {
+    const id = await insertOrder(Number(table_id), parsed, String(note || '').slice(0, 300), 'staff', req.user.id);
+    await recomputeOrderBill(id);
+    await writeAudit(pool, {
+      userId: req.user.id, action: 'order.create', entityType: 'order', entityId: id,
+      detail: { table_id: Number(table_id), source: 'staff' },
+    });
+    res.status(201).json({ id });
+  } catch (e) {
+    // one_open_order_per_table: a second tablet raced us to the same table.
+    // Not a 500 — tell the client which order already exists so it can join it.
+    if (e.code === '23505' && e.constraint === 'one_open_order_per_table') {
+      const existing = await pool.query(
+        "SELECT id FROM orders WHERE table_id = $1 AND status NOT IN ('paid','cancelled') ORDER BY id DESC LIMIT 1",
+        [Number(table_id)]);
+      return res.status(409).json({ error: 'table already has an open order', order_id: existing.rows[0]?.id });
+    }
+    throw e;
+  }
 }));
 
 /* append items to an open order */
@@ -33,30 +70,71 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0] || ['paid', 'cancelled'].includes(o.rows[0].status))
     return res.status(400).json({ error: 'order closed' });
+  // Once any payment is recorded against the order, its total is being settled —
+  // adding more lines would make what was just paid for wrong.
+  if (await hasPayments(o.rows[0].id)) return res.status(409).json({ error: 'order has a payment recorded; cannot add items' });
+
   const parsed = await buildOrderItems(pool, req.body.items);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     for (const l of parsed) {
       const oi = await client.query(
-        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
-        [o.rows[0].id, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null]);
+        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by, seat) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+        [o.rows[0].id, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, req.user.id, l.seat]);
       for (const m of l.mods)
         await client.query('INSERT INTO order_item_mods (order_item_id, name, price_cents) VALUES ($1,$2,$3)',
           [oi.rows[0].id, m.name, m.price_cents]);
     }
     await client.query('UPDATE orders SET updated_at = now() WHERE id = $1', [o.rows[0].id]);
+    await writeAudit(client, {
+      userId: req.user.id, action: 'order.append', entityType: 'order', entityId: o.rows[0].id,
+      detail: { items: parsed.map(l => ({ item_id: l.item.id, name: l.item.name, qty: l.qty })) },
+    });
     await client.query('COMMIT');
-    res.json({ ok: true });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+
+  await recomputeOrderBill(o.rows[0].id);
+  res.json({ ok: true });
+}));
+
+/* void a sent line — never deleted, just marked. staff may void while the order is
+   still 'sent'; once the kitchen has moved it on, only admin may. */
+router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  const reason = String(req.body?.reason || '').trim();
+  if (reason.length < 3 || reason.length > 200) return res.status(400).json({ error: 'reason must be 3-200 chars' });
+
+  const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
+  if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (['paid', 'cancelled'].includes(o.rows[0].status)) return res.status(400).json({ error: 'order closed' });
+  if (o.rows[0].status !== 'sent' && req.user.role !== 'admin')
+    return res.status(403).json({ error: 'admin only once the kitchen has started this order' });
+
+  const li = await pool.query('SELECT * FROM order_items WHERE id = $1 AND order_id = $2', [req.params.lineId, o.rows[0].id]);
+  if (!li.rows[0]) return res.status(404).json({ error: 'line not found' });
+  if (li.rows[0].voided_at) return res.status(400).json({ error: 'already voided' });
+
+  await pool.query(
+    'UPDATE order_items SET voided_at = now(), voided_by = $1, void_reason = $2 WHERE id = $3',
+    [req.user.id, reason, li.rows[0].id]);
+  await pool.query('UPDATE orders SET updated_at = now() WHERE id = $1', [o.rows[0].id]);
+  await writeAudit(pool, {
+    userId: req.user.id, action: 'order.void_line', entityType: 'order_item', entityId: li.rows[0].id,
+    detail: { order_id: o.rows[0].id, name: li.rows[0].name, qty: li.rows[0].qty, price_cents: li.rows[0].price_cents, reason },
+  });
+  await recomputeOrderBill(o.rows[0].id);
+  res.json({ ok: true });
 }));
 
 const TRANSITIONS = {
   sent: ['preparing', 'cancelled'],
-  preparing: ['ready', 'cancelled'],
-  ready: ['served'],
-  served: ['cancelled'],
+  preparing: ['ready', 'cancelled', 'sent'],
+  ready: ['served', 'preparing'],
+  served: ['cancelled', 'ready'],
 };
+// Backward moves are a staff/admin correction of a mis-tap, not something kitchen
+// should be able to self-serve (kitchen only ever moves an order forward).
+const BACKWARD = new Set(['preparing>sent', 'ready>preparing', 'served>ready']);
 router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
   const { status } = req.body || {};
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
@@ -64,29 +142,100 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
   const cur = o.rows[0].status;
   if (!(TRANSITIONS[cur] || []).includes(status)) return res.status(400).json({ error: `cannot go ${cur} -> ${status}` });
   if (status === 'cancelled' && req.user.role !== 'admin') return res.status(403).json({ error: 'admin only' });
-  await pool.query('UPDATE orders SET status = $1, updated_at = now() WHERE id = $2', [status, o.rows[0].id]);
+  if (BACKWARD.has(`${cur}>${status}`) && req.user.role === 'kitchen') return res.status(403).json({ error: 'staff/admin only' });
+
+  if (status === 'cancelled') {
+    await pool.query('UPDATE orders SET status = $1, closed_by = $2, updated_at = now() WHERE id = $3', [status, req.user.id, o.rows[0].id]);
+    await writeAudit(pool, {
+      userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: o.rows[0].id,
+      detail: { from: cur },
+    });
+  } else {
+    await pool.query('UPDATE orders SET status = $1, updated_at = now() WHERE id = $2', [status, o.rows[0].id]);
+    await writeAudit(pool, {
+      userId: req.user.id, action: 'order.status', entityType: 'order', entityId: o.rows[0].id,
+      detail: { from: cur, to: status },
+    });
+  }
   res.json({ ok: true });
 }));
 
+/* One payment leg. Body: { method, amount?, tendered? } — amount (RM) defaults to
+   the full remaining balance, so the old "click a method to pay in full" flow keeps
+   working unchanged. tendered (RM, cash only) drives change due. Over-tendering in
+   cash settles the order and returns change; over-amount by card/e-wallet is 400. */
 router.post('/api/orders/:id/pay', requireRole('admin', 'staff'), awaitH(async (req, res) => {
-  const method = req.body?.method;
-  if (!['Cash', 'Card', 'DuitNow/eWallet'].includes(method)) return res.status(400).json({ error: 'bad method' });
+  const { method, amount, tendered } = req.body || {};
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!['served', 'ready', 'preparing', 'sent'].includes(o.rows[0].status))
     return res.status(400).json({ error: 'order already closed' });
-  const t = await pool.query(`
-    SELECT COALESCE(SUM((oi.price_cents + COALESCE(m.mx, 0)) * oi.qty), 0) AS c
-    FROM order_items oi
-    LEFT JOIN (SELECT order_item_id, SUM(price_cents) mx FROM order_item_mods GROUP BY 1) m
-      ON m.order_item_id = oi.id
-    WHERE oi.order_id = $1`, [o.rows[0].id]);
-  let cents = Number(t.rows[0].c);
-  if (method === 'Cash') cents = roundCashCents(cents);
-  await pool.query(
-    'UPDATE orders SET status = $1, paid_at = now(), updated_at = now(), pay_method = $2, pay_total_cents = $3 WHERE id = $4',
-    ['paid', method, cents, o.rows[0].id]);
-  res.json({ ok: true, paid: cents2rm(cents) });
+
+  const result = await addPayment(o.rows[0].id, {
+    method,
+    amountCents: amount != null ? rm2cents(amount) : null,
+    tenderedCents: tendered != null ? rm2cents(tendered) : null,
+    userId: req.user.id,
+  });
+
+  const after = (await pool.query('SELECT * FROM orders WHERE id = $1', [o.rows[0].id])).rows[0];
+  res.json({
+    ok: true,
+    paid: cents2rm(result.amount_cents),
+    change: cents2rm(result.change_cents),
+    remaining: cents2rm(result.remaining_cents),
+    settled: result.settled,
+    bill: {
+      subtotal: cents2rm(after.subtotal_cents),
+      service_charge: cents2rm(after.service_charge_cents),
+      tax: cents2rm(after.tax_cents),
+      discount: cents2rm(after.discount_cents),
+      rounding: cents2rm(after.rounding_cents),
+      total: cents2rm(after.total_cents),
+    },
+  });
+}));
+
+/* Preview only — does not record anything. ?ways=N for an even split of the
+   remaining balance, or ?by=seat for a per-seat breakdown. */
+router.get('/api/orders/:id/split', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  if (req.query.by === 'seat') {
+    const bySeat = await splitBySeat(req.params.id);
+    return res.json({ seats: Object.fromEntries(Object.entries(bySeat).map(([k, v]) => [k, cents2rm(v)])) });
+  }
+  const ways = parseInt(req.query.ways);
+  if (!ways) return res.status(400).json({ error: 'ways or by=seat required' });
+  const due = await amountDue(req.params.id);
+  const shares = splitEvenly(due, ways);
+  res.json({ shares: shares.map(cents2rm) });
+}));
+
+/* Staff can't self-approve a discount — an admin types their PIN here, which
+   returns a short-lived, one-use token authorizing exactly one discount action. */
+router.post('/api/discounts/authorize', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  const name = String(req.body?.name || '');
+  const u = await pool.query("SELECT id, pin_hash FROM users WHERE name = $1 AND role = 'admin'", [name]);
+  if (!u.rows[0] || !verifyPin(req.body?.pin, u.rows[0].pin_hash)) return res.status(401).json({ error: 'invalid admin credentials' });
+  const token = crypto.randomBytes(24).toString('hex');
+  discountAuthTokens.set(token, { adminId: u.rows[0].id, expires: Date.now() + 2 * 60 * 1000 });
+  res.json({ token, expires_in: 120 });
+}));
+
+router.post('/api/orders/:id/discounts', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  const { kind, value, reason, authorize_token } = req.body || {};
+  let approverId = req.user.id;
+  if (req.user.role !== 'admin') {
+    const auth = authorize_token && discountAuthTokens.get(authorize_token);
+    if (!auth || auth.expires < Date.now()) return res.status(403).json({ error: 'admin authorization required' });
+    discountAuthTokens.delete(authorize_token); // one-use
+    approverId = auth.adminId;
+  }
+  // value at the API boundary is RM/percent for humans; billing.js works in cents/bp.
+  const valueForBilling = kind === 'percent' ? Math.round(Number(value) * 100)
+    : kind === 'amount' ? rm2cents(value)
+    : 0;
+  const result = await addDiscount(req.params.id, { kind, value: valueForBilling, reason, userId: approverId });
+  res.json({ ok: true, id: result.id, amount: cents2rm(result.amount_cents) });
 }));
 
 module.exports = router;
