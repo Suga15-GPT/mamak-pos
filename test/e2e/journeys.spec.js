@@ -61,8 +61,41 @@ test('QR customer order', async ({ page, request }) => {
   await expect(page.getByText('Order Placed!')).toBeVisible();
 });
 
-test('split bill', async () => {
-  test.skip(true, 'Split bill / multi-tender payments land in phase 05 — see docs/prompts/phase-05-payments.md');
+test('split bill', async ({ page }) => {
+  // The order stays 'sent' throughout (never advanced through the kitchen), so
+  // "Mark Paid" fires the "food still cooking?" confirm() — accept it — and
+  // "Split evenly" fires a prompt() for the number of ways — answer "2".
+  page.on('dialog', dialog => dialog.accept(dialog.type() === 'prompt' ? '2' : undefined));
+
+  await page.goto('/');
+  await page.locator('#lname').fill('Admin');
+  await page.locator('#lpin').fill('1234');
+  await page.getByRole('button', { name: 'Log In' }).click();
+  await expect(page.locator('#uname')).toHaveText(/Admin/);
+
+  await page.getByRole('button', { name: 'T3', exact: true }).click();
+  await page.getByRole('button', { name: 'Roti', exact: true }).click();
+  await page.getByRole('button', { name: /Roti Canai/ }).click();
+  await page.getByRole('button', { name: 'Skip' }).click();
+  await page.getByRole('button', { name: /Roti Canai/ }).click();
+  await page.getByRole('button', { name: 'Skip' }).click();
+  await expect(page.locator('#cart-lines')).toContainText('2×');
+
+  await page.getByRole('button', { name: 'Send to Kitchen' }).click();
+  await expect(page.locator('#cart-lines')).toContainText('sent');
+
+  await page.getByRole('button', { name: 'Mark Paid' }).click();
+  await expect(page.getByRole('heading', { name: 'Payment' })).toBeVisible();
+  await page.getByRole('button', { name: 'Split evenly' }).click();
+  await expect(page.locator('#pay-split-result')).toContainText('Share 1');
+  await expect(page.locator('#pay-split-result')).toContainText('Share 2');
+
+  await page.getByRole('button', { name: 'Pay cash' }).first().click();
+  await expect(page.locator('#pay-split-result')).not.toContainText('Share 1');
+  await expect(page.locator('#pay-split-result')).toContainText('Share 2');
+
+  await page.getByRole('button', { name: 'Pay cash' }).first().click();
+  await expect(page.getByRole('button', { name: 'Mark Paid' })).toBeHidden();
 });
 
 test('void a line', async () => {

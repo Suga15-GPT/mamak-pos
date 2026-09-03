@@ -1,17 +1,17 @@
 const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
-const { computeBill, roundCashCents, roundHalfUp } = require('../lib/money');
+const { computeBill, roundCashCents, roundHalfUp, formatRM } = require('../lib/money');
 const { writeAudit } = require('./orders');
 
-// Rebuilds subtotal/service_charge/tax/discount/total from order_items + discounts,
-// using the *current* live settings rates (this order isn't paid/finalised yet, so
-// nothing here is "historical" — the snapshot-at-payment rule from phase 02 only
-// bites once the order actually closes). No cash rounding is baked in here: that's
-// a payment-time artifact applied only to the final settling cash leg, in
-// addPayment, not a property of the bill itself.
-async function recomputeOrderBill(orderId) {
+// Same math recomputeOrderBill writes, without writing — lets a caller preview
+// what the bill would become (excluding a line about to be voided, or with an
+// extra discount about to be applied) before committing anything.
+async function computeLiveBill(orderId, { excludeItemId, extraDiscountCents = 0 } = {}) {
   const items = await pool.query(
-    'SELECT id, price_cents, qty FROM order_items WHERE order_id = $1 AND voided_at IS NULL', [orderId]);
+    excludeItemId
+      ? 'SELECT id, price_cents, qty FROM order_items WHERE order_id = $1 AND voided_at IS NULL AND id != $2'
+      : 'SELECT id, price_cents, qty FROM order_items WHERE order_id = $1 AND voided_at IS NULL',
+    excludeItemId ? [orderId, excludeItemId] : [orderId]);
   const mods = items.rows.length
     ? await pool.query('SELECT order_item_id, price_cents FROM order_item_mods WHERE order_item_id = ANY($1::int[])',
         [items.rows.map(i => i.id)])
@@ -26,9 +26,19 @@ async function recomputeOrderBill(orderId) {
   const svcRateBp = rates.svc_rate_bp || 0;
 
   const discRows = await pool.query('SELECT COALESCE(SUM(amount_cents), 0) AS s FROM discounts WHERE order_id = $1', [orderId]);
-  const discountCents = Number(discRows.rows[0].s);
+  const discountCents = Number(discRows.rows[0].s) + extraDiscountCents;
 
-  const bill = computeBill({ lines, taxRateBp, svcRateBp, discountCents, method: null });
+  return { bill: computeBill({ lines, taxRateBp, svcRateBp, discountCents, method: null }), taxRateBp, svcRateBp };
+}
+
+// Rebuilds subtotal/service_charge/tax/discount/total from order_items + discounts,
+// using the *current* live settings rates (this order isn't paid/finalised yet, so
+// nothing here is "historical" — the snapshot-at-payment rule from phase 02 only
+// bites once the order actually closes). No cash rounding is baked in here: that's
+// a payment-time artifact applied only to the final settling cash leg, in
+// addPayment, not a property of the bill itself.
+async function recomputeOrderBill(orderId) {
+  const { bill, taxRateBp, svcRateBp } = await computeLiveBill(orderId);
 
   await pool.query(
     `UPDATE orders SET subtotal_cents = $1, service_charge_cents = $2, tax_cents = $3, discount_cents = $4,
@@ -37,6 +47,46 @@ async function recomputeOrderBill(orderId) {
     [bill.subtotal_cents, bill.service_charge_cents, bill.tax_cents, bill.discount_cents, bill.total_cents,
      taxRateBp, svcRateBp, orderId]);
 
+  return bill;
+}
+
+async function paidCentsFor(orderId) {
+  const r = await pool.query('SELECT COALESCE(SUM(amount_cents), 0) AS s FROM payments WHERE order_id = $1', [orderId]);
+  return Number(r.rows[0].s);
+}
+
+// Void and discount can each shrink an order's total below what's already been
+// paid against it (a partially-paid order's status stays 'sent', so the status
+// check that already protects a fully-paid order never fires) — refuse rather
+// than leave the shop owing the customer a negative balance it can't settle.
+function guardAgainstShortfall(actionLabel, newTotalCents, paidCents) {
+  if (newTotalCents < paidCents) {
+    throw AppError(
+      `${actionLabel} would leave ${formatRM(paidCents)} already paid against a ${formatRM(newTotalCents)} bill — refund the payment first`,
+      409);
+  }
+}
+
+// If the change brought the total down to exactly what's already been paid, the
+// sale is done — close it now rather than leaving what looks like an occupied
+// table open all night (settling normally requires the balance to reach zero,
+// which a paid amount > 0 can never do on its own).
+async function settleIfMatchesPaid(orderId, totalCents, paidCents, userId, trigger) {
+  if (totalCents !== paidCents) return false;
+  await pool.query(
+    "UPDATE orders SET status = 'paid', paid_at = now(), closed_by = $1, updated_at = now() WHERE id = $2",
+    [userId || null, orderId]);
+  await writeAudit(pool, {
+    userId, action: 'order.settle', entityType: 'order', entityId: orderId,
+    detail: { trigger, total_cents: totalCents, paid_cents: paidCents },
+  });
+  return true;
+}
+
+// Previews the bill with one line excluded (as if it were voided) — used to guard
+// a void before committing it.
+async function previewBillExcludingLine(orderId, itemId) {
+  const { bill } = await computeLiveBill(orderId, { excludeItemId: itemId });
   return bill;
 }
 
@@ -147,6 +197,10 @@ async function addDiscount(orderId, { kind, value, reason, userId }) {
   if (!(amountCents >= 0)) throw AppError('bad discount value', 400);
   amountCents = Math.min(amountCents, grossBeforeThisDiscount);
 
+  const paidCents = await paidCentsFor(orderId);
+  const { bill: preview } = await computeLiveBill(orderId, { extraDiscountCents: amountCents });
+  guardAgainstShortfall('applying this discount', preview.total_cents, paidCents);
+
   const d = await pool.query(
     'INSERT INTO discounts (order_id, kind, value, amount_cents, reason, approved_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
     [orderId, kind, Number(value) || 0, amountCents, cleanReason, userId]);
@@ -158,15 +212,43 @@ async function addDiscount(orderId, { kind, value, reason, userId }) {
     detail: { discount_id: d.rows[0].id, kind, value: Number(value) || 0, amount_cents: amountCents, reason: cleanReason },
   });
 
-  // A discount that zeroes the balance (a comp, or a partial one that happens to)
-  // settles the order immediately. payments.amount_cents must be > 0, so no payment
-  // row is written for the zero remainder — the discount alone closes it.
-  if (bill.total_cents <= 0) {
-    await pool.query("UPDATE orders SET status = 'paid', paid_at = now(), paid_by = $1, updated_at = now() WHERE id = $2",
-      [userId, orderId]);
-  }
+  // A discount that brings the balance down to exactly what's already been paid
+  // (0 when nothing has been paid yet — a comp, or a partial one that happens to
+  // zero it — or the paid amount itself) settles the order immediately.
+  // payments.amount_cents must be > 0, so a zero remainder never needs a payment
+  // row — the discount alone closes it.
+  await settleIfMatchesPaid(orderId, bill.total_cents, paidCents, userId, 'discount');
 
   return { id: d.rows[0].id, amount_cents: amountCents, bill };
+}
+
+async function listDiscounts(orderId) {
+  const r = await pool.query(
+    'SELECT id, kind, value, amount_cents, reason, approved_by, at FROM discounts WHERE order_id = $1 ORDER BY at', [orderId]);
+  return r.rows;
+}
+
+// Reverses a discount that was applied by mistake — admin only, and only before
+// any payment is recorded (removing a discount can only ever raise the total, so
+// there's no shortfall risk here; the restriction is about not undoing something
+// the customer was already charged against).
+async function removeDiscount(orderId, discountId, { userId }) {
+  const o = await pool.query('SELECT status FROM orders WHERE id = $1', [orderId]);
+  if (!o.rows[0]) throw AppError('order not found', 404);
+  if (['paid', 'cancelled'].includes(o.rows[0].status)) throw AppError('order closed', 400);
+  if (await hasPayments(orderId)) throw AppError('order has a payment recorded; cannot remove discount', 409);
+
+  const d = await pool.query('DELETE FROM discounts WHERE id = $1 AND order_id = $2 RETURNING *', [discountId, orderId]);
+  if (!d.rows[0]) throw AppError('discount not found', 404);
+
+  const bill = await recomputeOrderBill(orderId);
+
+  await writeAudit(pool, {
+    userId, action: 'discount.remove', entityType: 'order', entityId: orderId,
+    detail: { discount_id: d.rows[0].id, kind: d.rows[0].kind, amount_cents: d.rows[0].amount_cents, reason: d.rows[0].reason },
+  });
+
+  return { bill };
 }
 
 // Divide, floor, then hand the leftover sen one at a time to the first shares —
@@ -196,5 +278,6 @@ async function splitBySeat(orderId) {
 }
 
 module.exports = {
-  recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, splitEvenly, splitBySeat,
+  recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
+  splitEvenly, splitBySeat, paidCentsFor, guardAgainstShortfall, settleIfMatchesPaid, previewBillExcludingLine,
 };

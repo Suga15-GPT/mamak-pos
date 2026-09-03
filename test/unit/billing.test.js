@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { withDb } = require('../helper');
 const { splitEvenly } = require('../../src/services/billing');
+const { rm2cents, roundHalfUp, cents2rm } = require('../../src/lib/money');
 
 const SRC_DIR = path.join(__dirname, '..', '..', 'src') + path.sep;
 const DB_MODULE = require.resolve('../../src/db');
@@ -58,6 +59,7 @@ async function setup(base) {
     adminAuth, staffAuth: auth(staffToken), staffId,
     tableId: tables[0].id, tableId2: tables[1].id, tableId3: tables[2].id,
     itemA: menu.items.find(i => i.name === 'Roti Canai'),
+    itemB: menu.items.find(i => i.name === 'Teh Tarik'),
   };
 }
 
@@ -207,5 +209,230 @@ test('comp -> total 0, order closes with no payment row required, audit row writ
     const audit = await db.query("SELECT * FROM audit_log WHERE action = 'discount.apply' AND entity_id = $1", [orderId]);
     assert.equal(audit.rows.length, 1);
     assert.equal(audit.rows[0].detail.kind, 'comp');
+  });
+});
+
+/* ===== void/discount vs. a partial payment (phase 05b item 1) =====
+   hasPayments() already guarded appending a line; it was never applied to void
+   or discount, so either could leave the shop owing the customer money. */
+
+test('a void that would drop the total below what is already paid -> 409, nothing changes', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    // 10 x Roti Canai: subtotal 2000, 6% tax -> 120, total 2120 (RM21.20) — the
+    // exact reproduction from the phase prompt.
+    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 10);
+    const lineId = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth })))
+      .find(o => o.id === orderId).items[0].id;
+
+    const pay = await fetch(`${base}/api/orders/${orderId}/pay`, {
+      method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card', amount: 15 }),
+    });
+    assert.equal(pay.status, 200);
+    assert.equal((await json(pay)).settled, false);
+
+    const voided = await fetch(`${base}/api/orders/${orderId}/items/${lineId}/void`, {
+      method: 'POST', headers: s.staffAuth, body: JSON.stringify({ reason: 'customer sent it back' }),
+    });
+    assert.equal(voided.status, 409);
+    assert.match((await json(voided)).error, /RM 15\.00/);
+
+    const line = (await db.query('SELECT voided_at FROM order_items WHERE id = $1', [lineId])).rows[0];
+    assert.equal(line.voided_at, null, 'the line is still un-voided');
+    const row = (await db.query('SELECT status, total_cents FROM orders WHERE id = $1', [orderId])).rows[0];
+    assert.equal(row.status, 'sent');
+    assert.equal(row.total_cents, 2120, 'total is unchanged');
+  });
+});
+
+test('a void that lands the total exactly on what is already paid -> order settles, amount_due 0', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+
+    const created = await fetch(`${base}/api/orders`, {
+      method: 'POST', headers: s.staffAuth,
+      body: JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.itemA.id, qty: 1 }, { item_id: s.itemB.id, qty: 1 }] }),
+    });
+    const { id: orderId } = await json(created);
+    const lineA = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth })))
+      .find(o => o.id === orderId).items.find(i => i.name === s.itemA.name);
+
+    // What the order's total will become once lineA is voided — item B alone,
+    // taxed the same way computeBill/recomputeOrderBill would.
+    const subtotalB = rm2cents(s.itemB.price);
+    const totalB = subtotalB + roundHalfUp(subtotalB * 600 / 10000);
+
+    const pay = await fetch(`${base}/api/orders/${orderId}/pay`, {
+      method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card', amount: totalB / 100 }),
+    });
+    assert.equal(pay.status, 200);
+    assert.equal((await json(pay)).settled, false);
+
+    const voided = await fetch(`${base}/api/orders/${orderId}/items/${lineA.id}/void`, {
+      method: 'POST', headers: s.staffAuth, body: JSON.stringify({ reason: 'kitchen mistake' }),
+    });
+    assert.equal(voided.status, 200);
+
+    const row = (await db.query('SELECT status, total_cents FROM orders WHERE id = $1', [orderId])).rows[0];
+    assert.equal(row.status, 'paid');
+    assert.equal(row.total_cents, totalB);
+
+    const settleAudit = await db.query("SELECT * FROM audit_log WHERE action = 'order.settle' AND entity_id = $1", [orderId]);
+    assert.equal(settleAudit.rows.length, 1);
+    assert.equal(settleAudit.rows[0].detail.trigger, 'void');
+  });
+});
+
+test('a void that leaves the total above what is already paid -> allowed, correct remaining balance', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+
+    const created = await fetch(`${base}/api/orders`, {
+      method: 'POST', headers: s.staffAuth,
+      body: JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.itemA.id, qty: 1 }, { item_id: s.itemB.id, qty: 1 }] }),
+    });
+    const { id: orderId } = await json(created);
+    const lineA = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth })))
+      .find(o => o.id === orderId).items.find(i => i.name === s.itemA.name);
+
+    const pay = await fetch(`${base}/api/orders/${orderId}/pay`, {
+      method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card', amount: 0.5 }),
+    });
+    assert.equal(pay.status, 200);
+
+    const voided = await fetch(`${base}/api/orders/${orderId}/items/${lineA.id}/void`, {
+      method: 'POST', headers: s.staffAuth, body: JSON.stringify({ reason: 'wrong item' }),
+    });
+    assert.equal(voided.status, 200);
+
+    const subtotalB = rm2cents(s.itemB.price);
+    const totalB = subtotalB + roundHalfUp(subtotalB * 600 / 10000);
+
+    const row = (await db.query('SELECT status, total_cents FROM orders WHERE id = $1', [orderId])).rows[0];
+    assert.equal(row.status, 'sent');
+    assert.equal(row.total_cents, totalB);
+
+    const after = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth }))).find(o => o.id === orderId);
+    assert.equal(after.amount_due, cents2rm(totalB - 50));
+  });
+});
+
+test('a discount that would drop the total below what is already paid -> 409, nothing changes', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 10); // total 2120
+
+    const pay = await fetch(`${base}/api/orders/${orderId}/pay`, {
+      method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card', amount: 15 }),
+    });
+    assert.equal(pay.status, 200);
+    assert.equal((await json(pay)).settled, false);
+
+    const discounted = await fetch(`${base}/api/orders/${orderId}/discounts`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ kind: 'comp', value: 0, reason: 'manager comp attempt' }),
+    });
+    assert.equal(discounted.status, 409);
+    assert.match((await json(discounted)).error, /RM 15\.00/);
+
+    const discRows = await db.query('SELECT * FROM discounts WHERE order_id = $1', [orderId]);
+    assert.equal(discRows.rows.length, 0, 'no discount row was written');
+    const row = (await db.query('SELECT status, total_cents FROM orders WHERE id = $1', [orderId])).rows[0];
+    assert.equal(row.status, 'sent');
+    assert.equal(row.total_cents, 2120, 'total is unchanged');
+  });
+});
+
+test('a discount that lands the total exactly on what is already paid -> order settles', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+
+    const created = await fetch(`${base}/api/orders`, {
+      method: 'POST', headers: s.staffAuth,
+      body: JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.itemA.id, qty: 1 }, { item_id: s.itemB.id, qty: 1 }] }),
+    });
+    const { id: orderId } = await json(created);
+
+    const before = (await db.query('SELECT total_cents FROM orders WHERE id = $1', [orderId])).rows[0].total_cents;
+    const subtotalB = rm2cents(s.itemB.price);
+    const totalB = subtotalB + roundHalfUp(subtotalB * 600 / 10000);
+    const diffCents = before - totalB; // roughly item A's own contribution to the combined total
+
+    const pay = await fetch(`${base}/api/orders/${orderId}/pay`, {
+      method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card', amount: totalB / 100 }),
+    });
+    assert.equal(pay.status, 200);
+    assert.equal((await json(pay)).settled, false);
+
+    // 'amount' discounts subtract straight from gross, so this lands the new
+    // total exactly on totalB — what was just paid.
+    const discounted = await fetch(`${base}/api/orders/${orderId}/discounts`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ kind: 'amount', value: diffCents / 100, reason: 'goodwill discount' }),
+    });
+    assert.equal(discounted.status, 200);
+
+    const row = (await db.query('SELECT status, total_cents FROM orders WHERE id = $1', [orderId])).rows[0];
+    assert.equal(row.status, 'paid');
+    assert.equal(row.total_cents, totalB);
+
+    const settleAudit = await db.query("SELECT * FROM audit_log WHERE action = 'order.settle' AND entity_id = $1", [orderId]);
+    assert.equal(settleAudit.rows.length, 1);
+    assert.equal(settleAudit.rows[0].detail.trigger, 'discount');
+  });
+});
+
+test('a discount that leaves the total above what is already paid -> allowed, correct remaining balance', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 10); // total 2120
+
+    const pay = await fetch(`${base}/api/orders/${orderId}/pay`, {
+      method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card', amount: 0.5 }),
+    });
+    assert.equal(pay.status, 200);
+
+    // 5% off a 2000-cent subtotal -> 100 cents off, well short of zeroing the bill.
+    const discounted = await fetch(`${base}/api/orders/${orderId}/discounts`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ kind: 'percent', value: 5, reason: 'small loyalty discount' }),
+    });
+    assert.equal(discounted.status, 200);
+
+    const row = (await db.query('SELECT status, total_cents FROM orders WHERE id = $1', [orderId])).rows[0];
+    assert.equal(row.status, 'sent');
+    assert.equal(row.total_cents, 2020); // 2120 - 100
+
+    const after = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth }))).find(o => o.id === orderId);
+    assert.equal(after.amount_due, cents2rm(2020 - 50));
+  });
+});
+
+test('admin removes a discount before any payment -> total reverts, audit row written', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 10); // total 2120
+
+    const discounted = await fetch(`${base}/api/orders/${orderId}/discounts`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ kind: 'percent', value: 10, reason: 'test discount' }),
+    });
+    assert.equal(discounted.status, 200);
+    const { id: discountId } = await json(discounted);
+
+    const removed = await fetch(`${base}/api/orders/${orderId}/discounts/${discountId}`, {
+      method: 'DELETE', headers: s.adminAuth,
+    });
+    assert.equal(removed.status, 200);
+
+    const row = (await db.query('SELECT total_cents, discount_cents FROM orders WHERE id = $1', [orderId])).rows[0];
+    assert.equal(row.discount_cents, 0);
+    assert.equal(row.total_cents, 2120);
+
+    const audit = await db.query("SELECT * FROM audit_log WHERE action = 'discount.remove' AND entity_id = $1", [orderId]);
+    assert.equal(audit.rows.length, 1);
   });
 });

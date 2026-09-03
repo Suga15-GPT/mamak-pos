@@ -35,6 +35,7 @@ function selectTable(id) {
   const t = state.tables.find(x => x.id === id);
   state.selTable = { id, name: t ? t.name : '' };
   state.cart = [];
+  liveOrder = null;
   $('pos-tables').style.display = 'none';
   $('pos-workspace').style.display = '';
   $('ws-title').textContent = state.selTable.name;
@@ -48,14 +49,22 @@ function backToTables() {
   $('pos-tables').style.display = '';
   state.selTable = null;
   state.cart = [];
+  liveOrder = null;
   renderTables();
 }
+
+// The live server order backing the current table's cart (once one exists) —
+// carries the always-current subtotal/service_charge/tax/grand_total the cart
+// panel mirrors, so the client never recomputes tax itself (money.js is the only
+// place that knows how tax works).
+let liveOrder = null;
 
 async function checkOpenOrder() {
   try {
     const orders = await API.get('/api/orders');
     const open = orders.find(o => o.table_id === state.selTable.id);
     if (open) {
+      liveOrder = open;
       /* lines already on the order are marked sent: they must never be re-submitted */
       state.cart = open.items.map(l => ({
         id: l.id, item_id: l.item_id || 0, name: l.name, price: l.price, qty: l.qty, mods: l.mods,
@@ -66,6 +75,7 @@ async function checkOpenOrder() {
       $('pay-btn').style.display = '';
       $('pay-btn').dataset.orderId = open.id;
     } else {
+      liveOrder = null;
       $('pay-btn').style.display = 'none';
     }
   } catch (e) {}
@@ -142,10 +152,11 @@ function cartDel(idx) { if (state.cart[idx].sent) return toast('Already sent —
 function renderCart() {
   if (!state.cart.length) { $('cart-lines').innerHTML = ''; $('cart-empty').style.display = ''; $('cart-totals').style.display = 'none'; return; }
   $('cart-empty').style.display = 'none'; $('cart-totals').style.display = '';
-  let total = 0;
+  let rawTotal = 0, unsentSubtotal = 0;
   $('cart-lines').innerHTML = state.cart.map((l, i) => {
     const lt = (l.price + l.mods.reduce((s, m) => s + m.price, 0)) * l.qty;
-    if (!l.voided) total += lt;
+    if (!l.voided) rawTotal += lt;
+    if (!l.voided && !l.sent) unsentSubtotal += lt;
     const modStr = l.mods.map(m => m.name + (m.price ? ` +${fmt(m.price)}` : '')).join(', ');
     const tag = l.voided
       ? ` <small class="sent-tag" style="color:var(--red)">VOID${l.void_reason ? ': ' + esc(l.void_reason) : ''}</small>`
@@ -163,6 +174,21 @@ function renderCart() {
         ${controls}
       </div></div>`;
   }).join('');
+
+  // Subtotal/service charge/SST come straight from the live order's server-computed
+  // bill (kept live-recomputed on every mutation) — never recomputed here. Lines
+  // added but not yet sent to the kitchen have no server figures yet, so their raw
+  // price is folded into subtotal/total only (not yet taxed/charged server-side).
+  const bill = liveOrder && liveOrder.subtotal != null ? liveOrder : null;
+  const subtotal = bill ? bill.subtotal + unsentSubtotal : rawTotal;
+  const svc = bill ? bill.service_charge : 0;
+  const tax = bill ? bill.tax : 0;
+  const total = bill ? bill.grand_total + unsentSubtotal : rawTotal;
+
+  $('cart-subtotal-rm').textContent = fmt(subtotal);
+  $('cart-svc-row').style.display = svc ? '' : 'none';
+  $('cart-svc-rm').textContent = fmt(svc);
+  $('cart-tax-rm').textContent = fmt(tax);
   $('cart-total-rm').textContent = fmt(total);
 }
 
@@ -342,6 +368,17 @@ function renderPayModal() {
   if (o.discount) rows.push(`<div>Discount <span style="float:right">-${fmt(o.discount)}</span></div>`);
   rows.push(`<div style="font-weight:700;margin-top:6px">Total <span style="float:right">${fmt(o.grand_total)}</span></div>`);
 
+  if (o.discounts?.length) {
+    rows.push(`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--light-gray)"><b>Discounts applied</b></div>`);
+    o.discounts.forEach(d => {
+      const removeBtn = API.user.role === 'admin' && !o.payments?.length
+        ? `<button data-action="remove-discount" data-id="${d.id}" style="color:var(--red)">Remove</button>` : '';
+      rows.push(`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <small>${esc(d.kind)} — ${esc(d.reason)}</small>
+        <span style="display:flex;align-items:center;gap:8px"><small>-${fmt(d.amount)}</small>${removeBtn}</span></div>`);
+    });
+  }
+
   if (o.payments?.length) {
     rows.push(`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--light-gray)"><b>Paid so far</b></div>`);
     o.payments.forEach(p => rows.push(`<div><small>${esc(p.method)}</small> <span style="float:right"><small>${fmt(p.amount)}</small></span></div>`));
@@ -354,6 +391,7 @@ function renderPayModal() {
   $('pay-change-due').textContent = '';
   $('pay-cash-row').style.display = '';
   $('pay-amount-row').style.display = '';
+  closeDiscountForm();
   renderSplitResult();
 }
 
@@ -470,6 +508,62 @@ async function splitBySeatUI() {
   } catch (e) { toast(e.message); }
 }
 
+/* ===== DISCOUNT ===== *
+   Staff need an admin's PIN (phase 05's authorize-token flow); admin applies
+   directly. Every path already writes its own audit row server-side. */
+function openDiscountForm() {
+  $('discount-form').style.display = '';
+  $('discount-kind').value = 'percent';
+  $('discount-value').value = '';
+  $('discount-reason').value = '';
+  $('discount-admin-name').value = '';
+  $('discount-admin-pin').value = '';
+  $('discount-pin-row').style.display = API.user.role === 'admin' ? 'none' : '';
+  updateDiscountValueUI();
+}
+
+function closeDiscountForm() { $('discount-form').style.display = 'none'; }
+
+function updateDiscountValueUI() {
+  const isComp = $('discount-kind').value === 'comp';
+  $('discount-value').disabled = isComp;
+  $('discount-value').placeholder = $('discount-kind').value === 'percent' ? 'Percent (e.g. 10)' : 'Amount (RM)';
+}
+
+async function applyDiscount() {
+  if (!currentOrder) return;
+  const kind = $('discount-kind').value;
+  const value = Number($('discount-value').value || 0);
+  const reason = $('discount-reason').value.trim();
+  if (kind !== 'comp' && !(value > 0)) return toast('Enter a discount value');
+  if (reason.length < 3) return toast('Reason must be at least 3 characters');
+
+  const orderId = $('pay-btn').dataset.orderId;
+  const body = { kind, value, reason };
+
+  try {
+    if (API.user.role !== 'admin') {
+      const name = $('discount-admin-name').value.trim();
+      const pin = $('discount-admin-pin').value.trim();
+      if (!name || !pin) return toast('Admin name and PIN are required to authorize a discount');
+      const auth = await API.post('/api/discounts/authorize', { name, pin });
+      body.authorize_token = auth.token;
+    }
+    await API.post(`/api/orders/${orderId}/discounts`, body);
+    toast('Discount applied');
+    await refreshPayModal();
+  } catch (e) { toast('Discount failed: ' + e.message); }
+}
+
+async function removeDiscount(id) {
+  const orderId = $('pay-btn').dataset.orderId;
+  try {
+    await API.del(`/api/orders/${orderId}/discounts/${id}`);
+    toast('Discount removed');
+    await refreshPayModal();
+  } catch (e) { toast('Remove failed: ' + e.message); }
+}
+
 /* ===== EVENT WIRING ===== */
 $('tab-pos').addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
@@ -515,10 +609,18 @@ $('pay-modal').addEventListener('click', e => {
     else if (action === 'pay-share') paySplitShare(Number(el.dataset.idx), el.dataset.method || 'Cash');
     else if (action === 'split-evenly') splitEvenlyUI();
     else if (action === 'split-by-seat') splitBySeatUI();
+    else if (action === 'open-discount-form') openDiscountForm();
+    else if (action === 'close-discount-form') closeDiscountForm();
+    else if (action === 'apply-discount') applyDiscount();
+    else if (action === 'remove-discount') removeDiscount(Number(el.dataset.id));
     else if (action === 'close-pay-modal') closePayModal();
     return;
   }
   if (e.target === $('pay-modal')) closePayModal();
+});
+
+$('pay-modal').addEventListener('change', e => {
+  if (e.target.id === 'discount-kind') updateDiscountValueUI();
 });
 
 $('cash-received-input').addEventListener('input', updateChangeDue);
