@@ -246,9 +246,10 @@ async function saveGroup() {
   if (!body.name) { $('group-modal-err').textContent = 'Give the group a name'; return; }
   if (body.max_select < body.min_select) { $('group-modal-err').textContent = 'Maximum cannot be less than minimum'; return; }
   try {
-    if (editingGroupId) await API.patch(`/api/admin/modifier_groups/${editingGroupId}`, body);
-    else editingGroupId = (await API.post('/api/admin/modifier_groups', { name: body.name, mode: body.mode })).id;
-    if (!editingGroupId) return;
+    // Create then patch: POST only takes a name and a mode (it derives the
+    // sensible min/max for that mode), so the min/max typed here are applied
+    // straight afterwards.
+    if (!editingGroupId) editingGroupId = (await API.post('/api/admin/modifier_groups', { name: body.name, mode: body.mode })).id;
     await API.patch(`/api/admin/modifier_groups/${editingGroupId}`, body);
     menuData = await API.get('/api/admin/menu');
     renderGroups(); renderMenuSection(); renderGroupOptions();

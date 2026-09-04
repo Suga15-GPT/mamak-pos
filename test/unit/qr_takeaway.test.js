@@ -181,10 +181,20 @@ test('rejecting a QR round voids its lines instead of deleting them', async () =
     assert.equal(rejected.status, 200);
 
     assert.equal((await json(await fetch(`${base}/api/public/sends/${ref}`))).status, 'rejected');
-    const order = (await openOrders(base, s)).find(o => o.table_id === s.tableId);
+
+    // Rejecting the only round on the bill closes the order too — otherwise the
+    // table would sit occupied by a zero-value bill nobody can pay or void.
+    assert.equal((await openOrders(base, s)).some(o => o.table_id === s.tableId), false);
+
+    const order = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.adminAuth })))
+      .find(o => o.table_id === s.tableId);
+    assert.equal(order.status, 'cancelled');
     assert.equal(order.items.length, 1, 'the line is kept for the record');
     assert.equal(order.items[0].voided, true);
     assert.equal(order.subtotal, 0, 'a voided line is not billed');
+
+    // …and the table is free to take a new order straight away.
+    assert.equal((await publicOrder(base, s.token, [{ item_id: s.mee.id, qty: 1 }])).status, 201);
   });
 });
 

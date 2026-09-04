@@ -39,10 +39,13 @@ function paint() {
 }
 
 export function buildNav() {
-  activeTab = allowed()[0]?.id || null;
-  paint();
-  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
-  if (activeTab) $('tab-' + activeTab).classList.add('active');
+  const first = allowed()[0]?.id;
+  activeTab = null;
+  // Go through switchTab so the first tab actually loads its data. Marking it
+  // active without that left a cook staring at an empty kitchen until the 60s
+  // backstop poll happened to fire.
+  if (first) switchTab(first);
+  else paint();
 }
 
 export function setPendingCount(n) {

@@ -288,3 +288,32 @@ test('moving an order to another table keeps the bill, the rounds and the audit 
     assert.equal(clash.status, 409);
   });
 });
+
+/* Two tablets sending to the same table in the same instant both read the same
+   max(seq_no). The unique index decides which is round 2; the loser must open
+   round 3, not fail — its items are real and the kitchen still needs them. */
+test('concurrent sends to one table produce distinct rounds, never a lost batch', async () => {
+  await withDb(async () => {
+    const base = await startApp();
+    const s = await setup(base);
+
+    const { id: orderId } = await json(await fetch(`${base}/api/orders`, {
+      method: 'POST', headers: s.adminAuth,
+      body: JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.roti.id, qty: 1 }] }),
+    }));
+
+    const append = item => fetch(`${base}/api/orders/${orderId}/items`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ items: [{ item_id: item.id, qty: 1 }] }),
+    });
+    const results = await Promise.all([append(s.telur), append(s.murtabak), append(s.mee)]);
+    assert.deepEqual(results.map(r => r.status), [200, 200, 200]);
+
+    const order = await getOrder(base, s, orderId);
+    assert.equal(order.sends.length, 4, 'one round per send, none lost');
+    assert.deepEqual(order.sends.map(x => x.seq_no).sort((a, b) => a - b), [1, 2, 3, 4]);
+    assert.equal(order.items.length, 4, 'every item is on the one bill');
+
+    // Every round that just arrived is new; none inherited anything.
+    order.sends.slice(1).forEach(round => assert.equal(round.tickets[0].status, 'sent'));
+  });
+});

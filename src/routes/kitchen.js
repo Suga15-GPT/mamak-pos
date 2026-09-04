@@ -106,6 +106,22 @@ router.post('/api/kitchen/sends/:id/reject', requireRole('admin', 'staff'), awai
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 
   await recomputeOrderBill(s.order_id);
+
+  // If rejecting emptied the bill entirely — a customer's first and only round
+  // turned away — the order is over. Leaving it open would hold the table
+  // hostage to a zero-value bill nobody can pay or void.
+  const remaining = await pool.query(
+    'SELECT count(*)::int n FROM order_items WHERE order_id = $1 AND voided_at IS NULL', [s.order_id]);
+  if (remaining.rows[0].n === 0) {
+    await pool.query(
+      "UPDATE orders SET status = 'cancelled', closed_by = $1, updated_at = now() WHERE id = $2 AND status NOT IN ('paid','cancelled','refunded')",
+      [req.user.id, s.order_id]);
+    await writeAudit(pool, {
+      userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: s.order_id,
+      detail: { reason: 'every item on this order was rejected' },
+    });
+  }
+
   const o = await pool.query('SELECT table_id FROM orders WHERE id = $1', [s.order_id]);
   publish('order.updated', { order_id: s.order_id, table_id: o.rows[0]?.table_id || null });
   res.json({ ok: true });

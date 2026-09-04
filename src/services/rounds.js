@@ -38,13 +38,26 @@ async function listStations(client = pool) {
    already exist rather than a counter column, so a concurrent double-submit
    collides on the (order_id, seq_no) unique index instead of silently
    producing two "round 2"s. */
-async function createSend(client, orderId, { source = 'staff', userId = null, approvalState = 'approved', publicRef = null } = {}) {
-  const r = await client.query(
-    `INSERT INTO order_sends (order_id, seq_no, source, sent_by, approval_state, public_ref)
-     VALUES ($1, COALESCE((SELECT max(seq_no) FROM order_sends WHERE order_id = $1), 0) + 1, $2, $3, $4, $5)
-     RETURNING id, seq_no`,
-    [orderId, source, userId, approvalState, publicRef]);
-  return r.rows[0];
+async function createSend(client, orderId, opts = {}, attempt = 0) {
+  const { source = 'staff', userId = null, approvalState = 'approved', publicRef = null } = opts;
+  try {
+    const r = await client.query(
+      `INSERT INTO order_sends (order_id, seq_no, source, sent_by, approval_state, public_ref)
+       VALUES ($1, COALESCE((SELECT max(seq_no) FROM order_sends WHERE order_id = $1), 0) + 1, $2, $3, $4, $5)
+       RETURNING id, seq_no`,
+      [orderId, source, userId, approvalState, publicRef]);
+    return r.rows[0];
+  } catch (e) {
+    // Two tablets sending to the same table in the same instant both read the
+    // same max(seq_no); the unique index is what makes only one of them
+    // "round 2". The loser opens the next round instead of failing — its items
+    // are real and the kitchen still needs them. Bounded, so a genuinely stuck
+    // insert surfaces rather than spinning.
+    if (e.code === '23505' && e.constraint === 'order_sends_order_id_seq_no_key' && attempt < 3) {
+      return createSend(client, orderId, opts, attempt + 1);
+    }
+    throw e;
+  }
 }
 
 /* One ticket per distinct station in the round. A round awaiting staff approval
