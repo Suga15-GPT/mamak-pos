@@ -11,7 +11,9 @@ const translations = {
   // the tab heading and the nav label have to be the same word.
   'nav.pos': { en: 'Tables', ms: 'Meja' },
   'nav.kitchen': { en: 'Kitchen', ms: 'Dapur' },
-  'nav.dashboard': { en: 'Dashboard', ms: 'Papan Pemuka' },
+  // "Sales" is what the screen is headed and what staff call it; the nav label
+  // has to be the same word.
+  'nav.dashboard': { en: 'Sales', ms: 'Jualan' },
   'nav.shift': { en: 'Shift', ms: 'Syif' },
   'nav.admin': { en: 'Admin', ms: 'Admin' },
 

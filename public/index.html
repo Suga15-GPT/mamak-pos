@@ -31,8 +31,14 @@
   <div id="offline-banner" role="status"></div>
   <header>
     <span class="brand">Mamak POS</span>
-    <div class="user">
-      <span id="conn-dot" class="conn-dot offline" title="Live connection status"></span>
+    <span id="conn-dot" class="conn-dot offline" title="Live connection status"></span>
+    <span style="flex:1"></span>
+    <!-- On a phone these collapse behind one button. They are the least
+         frequent controls in the app — the ones staff reach for constantly are
+         in the bottom bar — so a disclosure here costs nothing and stops the
+         header wrapping into three cramped lines. -->
+    <button class="icon-btn" id="account-toggle" data-action="toggle-account" aria-expanded="false" aria-controls="account-menu" aria-label="Account and settings">👤</button>
+    <div class="user" id="account-menu">
       <button class="icon-btn" id="locale-toggle" data-action="toggle-locale" title="Switch language / Tukar bahasa" aria-label="Switch language">EN</button>
       <button class="icon-btn" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
       <span id="uname"></span>

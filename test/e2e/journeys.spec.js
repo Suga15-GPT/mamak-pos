@@ -16,12 +16,24 @@ async function login(page) {
   await page.locator('#lname').fill('Admin');
   await page.locator('#lpin').fill('1234');
   await page.getByRole('button', { name: 'Log In' }).click();
+  await expect(page.locator('#app-view')).toBeVisible();
+  const collapsed = await openAccountMenu(page);
   await expect(page.locator('#uname')).toHaveText(/Admin/);
+  if (collapsed) await page.locator('#account-toggle').click(); // put it away again
 }
 
 // The nav renders twice (top tabs on a tablet, a bottom bar on a phone); at the
 // desktop viewport the top one is the visible copy.
 const navTab = (page, name) => page.locator('#nav').getByRole('button', { name });
+
+/* The header's account controls collapse behind one button below 600px, so a
+   phone-sized check has to open them before it can see the user's name. */
+async function openAccountMenu(page) {
+  const toggle = page.locator('#account-toggle');
+  if (!(await toggle.isVisible())) return false;
+  await toggle.click();
+  return true;
+}
 
 async function openTable(page, name) {
   await page.locator('#tables-grid').getByRole('button', { name: new RegExp(`^${name}\\b`) }).click();

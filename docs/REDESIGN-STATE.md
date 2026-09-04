@@ -118,5 +118,5 @@ with their own admin UI, loyalty, e-Invoice.
 
 ## Latest test state
 
-`npm test` 94/94 pass. Playwright 13/13 pass (8 journeys + 5 responsive
-viewports). See the final report for pasted output.
+`npm test` 95/95 pass, three consecutive runs. Playwright 13/13 pass
+(8 journeys + 5 responsive viewports). See the final report for pasted output.

@@ -35,20 +35,25 @@ function comparison(today, yesterday) {
 function hourlyChart(hourly) {
   if (!hourly.length) return '<div class="empty">No sales yet today</div>';
   const max = Math.max(...hourly.map(h => h.sales));
-  const W = 320, H = 140, pad = 22;
-  const bw = (W - pad) / hourly.length;
+  // A wide, flat viewBox: the SVG scales to the card's width and keeps its
+  // aspect ratio, so a tall box would render as a tall chart on a wide screen.
+  const W = 600, H = 180, pad = 24;
+  // Bars are capped and left-aligned: one busy hour early in the day should not
+  // draw a single rectangle across the whole card.
+  const slot = (W - pad) / Math.max(hourly.length, 8);
+  const bw = Math.min(38, Math.max(6, slot - 6));
   const bars = hourly.map((h, i) => {
-    const barH = max ? Math.max(2, ((H - pad - 14) * h.sales) / max) : 2;
-    const x = pad + i * bw + 2;
+    const barH = max ? Math.max(2, ((H - pad - 16) * h.sales) / max) : 2;
+    const x = pad + i * slot;
     const y = H - pad - barH;
-    return `<rect class="bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(3, bw - 4).toFixed(1)}"
-              height="${barH.toFixed(1)}" rx="2"><title>${h.hour}:00 — ${fmt(h.sales)} (${h.orders} orders)</title></rect>
-            <text class="axis" x="${(x + (bw - 4) / 2).toFixed(1)}" y="${H - pad + 12}" text-anchor="middle">${h.hour}</text>`;
+    return `<rect class="bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}"
+              height="${barH.toFixed(1)}" rx="3"><title>${h.hour}:00 — ${fmt(h.sales)} (${h.orders} orders)</title></rect>
+            <text class="axis" x="${(x + bw / 2).toFixed(1)}" y="${H - pad + 14}" text-anchor="middle">${h.hour}</text>`;
   }).join('');
   const busiest = hourly.reduce((a, b) => (b.sales > a.sales ? b : a));
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img"
       aria-label="Sales by hour. Busiest hour ${busiest.hour}:00 with ${fmt(busiest.sales)}.">
-      <line class="grid-line" x1="${pad}" y1="${H - pad}" x2="${W}" y2="${H - pad}"/>
+      <line class="grid-line" x1="${pad}" y1="${H - pad}" x2="${W - 4}" y2="${H - pad}"/>
       ${bars}
     </svg>
     <div class="meta" style="margin-top:6px">Busiest hour: <b>${busiest.hour}:00</b> — ${fmt(busiest.sales)}</div>`;

@@ -64,12 +64,30 @@ window.showLogin = showLogin;
 $('login-view').addEventListener('click', e => {
   if (e.target.closest('[data-action="login"]')) doLogin();
 });
-document.querySelector('header').addEventListener('click', e => {
+const header = document.querySelector('header');
+function closeAccountMenu() {
+  header.classList.remove('account-open');
+  $('account-toggle').setAttribute('aria-expanded', 'false');
+}
+header.addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
-  if (el.dataset.action === 'toggle-theme') toggleTheme();
-  else if (el.dataset.action === 'logout') doLogout();
-  else if (el.dataset.action === 'change-pin') openChangePinDialog(false);
+  const action = el.dataset.action;
+  if (action === 'toggle-account') {
+    const open = header.classList.toggle('account-open');
+    $('account-toggle').setAttribute('aria-expanded', String(open));
+    return;
+  }
+  if (action === 'toggle-theme') toggleTheme();
+  else if (action === 'logout') doLogout();
+  else if (action === 'change-pin') openChangePinDialog(false);
+  // Any choice closes the panel; the language and theme toggles are the only
+  // ones you might use twice, and reopening is one tap.
+  if (action !== 'toggle-locale') closeAccountMenu();
+});
+// Tapping anywhere else dismisses it, the way a menu is expected to behave.
+document.addEventListener('click', e => {
+  if (!e.target.closest('header')) closeAccountMenu();
 });
 
 /* ===== INIT =====
