@@ -432,6 +432,12 @@ function renderPayModal() {
       rows.push(`<div style="margin-top:8px"><button class="btn small outline" data-action="reprint-receipt">Reprint receipt</button></div>`);
     }
   }
+
+  if (o.refunds?.length) {
+    rows.push(`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--light-gray)"><b>Refunded</b></div>`);
+    o.refunds.forEach(r => rows.push(`<div><small>${esc(r.method)} — ${esc(r.reason)}</small> <span style="float:right"><small style="color:var(--red)">-${fmt(r.amount)}</small></span></div>`));
+  }
+
   rows.push(`<div style="font-weight:700;color:var(--terra);margin-top:6px">Remaining <span style="float:right">${fmt(o.amount_due)}</span></div>`);
 
   $('pay-details').innerHTML = `<div style="font-size:14px;color:var(--warm-gray);margin-bottom:8px">Order #${o.id}</div>${rows.join('')}`;
@@ -441,6 +447,10 @@ function renderPayModal() {
   $('pay-cash-row').style.display = '';
   $('pay-amount-row').style.display = '';
   closeDiscountForm();
+  closeRefundForm();
+  // Refund is only meaningful once there's a payment (and something left of it)
+  // to refund against.
+  $('refund-section').style.display = (o.payments || []).some(p => p.refundable > 0.001) ? '' : 'none';
   renderSplitResult();
 }
 
@@ -618,6 +628,53 @@ async function removeDiscount(id) {
   } catch (e) { toast('Remove failed: ' + e.message); }
 }
 
+/* ===== REFUND (phase 12) ===== *
+   The first way to move money back out of the till — always against one
+   specific payment, so it refunds by the method it was taken by. Same
+   admin-approval shape as a discount: admin issues directly, staff needs an
+   admin's PIN via the same authorize-token flow. */
+function openRefundForm() {
+  if (!currentOrder) return;
+  const refundable = (currentOrder.payments || []).filter(p => p.refundable > 0.001);
+  $('refund-payment').innerHTML = refundable
+    .map(p => `<option value="${p.id}" data-max="${p.refundable}">${esc(p.method)} — ${fmt(p.refundable)} refundable</option>`).join('');
+  $('refund-amount').value = '';
+  $('refund-reason').value = '';
+  $('refund-admin-name').value = '';
+  $('refund-admin-pin').value = '';
+  $('refund-pin-row').style.display = API.user.role === 'admin' ? 'none' : '';
+  $('refund-form').style.display = '';
+}
+
+function closeRefundForm() { $('refund-form').style.display = 'none'; }
+
+async function applyRefund() {
+  if (!currentOrder) return;
+  const paymentId = Number($('refund-payment').value);
+  const amount = Number($('refund-amount').value || 0);
+  const reason = $('refund-reason').value.trim();
+  if (!paymentId) return toast('No payment left to refund');
+  if (!(amount > 0)) return toast('Enter an amount to refund');
+  if (reason.length < 3) return toast('Reason must be at least 3 characters');
+
+  const orderId = $('pay-btn').dataset.orderId;
+  const body = { payment_id: paymentId, amount, reason };
+
+  try {
+    if (API.user.role !== 'admin') {
+      const name = $('refund-admin-name').value.trim();
+      const pin = $('refund-admin-pin').value.trim();
+      if (!name || !pin) return toast('Admin name and PIN are required to authorize a refund');
+      const auth = await API.post('/api/discounts/authorize', { name, pin });
+      body.authorize_token = auth.token;
+    }
+    await API.post(`/api/orders/${orderId}/refunds`, body);
+    toast('Refund issued');
+    await refreshPayModal();
+    renderTables();
+  } catch (e) { toast('Refund failed: ' + e.message); }
+}
+
 async function reprintReceipt() {
   const orderId = $('pay-btn').dataset.orderId;
   if (!confirm('Reprint this receipt? This is logged.')) return;
@@ -678,6 +735,9 @@ $('pay-modal').addEventListener('click', e => {
     else if (action === 'close-discount-form') closeDiscountForm();
     else if (action === 'apply-discount') applyDiscount();
     else if (action === 'remove-discount') removeDiscount(Number(el.dataset.id));
+    else if (action === 'open-refund-form') openRefundForm();
+    else if (action === 'close-refund-form') closeRefundForm();
+    else if (action === 'apply-refund') applyRefund();
     else if (action === 'reprint-receipt') reprintReceipt();
     else if (action === 'close-pay-modal') closePayModal();
     return;

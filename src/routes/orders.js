@@ -9,15 +9,18 @@ const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const {
   recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
+  addRefund, listRefunds,
   splitEvenly, splitBySeat, paidCentsFor, guardAgainstShortfall, settleIfMatchesPaid, previewBillExcludingLine,
 } = require('../services/billing');
 
 const router = express.Router();
 
-// Short-lived, one-use authorization for a staff member to apply a discount that
-// requires admin sign-off (Do #4) — an admin's PIN, not a full login session.
-// In-memory is deliberate: same pattern as rateLimit in lib/auth.js, and these
-// tokens are only ever meant to live for the next couple of minutes.
+// Short-lived, one-use authorization for a staff member to apply a discount, or
+// (phase 12) issue a refund, that requires admin sign-off — an admin's PIN, not
+// a full login session. In-memory is deliberate: same pattern as rateLimit in
+// lib/auth.js, and these tokens are only ever meant to live for the next couple
+// of minutes. Shared between the two actions rather than inventing a second
+// authorize endpoint — a token just proves "an admin typed their PIN just now".
 const discountAuthTokens = new Map();
 
 router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
@@ -31,22 +34,32 @@ router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async
     // that already holds everything older.
     const sinceDate = req.query.since ? new Date(req.query.since) : null;
     orders = sinceDate && !isNaN(sinceDate)
-      ? await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled') AND o.updated_at > $1", [sinceDate], 'ORDER BY o.id ASC LIMIT 200')
-      : await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled')", [], 'ORDER BY o.id ASC LIMIT 200');
+      ? await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled','refunded') AND o.updated_at > $1", [sinceDate], 'ORDER BY o.id ASC LIMIT 200')
+      : await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled','refunded')", [], 'ORDER BY o.id ASC LIMIT 200');
   }
 
   // Live payments-so-far + remaining balance, for the "RM X.XX remaining" display
   // and the payment modal's split/partial flows; discounts-so-far, so the payment
-  // modal can show each applied discount with its reason and let an admin remove one.
+  // modal can show each applied discount with its reason and let an admin remove
+  // one. (Phase 12) refunds-so-far, and each payment's still-refundable balance,
+  // so the payment modal's refund dialog can offer a payment to refund against
+  // without a second round trip.
   for (const o of orders) {
-    const [payments, dueCents, discounts] = await Promise.all([listPayments(o.id), amountDue(o.id), listDiscounts(o.id)]);
+    const [payments, dueCents, discounts, refunds] = await Promise.all(
+      [listPayments(o.id), amountDue(o.id), listDiscounts(o.id), listRefunds(o.id)]);
+    const refundedByPayment = {};
+    refunds.forEach(r => { refundedByPayment[r.payment_id] = (refundedByPayment[r.payment_id] || 0) + r.amount_cents; });
     o.payments = payments.map(p => ({
-      method: p.method, amount: cents2rm(p.amount_cents),
+      id: p.id, method: p.method, amount: cents2rm(p.amount_cents),
       tendered: p.tendered_cents == null ? null : cents2rm(p.tendered_cents), at: p.at,
+      refundable: cents2rm(p.amount_cents - (refundedByPayment[p.id] || 0)),
     }));
     o.amount_due = cents2rm(Math.max(0, dueCents));
     o.discounts = discounts.map(d => ({
       id: d.id, kind: d.kind, amount: cents2rm(d.amount_cents), reason: d.reason, at: d.at,
+    }));
+    o.refunds = refunds.map(r => ({
+      id: r.id, payment_id: r.payment_id, method: r.method, amount: cents2rm(r.amount_cents), reason: r.reason, at: r.at,
     }));
   }
   res.json(orders);
@@ -97,7 +110,7 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
     // Not a 500 — tell the client which order already exists so it can join it.
     if (e.code === '23505' && e.constraint === 'one_open_order_per_table') {
       const existing = await pool.query(
-        "SELECT id FROM orders WHERE table_id = $1 AND status NOT IN ('paid','cancelled') ORDER BY id DESC LIMIT 1",
+        "SELECT id FROM orders WHERE table_id = $1 AND status NOT IN ('paid','cancelled','refunded') ORDER BY id DESC LIMIT 1",
         [Number(table_id)]);
       return res.status(409).json({ error: 'table already has an open order', order_id: existing.rows[0]?.id });
     }
@@ -113,7 +126,7 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
    landed, without needing a batch-level key column of its own. */
 router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async (req, res) => {
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
-  if (!o.rows[0] || ['paid', 'cancelled'].includes(o.rows[0].status))
+  if (!o.rows[0] || ['paid', 'cancelled', 'refunded'].includes(o.rows[0].status))
     return res.status(400).json({ error: 'order closed' });
   // Once any payment is recorded against the order, its total is being settled —
   // adding more lines would make what was just paid for wrong.
@@ -169,7 +182,7 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
 
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
-  if (['paid', 'cancelled'].includes(o.rows[0].status)) return res.status(400).json({ error: 'order closed' });
+  if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) return res.status(400).json({ error: 'order closed' });
   if (o.rows[0].status !== 'sent' && req.user.role !== 'admin')
     return res.status(403).json({ error: 'admin only once the kitchen has started this order' });
 
@@ -199,6 +212,9 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
   res.json({ ok: true });
 }));
 
+// 'paid', 'cancelled', and (phase 12) 'refunded' are terminal — no key here
+// means `(TRANSITIONS[cur] || [])` is empty, so nothing can transition out of
+// them via this route (refunds/order.refund is its own endpoint, not a status PATCH).
 const TRANSITIONS = {
   sent: ['preparing', 'cancelled'],
   preparing: ['ready', 'cancelled', 'sent'],
@@ -331,6 +347,31 @@ router.post('/api/orders/:id/discounts', requireRole('admin', 'staff'), awaitH(a
 router.delete('/api/orders/:id/discounts/:discountId', requireRole('admin'), awaitH(async (req, res) => {
   await removeDiscount(req.params.id, req.params.discountId, { userId: req.user.id });
   res.json({ ok: true });
+}));
+
+/* Refund a specific payment (audit #39). Same admin-approval shape as a
+   discount: admin issues directly, staff needs a token from
+   POST /api/discounts/authorize (reused here rather than a second endpoint).
+   Always against one payment_id, never free-floating, so it refunds by the
+   method it was taken by and the drawer maths stays honest. */
+router.post('/api/orders/:id/refunds', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  const { payment_id, amount, reason, authorize_token } = req.body || {};
+  const o = await pool.query('SELECT id, table_id FROM orders WHERE id = $1', [req.params.id]);
+  if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
+
+  let approverId = req.user.id;
+  if (req.user.role !== 'admin') {
+    const auth = authorize_token && discountAuthTokens.get(authorize_token);
+    if (!auth || auth.expires < Date.now()) return res.status(403).json({ error: 'admin authorization required' });
+    discountAuthTokens.delete(authorize_token); // one-use
+    approverId = auth.adminId;
+  }
+
+  const result = await addRefund(o.rows[0].id, {
+    paymentId: Number(payment_id), amountCents: rm2cents(amount), reason, approvedBy: approverId, userId: req.user.id,
+  });
+  publish('order.updated', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
+  res.json({ ok: true, id: result.id, amount: cents2rm(result.amount_cents), refunded_to_zero: result.refunded_to_zero });
 }));
 
 module.exports = router;
