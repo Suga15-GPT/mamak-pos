@@ -56,6 +56,8 @@ Ordered by business impact. These are the backlog that `docs/REBUILD-PLAN.md` sc
 | 40 | Low | **Discounts have no UI.** The backend and its admin-approval flow are implemented and tested, but nothing in the staff app reaches them. Phase 05b. |
 | 36 | **High** | **No staff management and no way to change a PIN.** The API can create and delete users but never update one, and the Admin tab has no user screen at all — so the only way to change the admin PIN today is to delete every user row and let the app re-seed. That workaround stops working the moment phase 03 lands, because orders will reference the staff who took them. There is also no deactivation: a departing waiter can only be deleted, which would erase the name attached to their past bills. Restaurants have constant staff turnover; scheduled into phase 11. |
 
+| 44 | **High** | **A Z report's sales and payments do not agree.** `services/shifts.js` scopes sales by `orders.shift_id` (the shift the order was *opened* in) and cash by `payments.shift_id` (the shift that *collected*), so an order opened 11:45pm and paid 12:15am books its sale in one shift and its cash in the next. The owner reads "Gross sales RM 4,200 / Payments RM 3,900" and concludes RM 300 was stolen. For a shop trading past midnight that is most nights, and it discredits the one report that exists to catch theft. Documented honestly by the phase 09 session; fixed in phase 12 by recognising revenue at settlement. |
+
 ## Not bugs (checked, working as intended)
 
 - Order status machine correctly refuses transitions out of `paid`/`cancelled`.
