@@ -66,9 +66,11 @@ router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async
   res.json(orders);
 }));
 
-/* tables for staff/kitchen: names only, no qr_token (that stays admin-only) */
+/* tables for staff/kitchen: names only, no qr_token (that stays admin-only).
+   Retired tables are hidden from the floor but kept in the database, because
+   old bills still name them. */
 router.get('/api/tables', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
-  const r = await pool.query('SELECT id, name FROM tables ORDER BY id');
+  const r = await pool.query('SELECT id, name FROM tables WHERE active ORDER BY sort, id');
   res.json(r.rows);
 }));
 

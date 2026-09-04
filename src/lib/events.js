@@ -27,10 +27,14 @@ function subscribe(fn) {
   return () => bus.off('event', fn);
 }
 
+// How many screens are currently attached to the stream. Admin -> System
+// reports this as a real number rather than a green light nobody checked.
+function subscriberCount() { return bus.listenerCount('event'); }
+
 // Replay everything after sinceSeq, for a reconnect that shouldn't miss an order.
 function recent(sinceSeq) {
   if (!sinceSeq) return [];
   return ring.filter(e => e.seq > sinceSeq);
 }
 
-module.exports = { publish, subscribe, recent };
+module.exports = { publish, subscribe, recent, subscriberCount };
