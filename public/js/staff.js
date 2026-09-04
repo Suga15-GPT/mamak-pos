@@ -1,4 +1,4 @@
-import { $, esc, toast } from './state.js';
+import { $, esc, toast, ask } from './state.js';
 
 // Cached so the per-row Edit/Reset PIN/Deactivate handlers don't need an
 // extra round-trip to know the current name/role they're acting on.
@@ -30,7 +30,7 @@ export async function refreshStaff() {
       ? former.map(u => `
         <div class="admin-row">
           <div><b>${esc(u.name)}</b> <span class="meta">${esc(u.role)}</span>
-            <div class="meta">Left ${u.left_at ? new Date(u.left_at).toLocaleDateString() : '—'}</div></div>
+            <div class="meta">No longer active${u.last_seen_at ? ` · last seen ${new Date(u.last_seen_at).toLocaleDateString()}` : ''}</div></div>
         </div>`).join('')
       : '<div class="empty">No former staff</div>';
   } catch (e) { toast('Staff load error: ' + e.message); console.error(e); }
@@ -51,14 +51,17 @@ async function createStaff() {
   } catch (e) { toast(e.message); }
 }
 
-function editStaff(id, current) {
-  const name = prompt('Name:', current.name);
+async function editStaff(id, current) {
+  const name = await ask({ title: 'Rename staff member', value: current.name, ok: 'Save' });
   if (name === null) return;
-  const role = prompt('Role (admin/staff/kitchen):', current.role);
+  const role = await ask({
+    title: `Role for ${name}`,
+    hint: 'admin · staff · kitchen',
+    value: current.role, ok: 'Save',
+  });
   if (role === null) return;
-  API.patch('/api/admin/users/' + id, { name: name.trim(), role: role.trim() })
-    .then(() => { toast('Updated'); refreshStaff(); })
-    .catch(e => toast(e.message));
+  try { await API.patch('/api/admin/users/' + id, { name, role: role.trim() }); toast('Updated'); refreshStaff(); }
+  catch (e) { toast(e.message); }
 }
 
 async function deactivateStaff(id, name) {
@@ -68,7 +71,11 @@ async function deactivateStaff(id, name) {
 }
 
 async function resetStaffPin(id, name) {
-  const newPin = prompt(`New temporary PIN for ${name} (4-8 digits — they will be asked to change it at next login):`);
+  const newPin = await ask({
+    title: `Reset ${name}'s PIN`,
+    hint: 'Give them a temporary PIN of 4-8 digits. They choose their own at their next login.',
+    ok: 'Reset PIN',
+  });
   if (newPin === null) return;
   try {
     await API.post(`/api/admin/users/${id}/reset-pin`, { new_pin: newPin.trim() });

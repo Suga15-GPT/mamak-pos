@@ -1,124 +1,202 @@
-import { $, fmt, esc, toast, onStreamEvent } from './state.js';
+import { $, esc, toast, onStreamEvent, stateWords, minsSince, ageClass, ask } from './state.js';
+import { setPendingCount } from './nav.js';
 
-// Void ids we've already flashed once, so a later poll/stream refresh doesn't
-// replay the animation for a void the cook has already seen.
+/* ===== KITCHEN DISPLAY =====
+   Works station tickets, not dining orders. One ticket is "what this station
+   has to make for this round of this table" — so an add-on appears as its own
+   fresh ticket in NEW while the table's earlier round sits in SERVED, which is
+   exactly the thing the old order-level display could not express. */
+
+// Void ids already flashed once, so a later refresh doesn't replay the
+// animation for a void the cook has already seen.
 const flashedVoids = new Set();
-// orderId -> the status to revert to if "Undo" is tapped within the window.
-// Phase 03 already added backward transitions server-side; this just
-// surfaces the existing one as a 5s undo instead of a manual status menu —
-// note it 403s for the 'kitchen' role specifically (BACKWARD is blocked for
-// that role by design), so Undo only works for admin/staff here.
+// ticketId -> the status to revert to if "Undo" is tapped within the window.
 const recentAdvance = new Map();
-const UNDO_WINDOW_MS = 5000;
+const UNDO_WINDOW_MS = 6000;
 
-function ageBadgeClass(mins) {
-  return mins < 5 ? 'age-fresh' : mins < 10 ? 'age-warm' : 'age-late';
+// Only the obvious NEXT action is offered — never three buttons of which two
+// are disabled (master spec §41).
+const NEXT = {
+  sent:      { status: 'preparing', label: '🍳 Start cooking', cls: '' },
+  preparing: { status: 'ready',     label: '✅ Ready',          cls: 'sage' },
+  ready:     { status: 'served',    label: '🍽 Served',         cls: 'charcoal' },
+};
+
+let stations = [];
+let activeStation = null;
+
+async function loadStations() {
+  if (stations.length) return;
+  try {
+    stations = await API.get('/api/kitchen/stations');
+    activeStation = activeStation || stations[0]?.code || null;
+  } catch (e) { stations = []; }
 }
 
-/* ===== KITCHEN ===== */
-export async function refreshKitchen() {
-  try {
-    const orders = await API.get('/api/orders');
-    let active = orders.filter(o => ['sent', 'preparing', 'ready'].includes(o.status));
-    const served = orders.filter(o => o.status === 'served').sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+function renderStationTabs() {
+  // One station is not a choice; hide the switcher entirely rather than showing
+  // a single tab nobody can act on.
+  $('station-tabs').style.display = stations.length > 1 ? '' : 'none';
+  $('station-tabs').innerHTML = stations.map(s =>
+    `<button class="${s.code === activeStation ? 'active' : ''}"
+       aria-pressed="${s.code === activeStation}" data-action="set-station" data-id="${esc(s.code)}">${esc(s.name)}</button>`
+  ).join('');
+}
 
-    // A ticket with a void the cook hasn't seen yet flashes once and sits at
-    // the top of the list — that's the whole point of a void, catching it
-    // before the wrong dish goes out.
-    const newlyVoided = new Set();
-    active.forEach(o => {
-      o.items.forEach(l => {
-        if (!l.voided) return;
-        const key = `${o.id}:${l.id}`;
-        if (!flashedVoids.has(key)) { flashedVoids.add(key); newlyVoided.add(o.id); }
-      });
-    });
-    active = active.slice().sort((a, b) => {
+function ticketHtml(t) {
+  const mins = minsSince(t.sent_at);
+  const hasVoid = t.items.some(i => i.voided);
+  const key = `${t.id}`;
+  const newlyVoided = hasVoid && !flashedVoids.has(key);
+  if (hasVoid) flashedVoids.add(key);
+  const next = NEXT[t.status];
+  const undo = recentAdvance.get(t.id);
+  const time = new Date(t.sent_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const who = t.source === 'qr' ? 'CUSTOMER QR' : (t.sent_by_name || 'staff');
+
+  return `<div class="k-order ${esc(t.status)}${hasVoid ? ' has-void' : ''}${newlyVoided ? ' void-flash' : ''}">
+    <div class="head">
+      <div>
+        <div class="k-where">${esc(t.table || `Takeaway #${t.order_id}`)}</div>
+        <div class="k-when">Sent ${esc(time)} · by ${esc(who)}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+        ${t.is_addon ? `<span class="badge addon">Add-on · Round ${t.round}</span>` : ''}
+        ${t.source === 'qr' ? '<span class="badge qr">QR</span>' : ''}
+        <span class="badge ${ageClass(mins)}">⏱ ${mins} min</span>
+        ${hasVoid ? '<span class="badge void">Void</span>' : ''}
+      </div>
+    </div>
+    <ul>${t.items.map(i => `<li class="${i.voided ? 'voided' : ''}">${i.qty}× ${esc(i.name)}
+      ${i.mods.length || i.note ? `<small>${esc([...i.mods, i.note].filter(Boolean).join(' · '))}</small>` : ''}
+      ${i.voided ? `<small>VOIDED: ${esc(i.void_reason || '')}</small>` : ''}</li>`).join('')}</ul>
+    ${next ? `<button class="btn k-next ${next.cls}" data-action="advance" data-id="${t.id}" data-status="${next.status}">${next.label}</button>` : ''}
+    ${undo ? `<button class="k-undo" data-action="undo" data-id="${t.id}">↶ Undo</button>` : ''}
+    <details class="k-history">
+      <summary>Who handled this</summary>
+      <div class="meta">Sent ${esc(time)} · ${esc(who)}</div>
+      ${(t.history || []).map(h => `<div class="meta">${esc(new Date(h.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))} · ${esc(h.what)}${h.who ? ` · ${esc(h.who)}` : ''}</div>`).join('')}
+    </details>
+  </div>`;
+}
+
+function fill(colId, countId, tickets) {
+  $(colId).innerHTML = tickets.map(ticketHtml).join('') || '<div class="empty" style="padding:16px">Nothing here</div>';
+  $(countId).textContent = tickets.length;
+}
+
+export async function refreshKitchen() {
+  await loadStations();
+  renderStationTabs();
+  if (!activeStation) {
+    $('k-col-sent').innerHTML = '<div class="empty">No preparation stations configured</div>';
+    return;
+  }
+  try {
+    const { tickets } = await API.get(`/api/kitchen/tickets?station=${encodeURIComponent(activeStation)}`);
+    // A ticket carrying an unseen void sorts to the top: catching it before the
+    // wrong dish goes out is the entire point of a void.
+    const sorted = tickets.slice().sort((a, b) => {
       const av = a.items.some(i => i.voided), bv = b.items.some(i => i.voided);
       if (av !== bv) return av ? -1 : 1;
-      return new Date(a.created_at) - new Date(b.created_at);
+      return new Date(a.sent_at) - new Date(b.sent_at);
     });
-
-    if (!active.length) { $('kitchen-active').innerHTML = '<div class="empty">No active orders</div>'; }
-    else {
-      $('kitchen-active').innerHTML = active.map(o => {
-        const mins = Math.floor((Date.now() - new Date(o.created_at)) / 60000);
-        const hasVoid = o.items.some(i => i.voided);
-        const undo = recentAdvance.get(o.id);
-        return `<div class="k-order ${o.status}${hasVoid ? ' has-void' : ''}${newlyVoided.has(o.id) ? ' void-flash' : ''}">
-          <div class="head"><b>#${o.id} · ${esc(o.table)}</b>
-            <span><span class="badge ${o.status}">${o.status}</span> <span class="badge ${ageBadgeClass(mins)}">${mins}m</span>${hasVoid ? ' <span class="badge void">VOID</span>' : ''}</span></div>
-          <ul>${o.items.map(l => `<li${l.voided ? ' style="opacity:.5;text-decoration:line-through"' : ''}><b>${l.qty}×</b> ${esc(l.name)}${l.voided ? ' <b style="color:#dc2626;text-decoration:none">VOID</b>' : ''}
-            <small>${l.mods.map(m => m.name + (m.price ? ` +${fmt(m.price)}` : '')).join(' · ')}${l.note ? ` ·  ${esc(l.note)}` : ''}</small></li>`).join('')}</ul>
-          <div class="k-actions">
-            <button style="background:${o.status === 'sent' ? '#ea580c' : '#d4ccc6'}" data-action="set-status" data-id="${o.id}" data-status="preparing" ${o.status !== 'sent' ? 'disabled' : ''}> Cooking</button>
-            <button style="background:${o.status === 'preparing' ? '#16a34a' : '#d4ccc6'}" data-action="set-status" data-id="${o.id}" data-status="ready" ${o.status !== 'preparing' ? 'disabled' : ''}>✅ Ready</button>
-            <button style="background:${o.status === 'ready' ? '#7c3aed' : '#d4ccc6'}" data-action="set-status" data-id="${o.id}" data-status="served" ${o.status !== 'ready' ? 'disabled' : ''}>🍽 Served</button>
-          </div>
-          ${undo ? `<button class="k-undo" data-action="undo-status" data-id="${o.id}">↶ Undo (5s)</button>` : ''}
-          </div>`;
-      }).join('');
-    }
-
-    if (served.length) {
-      $('kitchen-served').style.display = '';
-      $('kitchen-served-list').innerHTML = served.map(o => {
-        const mins = Math.floor((Date.now() - new Date(o.created_at)) / 60000);
-        return `<div class="k-order served">
-          <div class="head"><b>#${o.id} · ${esc(o.table)}</b>
-            <span><span class="badge served">served</span> <span class="badge ${ageBadgeClass(mins)}">${mins}m</span></span></div>
-          <ul>${o.items.map(l => `<li><b>${l.qty}×</b> ${esc(l.name)}</li>`).join('')}</ul>
-        </div>`;
-      }).join('');
-    } else {
-      $('kitchen-served').style.display = 'none';
-    }
+    fill('k-col-sent', 'k-count-sent', sorted.filter(t => t.status === 'sent'));
+    fill('k-col-preparing', 'k-count-preparing', sorted.filter(t => t.status === 'preparing'));
+    fill('k-col-ready', 'k-count-ready', sorted.filter(t => t.status === 'ready'));
+    fill('k-col-served', 'k-count-served', sorted.filter(t => t.status === 'served').reverse());
   } catch (e) { console.error(e); }
+
+  await refreshPending();
 }
 
-async function setSt(id, status) {
-  // Capture the status this order is *leaving* so a 5s "Undo" can send it
-  // straight back — the PATCH below has already taken effect by the time
-  // Undo is offered, matching the usual "undo toast" pattern.
-  const orders = await API.get('/api/orders').catch(() => []);
-  const prevStatus = orders.find(o => o.id === id)?.status;
+/* ===== QR APPROVAL QUEUE =====
+   Empty (and invisible) unless an admin turned on "Require staff approval". */
+async function refreshPending() {
+  let pending = [];
+  try { pending = await API.get('/api/kitchen/pending'); } catch (e) { pending = []; }
+  setPendingCount(pending.length);
+  if (!pending.length) { $('kitchen-pending').innerHTML = ''; return; }
+  $('kitchen-pending').innerHTML = `<div class="card" style="border-color:var(--info);margin-bottom:16px">
+    <h3>⏳ Customer orders waiting for you</h3>
+    ${pending.map(p => `
+      <div class="admin-row">
+        <div>
+          <b>${esc(p.table || `Takeaway #${p.order_id}`)}</b>
+          <span class="badge qr">Customer QR</span>
+          <div class="meta">${p.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</div>
+        </div>
+        <div class="row-actions">
+          <button class="btn small sage" data-action="approve-send" data-id="${p.id}">✅ Accept &amp; send</button>
+          <button class="btn-danger" data-action="reject-send" data-id="${p.id}">❌ Reject</button>
+        </div>
+      </div>`).join('')}
+  </div>`;
+}
+
+async function advance(ticketId, status, from) {
   try {
-    await API.patch('/api/orders/' + id, { status });
-    if (prevStatus) {
-      clearTimeout(recentAdvance.get(id)?.timer);
-      const timer = setTimeout(() => { recentAdvance.delete(id); refreshKitchen(); }, UNDO_WINDOW_MS);
-      recentAdvance.set(id, { prevStatus, timer });
-    }
+    await API.patch(`/api/kitchen/tickets/${ticketId}`, { status });
+    clearTimeout(recentAdvance.get(ticketId)?.timer);
+    const timer = setTimeout(() => { recentAdvance.delete(ticketId); refreshKitchen(); }, UNDO_WINDOW_MS);
+    recentAdvance.set(ticketId, { from, timer });
     refreshKitchen();
-    toast('Status updated');
   } catch (e) { toast(e.message); }
 }
 
-async function undoStatus(id) {
-  const entry = recentAdvance.get(id);
+async function undo(ticketId) {
+  const entry = recentAdvance.get(ticketId);
   if (!entry) return;
   clearTimeout(entry.timer);
-  recentAdvance.delete(id);
+  recentAdvance.delete(ticketId);
   try {
-    await API.patch('/api/orders/' + id, { status: entry.prevStatus });
+    await API.patch(`/api/kitchen/tickets/${ticketId}`, { status: entry.from });
     toast('Undone');
   } catch (e) {
-    // The 'kitchen' role is blocked from backward transitions server-side
-    // (phase 03) — fail loudly rather than silently doing nothing.
-    toast(e.status === 403 ? 'Undo needs a staff/admin login on this screen' : e.message);
+    // The 'kitchen' role is blocked from backward transitions server-side —
+    // fail loudly rather than silently doing nothing.
+    toast(e.status === 403 ? 'Undo needs a staff or admin login on this screen' : e.message);
   }
   refreshKitchen();
+}
+
+async function approveSend(id) {
+  try { await API.post(`/api/kitchen/sends/${id}/approve`, {}); toast('Sent to the kitchen'); refreshKitchen(); }
+  catch (e) { toast(e.message); }
+}
+
+async function rejectSend(id) {
+  const reason = await ask({
+    title: 'Reject this customer order?',
+    hint: 'The customer is told, and the items are voided on the bill — not silently dropped.',
+    placeholder: 'e.g. item finished for today', ok: 'Reject',
+  });
+  if (reason === null) return;
+  try { await API.post(`/api/kitchen/sends/${id}/reject`, { reason }); toast('Rejected'); refreshKitchen(); }
+  catch (e) { toast(e.message); }
 }
 
 $('tab-kitchen').addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
-  if (el.dataset.action === 'set-status') setSt(Number(el.dataset.id), el.dataset.status);
-  else if (el.dataset.action === 'undo-status') undoStatus(Number(el.dataset.id));
+  const a = el.dataset.action;
+  if (a === 'set-station') { activeStation = el.dataset.id; refreshKitchen(); }
+  else if (a === 'advance') {
+    const from = { preparing: 'sent', ready: 'preparing', served: 'ready' }[el.dataset.status];
+    advance(Number(el.dataset.id), el.dataset.status, from);
+  } else if (a === 'undo') undo(Number(el.dataset.id));
+  else if (a === 'approve-send') approveSend(Number(el.dataset.id));
+  else if (a === 'reject-send') rejectSend(Number(el.dataset.id));
 });
 
-/* Realtime: refresh the kitchen ticket the moment an order changes, without
-   waiting for the 3s poll — this is the screen latency is felt on most. */
+/* Realtime: refresh the moment anything changes, without waiting for a poll —
+   this is the screen latency is felt on most. */
 onStreamEvent(() => {
   if (document.getElementById('tab-kitchen')?.classList.contains('active')) refreshKitchen();
 });
+
+// Elapsed minutes drive the age badge, so the display re-renders every 30s even
+// with no events at all — a ticket must go late on its own.
+setInterval(() => {
+  if (document.getElementById('tab-kitchen')?.classList.contains('active')) refreshKitchen();
+}, 30000);

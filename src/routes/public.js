@@ -37,11 +37,16 @@ router.get('/api/menu', publicH(async (req, res) => {
   const groupIdsByItem = {};
   attach.rows.forEach(a => { (groupIdsByItem[a.item_id] ||= []).push(a.group_id); });
 
+  // Station names are not sensitive and the till shows them on an item button
+  // ("Drinks"), so they ride along rather than needing a second request.
+  const stations = await pool.query('SELECT code, name, sort FROM prep_stations WHERE active ORDER BY sort, code');
+
   res.json({
     categories: cats.rows,
     items: items.rows.map(i => ({ ...i, price: cents2rm(i.price_cents), modifier_group_ids: groupIdsByItem[i.id] || [] })),
     modifier_groups: groups.rows,
     modifier_options: opts.rows.map(o => ({ ...o, price: cents2rm(o.price_cents) })),
+    stations: stations.rows,
   });
 }));
 

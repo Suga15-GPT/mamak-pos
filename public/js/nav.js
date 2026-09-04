@@ -1,45 +1,66 @@
 import { state, $ } from './state.js';
-import { renderTables } from './pos.js';
+import { refreshPos } from './pos.js';
 import { refreshKitchen } from './kitchen.js';
 import { refreshDashboard } from './dashboard.js';
 import { refreshAdmin } from './admin.js';
 import { refreshShift } from './shift.js';
 import { t } from './i18n.js';
 
+/* Navigation is simplified by role (master spec §40): a cook sees the kitchen
+   and nothing else; a waiter sees the floor. Every destination carries an icon
+   AND a word — an icon alone is a guess, and this room has staff who read
+   English slowly. Nothing frequently used is hidden behind a hamburger. */
 const TAB_DEFS = [
-  { id: 'pos', key: 'nav.pos', roles: ['admin', 'staff'] },
-  { id: 'kitchen', key: 'nav.kitchen', roles: ['admin', 'staff', 'kitchen'] },
-  { id: 'dashboard', key: 'nav.dashboard', roles: ['admin', 'staff'] },
-  { id: 'shift', key: 'nav.shift', roles: ['admin', 'staff'] },
-  { id: 'admin', key: 'nav.admin', roles: ['admin'] },
+  { id: 'pos',       key: 'nav.pos',       icon: '🍽', roles: ['admin', 'staff'] },
+  { id: 'kitchen',   key: 'nav.kitchen',   icon: '🍳', roles: ['admin', 'staff', 'kitchen'] },
+  { id: 'dashboard', key: 'nav.dashboard', icon: '💰', roles: ['admin', 'staff'] },
+  { id: 'shift',     key: 'nav.shift',     icon: '🕐', roles: ['admin', 'staff'] },
+  { id: 'admin',     key: 'nav.admin',     icon: '⚙',  roles: ['admin'] },
 ];
 
-/* ===== NAV ===== */
+let activeTab = null;
+// Rounds waiting for staff approval — surfaced as a count on the Kitchen tab so
+// nobody has to go looking for a queue that is usually empty.
+let pendingCount = 0;
+
+function allowed() { return TAB_DEFS.filter(def => def.roles.includes(API.user.role)); }
+
+function buttonHtml(def) {
+  const badge = def.id === 'kitchen' && pendingCount ? `<span class="nav-badge">${pendingCount}</span>` : '';
+  return `<button class="${def.id === activeTab ? 'active' : ''}" data-action="switch-tab" data-id="${def.id}"
+            aria-current="${def.id === activeTab ? 'page' : 'false'}">
+            <span class="nav-ico" aria-hidden="true">${def.icon}</span><span>${t(def.key)}</span>${badge}</button>`;
+}
+
+function paint() {
+  const html = allowed().map(buttonHtml).join('');
+  $('nav').innerHTML = html;
+  $('bottom-nav').innerHTML = html;
+}
+
 export function buildNav() {
-  const allowed = TAB_DEFS.filter(def => def.roles.includes(API.user.role));
-  $('nav').innerHTML = allowed.map((def, i) =>
-    `<button class="${i === 0 ? 'active' : ''}" data-action="switch-tab" data-id="${def.id}">${t(def.key)}</button>`
-  ).join('');
+  activeTab = allowed()[0]?.id || null;
+  paint();
   document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
-  $('tab-' + allowed[0].id).classList.add('active');
+  if (activeTab) $('tab-' + activeTab).classList.add('active');
 }
 
-// Re-labels the already-built nav in place — used when the locale toggles
-// mid-session, so it doesn't also reset whichever tab is currently active
-// the way a full buildNav() would.
-function refreshNavLabels() {
-  document.querySelectorAll('#nav button[data-id]').forEach(btn => {
-    const def = TAB_DEFS.find(d => d.id === btn.dataset.id);
-    if (def) btn.textContent = t(def.key);
-  });
+export function setPendingCount(n) {
+  if (n === pendingCount) return;
+  pendingCount = n;
+  paint();
 }
-document.addEventListener('localechange', refreshNavLabels);
 
-function switchTab(id, btn) {
-  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
+document.addEventListener('localechange', paint);
+
+export function switchTab(id) {
+  if (!allowed().some(d => d.id === id)) return;
+  activeTab = id;
+  paint();
   document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
   $('tab-' + id).classList.add('active');
+  window.scrollTo({ top: 0 });
+  if (id === 'pos') refreshPos();
   if (id === 'kitchen') refreshKitchen();
   if (id === 'dashboard') refreshDashboard();
   if (id === 'shift') refreshShift();
@@ -48,14 +69,14 @@ function switchTab(id, btn) {
 
 /* ===== LIVE REFRESH ===== */
 export function refreshLive() {
-  const active = (document.querySelector('.tab.active')?.id || '').replace(/^tab-/, '');
-  if (active === 'kitchen') refreshKitchen();
-  if (active === 'dashboard') refreshDashboard();
-  if (active === 'pos' && !state.selTable) renderTables();
+  if (activeTab === 'kitchen') refreshKitchen();
+  if (activeTab === 'dashboard') refreshDashboard();
+  if (activeTab === 'pos') refreshPos();
 }
 
-$('nav').addEventListener('click', e => {
-  const el = e.target.closest('[data-action="switch-tab"]');
-  if (!el) return;
-  switchTab(el.dataset.id, el);
-});
+export const currentTab = () => activeTab;
+
+[$('nav'), $('bottom-nav')].forEach(el => el.addEventListener('click', e => {
+  const btn = e.target.closest('[data-action="switch-tab"]');
+  if (btn) switchTab(btn.dataset.id);
+}));

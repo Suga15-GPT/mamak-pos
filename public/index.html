@@ -2,66 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- No maximum-scale/user-scalable=no: pinch-zoom is an accessibility control,
+     and the "page shrinks on mobile" complaint is caused by overflow and
+     sub-16px inputs, not by zoom being available. Both are fixed at source. -->
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>Mamak POS</title>
 <link rel="stylesheet" href="style.css">
-<style>
-  /* Dark mode */
-  body.dark { --cream:#1a1715; --sand:#2d2926; --white:#2d2926; --charcoal:#fdf8f4; --warm-gray:#d4ccc6; --light-gray:#4a423d; --terra-pale:#3d2a24; --red:#fca5a5; }
-  body.dark .card,body.dark .table-btn,body.dark .item-btn,body.dark .k-order,body.dark .stat,body.dark .qr-card,body.dark .modal { background:#2d2926; border-color:#4a423d; }
-  body.dark header,body.dark nav { background:#2d2926; }
-  body.dark .field input { background:#1a1715; border-color:#4a423d; color:#fdf8f4; }
-  body.dark .menu-cats button { background:#2d2926; border-color:#4a423d; color:#d4ccc6; }
-  body.dark .login-wrap { background:linear-gradient(160deg,#3d2a24,#1a1715,#2d2926); }
-  /* Table-grid state colours re-tuned for the dark surface — the light-mode
-     hues (checked against a white card) drop below 4.5:1 on #2d2926. */
-  body.dark .table-btn.pending { background:linear-gradient(135deg,#3d2a1a,#2d2926); color:#fbbf24; border-color:#b45309; }
-  body.dark .table-btn.ready-to-pay { background:linear-gradient(135deg,#1f2e1a,#2d2926); color:#86efac; border-color:#5f7a53; }
-
-  /* Theme toggle */
-  .theme-toggle { background:none; border:2px solid var(--light-gray); width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:18px; transition:all .3s var(--bounce); }
-  .theme-toggle:hover { border-color:var(--terra); transform:rotate(180deg); }
-
-  /* Locale toggle (phase 10) */
-  .locale-toggle { background:none; border:2px solid var(--light-gray); min-width:44px; height:44px; padding:0 12px; border-radius:22px; font-size:13px; font-weight:700; color:var(--warm-gray); transition:all .3s var(--bounce); }
-  .locale-toggle:hover { border-color:var(--terra); color:var(--terra-deep); }
-
-  /* Back button */
-  .back-btn { display:inline-flex; align-items:center; gap:8px; padding:10px 18px; background:var(--sand); border-radius:10px; font-size:14px; font-weight:600; color:var(--warm-gray); margin-bottom:16px; transition:all .3s var(--bounce); min-height:44px; }
-  .back-btn:hover { background:var(--terra-pale); color:var(--terra-deep); transform:translateX(-4px); }
-
-  /* Remark input */
-  .remark-input { width:100%; padding:10px 14px; border:2px solid var(--light-gray); border-radius:10px; font-size:14px; margin-top:8px; background:var(--cream); transition:all .3s; min-height:44px; }
-  .remark-input:focus { border-color:var(--terra); background:var(--white); }
-
-  /* Kitchen served section */
-  .kitchen-section { margin-bottom:32px; }
-  .kitchen-section h3 { font-family:'Playfair Display',serif; font-size:18px; margin-bottom:14px; color:var(--warm-gray); }
-
-  /* Fix kitchen button colors */
-  .k-actions button { color:#fff !important; }
-  .k-actions button:disabled { opacity:.4; cursor:not-allowed; transform:none !important; }
-
-  /* Pay button in cart — part of the main order path, so it gets the larger
-     touch target too. */
-  .pay-btn { background:#5f7a53; margin-top:10px; min-height:56px; font-size:16px; }
-  .pay-btn:hover { background:#4d6544; }
-
-  /* Cart line already sent to the kitchen (read-only, still billed).
-     sage-deep-on-white text was 3.15:1 — short of 4.5:1 at this size; the
-     darker shade below clears it (checked against both light and dark cards). */
-  .sent-tag { background:#4d6544; color:#fff; padding:4px 10px; border-radius:20px; font-size:11px;
-              font-weight:700; text-transform:uppercase; letter-spacing:.05em; vertical-align:middle; }
-
-  /* Realtime connection indicator (phase 06) */
-  .conn-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:10px; background:#9ca3af; transition:background .3s; }
-  .conn-dot.connected { background:#16a34a; }
-  .conn-dot.reconnecting { background:#f59e0b; }
-  .conn-dot.offline { background:#dc2626; }
-
-  /* Offline outbox banner (phase 07) */
-  #offline-banner { display:none; background:#dc2626; color:#fff; text-align:center; font-size:13px; font-weight:700; padding:8px; letter-spacing:.02em; }
-</style>
 </head>
 <body>
 
@@ -81,41 +28,65 @@
 
 <!-- MAIN APP -->
 <div id="app-view" class="view" style="display:none">
-  <div id="offline-banner"></div>
+  <div id="offline-banner" role="status"></div>
   <header>
     <span class="brand">Mamak POS</span>
     <div class="user">
       <span id="conn-dot" class="conn-dot offline" title="Live connection status"></span>
-      <button class="locale-toggle" id="locale-toggle" data-action="toggle-locale" title="Switch language / Tukar bahasa" aria-label="Switch language">EN</button>
-      <button class="theme-toggle" data-action="toggle-theme" title="Toggle dark mode">🌙</button>
+      <button class="icon-btn" id="locale-toggle" data-action="toggle-locale" title="Switch language / Tukar bahasa" aria-label="Switch language">EN</button>
+      <button class="icon-btn" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
       <span id="uname"></span>
       <button class="logout" data-action="change-pin" data-i18n="common.changePin">Change my PIN</button>
       <button class="logout" data-action="logout" data-i18n="common.logout">Log Out</button>
     </div>
   </header>
-  <nav id="nav"></nav>
+
+  <!-- Same buttons, two shells: tabs across the top on a tablet, a thumb-reachable
+       bar at the bottom on a phone. nav.js fills both. -->
+  <nav id="nav" aria-label="Main"></nav>
+
   <main>
-    <!-- POS TAB -->
+    <!-- ORDERS (POS) -->
     <section id="tab-pos" class="tab">
-      <div id="pos-tables"></div>
+      <div id="pos-tables">
+        <div class="floor-section">
+          <div class="floor-section-head">
+            <h2 class="section-title" style="margin:0">🍽 <span data-i18n="pos.tables">Tables</span></h2>
+            <button class="btn small ghost" data-action="refresh-tables">↻ <span data-i18n="common.refresh">Refresh</span></button>
+          </div>
+          <div id="tables-grid" class="tables-grid"></div>
+        </div>
+        <div class="floor-section">
+          <div class="floor-section-head">
+            <h2 class="section-title" style="margin:0">🥡 <span data-i18n="pos.takeaway">Takeaway</span></h2>
+            <button class="btn small" data-action="new-takeaway">➕ <span data-i18n="pos.newTakeaway">New Takeaway</span></button>
+          </div>
+          <div id="takeaway-grid" class="tables-grid"></div>
+        </div>
+      </div>
+
       <div id="pos-workspace" style="display:none">
-        <button class="back-btn" data-action="back-to-tables">← <span data-i18n="pos.backToTables">Back to Tables</span></button>
+        <div class="ws-head">
+          <button class="back-btn" data-action="back-to-tables">← <span data-i18n="pos.backToTables">Back to Tables</span></button>
+          <span class="ws-title" id="ws-title"></span>
+          <span id="ws-state"></span>
+          <span style="flex:1"></span>
+          <button class="btn small ghost" id="move-order-btn" data-action="open-move" style="display:none">↔ <span data-i18n="pos.moveOrder">Move</span></button>
+        </div>
+
         <div class="pos-grid">
-          <!-- Categories rail — always visible alongside items and the bill,
-               never a tab of its own. -->
-          <div class="card pos-cats-rail">
-            <h3 style="margin-bottom:14px" data-i18n="pos.categories">Categories</h3>
-            <div id="menu-cats" class="menu-cats"></div>
+          <div>
+            <div class="card">
+              <input type="search" id="item-search" data-i18n-placeholder="pos.search" placeholder="Search items…" aria-label="Search menu items">
+              <div id="menu-cats" class="cat-tabs" aria-label="Menu categories"></div>
+              <div id="menu-favs" class="menu-favs"></div>
+              <div id="menu-items" class="menu-items"></div>
+            </div>
           </div>
-          <div class="card">
-            <h3 id="ws-title" style="margin-bottom:14px"></h3>
-            <input type="search" id="item-search" data-i18n-placeholder="pos.search" placeholder="Search items…" aria-label="Search menu items">
-            <div id="menu-favs" class="menu-favs"></div>
-            <div id="menu-items" class="menu-items"></div>
-          </div>
-          <div class="card">
-            <h3 style="margin-bottom:14px" data-i18n="pos.currentOrder">Current Order</h3>
-            <div id="cart-lines"></div>
+
+          <div class="card" id="bill-card">
+            <h3 data-i18n="pos.currentOrder">Order</h3>
+            <div id="cart-body"></div>
             <div id="cart-empty" class="empty" data-i18n="pos.noItems">No items yet</div>
             <div class="totals" id="cart-totals" style="display:none">
               <div class="row"><span data-i18n="pos.subtotal">Subtotal</span><span id="cart-subtotal-rm"></span></div>
@@ -123,256 +94,299 @@
               <div class="row"><span data-i18n="pos.sst">SST</span><span id="cart-tax-rm"></span></div>
               <div class="row grand"><span data-i18n="pos.total">Total</span><span id="cart-total-rm"></span></div>
             </div>
-            <button class="btn primary-lg" style="margin-top:16px" data-action="send-order" data-i18n="pos.sendToKitchen">Send to Kitchen</button>
-            <button class="btn primary-lg pay-btn" id="pay-btn" style="display:none" data-action="open-pay" data-i18n="pos.markPaid">Mark Paid</button>
+            <button class="btn primary-lg" style="margin-top:14px" id="send-btn" data-action="send-order">🍳 <span data-i18n="pos.sendToKitchen">Send to Kitchen</span></button>
+            <button class="btn primary-lg sage" style="margin-top:10px;display:none" id="pay-btn" data-action="open-pay">💵 <span data-i18n="pos.pay">Pay</span></button>
+            <details id="round-timeline" style="margin-top:14px;display:none">
+              <summary class="label" style="cursor:pointer;min-height:44px;display:flex;align-items:center" data-i18n="pos.timeline">Order timeline</summary>
+              <div id="round-timeline-body"></div>
+            </details>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- KITCHEN TAB -->
+    <!-- KITCHEN -->
     <section id="tab-kitchen" class="tab">
-      <h2 style="margin-bottom:16px" data-i18n="kitchen.heading">Kitchen Orders</h2>
-      <div id="kitchen-active"></div>
-      <div id="kitchen-served" class="kitchen-section" style="display:none">
-        <h3 data-i18n="kitchen.served"> Served (Waiting for Payment)</h3>
-        <div id="kitchen-served-list"></div>
+      <div class="card-head">
+        <h2 class="section-title" style="margin:0">🍳 <span data-i18n="kitchen.heading">Kitchen</span></h2>
+      </div>
+      <div id="station-tabs" class="station-tabs" aria-label="Preparation stations"></div>
+      <div id="kitchen-pending"></div>
+      <div class="kds-columns">
+        <div class="kds-col"><h3><span data-i18n="kitchen.colNew">🔔 New</span> <span class="col-count" id="k-count-sent">0</span></h3><div id="k-col-sent"></div></div>
+        <div class="kds-col"><h3><span data-i18n="kitchen.colPreparing">🍳 Cooking</span> <span class="col-count" id="k-count-preparing">0</span></h3><div id="k-col-preparing"></div></div>
+        <div class="kds-col"><h3><span data-i18n="kitchen.colReady">✅ Ready</span> <span class="col-count" id="k-count-ready">0</span></h3><div id="k-col-ready"></div></div>
+        <div class="kds-col"><h3><span data-i18n="kitchen.colServed">🍽 Served</span> <span class="col-count" id="k-count-served">0</span></h3><div id="k-col-served"></div></div>
       </div>
     </section>
 
-    <!-- DASHBOARD TAB -->
+    <!-- DASHBOARD -->
     <section id="tab-dashboard" class="tab">
-      <h2 style="margin-bottom:16px" data-i18n="dashboard.heading">Sales Dashboard</h2>
-      <div id="dash-stats" class="stats"></div>
-      <div class="card">
-        <h3 style="margin-bottom:12px" data-i18n="dashboard.topItems">Top Items Today</h3>
-        <div id="dash-top"></div>
+      <div class="card-head">
+        <h2 class="section-title" style="margin:0">💰 <span data-i18n="dashboard.heading">Sales</span></h2>
+        <button class="btn small ghost" data-action="refresh-dashboard">↻ <span data-i18n="common.refresh">Refresh</span></button>
+      </div>
+      <div id="dash-kpis" class="kpi-grid"></div>
+      <div class="chart-grid">
+        <div class="card"><h3 data-i18n="dashboard.hourly">Sales by hour</h3><div id="dash-hourly"></div></div>
+        <div class="card"><h3 data-i18n="dashboard.topItems">Top items today</h3><div id="dash-top"></div></div>
+        <div class="card"><h3 data-i18n="dashboard.paymentMix">Payment mix</h3><div id="dash-mix"></div></div>
+        <div class="card"><h3 data-i18n="dashboard.kitchenState">Kitchen right now</h3><div id="dash-kitchen"></div></div>
       </div>
     </section>
 
-    <!-- SHIFT TAB -->
+    <!-- SHIFT -->
     <section id="tab-shift" class="tab">
-      <h2 style="margin-bottom:16px">Shift</h2>
+      <h2 class="section-title">🕐 Shift</h2>
 
-      <div class="card" id="shift-closed-card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">Open Shift</h3>
-        <div style="display:flex;gap:8px;align-items:flex-end">
-          <div>
-            <label for="shift-float-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Float (RM)</label>
-            <input type="number" id="shift-float-input" min="0" step="0.01" value="0" style="color:var(--charcoal);width:120px">
-          </div>
-          <button class="btn small" data-action="open-shift">Open Shift</button>
+      <div class="card" id="shift-closed-card">
+        <h3>Open Shift</h3>
+        <div class="form-grid">
+          <div><label class="label" for="shift-float-input">Float (RM)</label>
+            <input type="number" id="shift-float-input" min="0" step="0.01" value="0"></div>
+          <div><button class="btn" data-action="open-shift">Open Shift</button></div>
         </div>
       </div>
 
-      <div class="card" id="shift-open-card" style="margin-bottom:20px;display:none">
-        <h3 style="margin-bottom:12px">Current Shift</h3>
-        <div id="shift-status" class="meta" style="margin-bottom:14px"></div>
-        <div id="shift-x-report" style="margin-bottom:16px"></div>
+      <div class="card" id="shift-open-card" style="display:none">
+        <h3>Current Shift</h3>
+        <div id="shift-status" class="meta" style="margin-bottom:12px"></div>
+        <div id="shift-x-report" style="margin-bottom:14px"></div>
 
-        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:16px;padding:14px 0;border-top:1px solid var(--light-gray);border-bottom:1px solid var(--light-gray)">
-          <div>
-            <label for="movement-kind" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Kind</label>
-            <select id="movement-kind" style="color:var(--charcoal)">
-              <option value="payin">Pay in</option>
-              <option value="payout">Pay out</option>
-            </select>
-          </div>
-          <div>
-            <label for="movement-amount" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Amount (RM)</label>
-            <input type="number" id="movement-amount" min="0" step="0.01" style="color:var(--charcoal);width:100px">
-          </div>
-          <div style="flex:1;min-width:160px">
-            <label for="movement-reason" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Reason</label>
-            <input type="text" id="movement-reason" style="color:var(--charcoal);width:100%">
-          </div>
-          <button class="btn small outline" data-action="add-movement">Record</button>
+        <div class="form-grid" style="padding:14px 0;border-top:1px solid var(--light-gray);border-bottom:1px solid var(--light-gray);margin-bottom:14px">
+          <div><label class="label" for="movement-kind">Kind</label>
+            <select id="movement-kind"><option value="payin">Pay in</option><option value="payout">Pay out</option></select></div>
+          <div><label class="label" for="movement-amount">Amount (RM)</label>
+            <input type="number" id="movement-amount" min="0" step="0.01"></div>
+          <div><label class="label" for="movement-reason">Reason</label>
+            <input type="text" id="movement-reason"></div>
+          <div><button class="btn outline" data-action="add-movement">Record</button></div>
         </div>
 
-        <button class="btn small outline" data-action="reveal-close">Close Shift</button>
+        <button class="btn outline" data-action="reveal-close">Close Shift</button>
 
         <div id="shift-close-form" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--light-gray)">
           <h4 style="margin-bottom:10px">Count the drawer</h4>
           <div id="denom-grid"></div>
-          <div style="margin:12px 0;font-weight:700">Counted total: <span id="denom-total">RM 0.00</span></div>
-          <label for="shift-close-note" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Note (required if variance is non-zero)</label>
-          <input type="text" id="shift-close-note" class="remark-input" style="color:var(--charcoal);margin-bottom:12px">
-          <div style="display:flex;gap:8px">
-            <button class="btn small" data-action="confirm-close">Confirm Close</button>
-            <button class="btn small outline" data-action="cancel-close">Cancel</button>
+          <div style="margin:12px 0;font-weight:800">Counted total: <span id="denom-total">RM 0.00</span></div>
+          <label class="label" for="shift-close-note">Note (required if variance is non-zero)</label>
+          <input type="text" id="shift-close-note" style="margin-bottom:12px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn" data-action="confirm-close">Confirm Close</button>
+            <button class="btn outline" data-action="cancel-close">Cancel</button>
           </div>
         </div>
       </div>
 
-      <div class="card" id="shift-report-card" style="margin-bottom:20px;display:none">
-        <h3 style="margin-bottom:12px">Last Z Report <span id="shift-variance-badge"></span></h3>
+      <div class="card" id="shift-report-card" style="display:none">
+        <h3>Last Z Report <span id="shift-variance-badge"></span></h3>
         <div id="shift-z-report"></div>
-        <div style="display:flex;gap:8px;margin-top:14px">
+        <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
           <button class="btn small outline" data-action="export-z-csv">Export CSV</button>
           <button class="btn small outline" data-action="print-z-report">Print</button>
         </div>
       </div>
     </section>
 
-    <!-- ADMIN TAB -->
+    <!-- ADMIN -->
     <section id="tab-admin" class="tab">
-      <h2 style="margin-bottom:16px">Admin Panel</h2>
-      <div class="card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">Categories</h3>
-        <div id="admin-categories"></div>
+      <div id="admin-tabs" class="admin-tabs" aria-label="Admin sections">
+        <button class="active" data-action="admin-section" data-id="menu">🍜 Menu</button>
+        <button data-action="admin-section" data-id="staff">👤 Staff</button>
+        <button data-action="admin-section" data-id="tables">🍽 Tables &amp; QR</button>
+        <button data-action="admin-section" data-id="restaurant">🏠 Restaurant</button>
+        <button data-action="admin-section" data-id="payments">💳 Payments &amp; Tax</button>
+        <button data-action="admin-section" data-id="printers">🖨 Printers</button>
+        <button data-action="admin-section" data-id="system">⚙ System</button>
+        <button data-action="admin-section" data-id="activity">📋 Activity</button>
       </div>
-      <div class="card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">Menu Items</h3>
-        <p style="color:var(--warm-gray);font-size:13px;margin-bottom:14px">Chips select which modifier groups a customer is prompted with for that item.</p>
-        <div id="admin-menu"></div>
-      </div>
-      <div class="card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">Modifier Groups</h3>
-        <div id="admin-groups"></div>
-        <div style="display:flex;gap:8px;align-items:flex-end;margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
-          <div style="flex:1">
-            <label for="new-group-name" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">New group name</label>
-            <input type="text" id="new-group-name" style="color:var(--charcoal);width:100%" placeholder="e.g. Sauce">
+
+      <!-- MENU -->
+      <div class="admin-section active" id="sec-menu">
+        <div class="card">
+          <div class="card-head">
+            <h3>Menu</h3>
+            <div class="row-actions">
+              <button class="btn small" data-action="new-item">➕ Add item</button>
+              <button class="btn small outline" data-action="new-category">➕ Category</button>
+            </div>
           </div>
-          <div>
-            <label for="new-group-mode" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Mode</label>
-            <select id="new-group-mode" style="color:var(--charcoal)">
-              <option value="radio">radio (pick one)</option>
-              <option value="checkbox">checkbox (pick several)</option>
+          <input type="search" id="menu-admin-search" placeholder="Search the menu…" aria-label="Search the menu" style="margin-bottom:12px">
+          <div id="menu-admin-cats" class="cat-tabs" style="position:static"></div>
+          <div id="admin-menu"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Food options</h3>
+            <button class="btn small" data-action="new-group">➕ Add option group</button>
+          </div>
+          <p class="meta" style="margin-bottom:12px">A group is a question the till asks — “Kuah?”, “Extra lauk?” — and its options are the answers.</p>
+          <div id="admin-groups"></div>
+        </div>
+
+        <div class="card">
+          <h3>Categories</h3>
+          <div id="admin-categories"></div>
+        </div>
+      </div>
+
+      <!-- STAFF -->
+      <div class="admin-section" id="sec-staff">
+        <div class="card">
+          <div class="card-head"><h3>Staff</h3></div>
+          <div id="admin-staff"></div>
+          <div class="form-grid" style="margin:14px 0;padding:14px 0;border-top:1px solid var(--light-gray);border-bottom:1px solid var(--light-gray)">
+            <div><label class="label" for="new-staff-name">Name</label><input type="text" id="new-staff-name"></div>
+            <div><label class="label" for="new-staff-role">Role</label>
+              <select id="new-staff-role"><option value="staff">Staff</option><option value="kitchen">Kitchen</option><option value="admin">Admin</option></select></div>
+            <div><label class="label" for="new-staff-pin">PIN</label><input type="password" inputmode="numeric" id="new-staff-pin"></div>
+            <div><label class="label" for="new-staff-pin-confirm">Confirm PIN</label><input type="password" inputmode="numeric" id="new-staff-pin-confirm"></div>
+            <div><button class="btn" data-action="create-staff">Add staff</button></div>
+          </div>
+          <p class="meta">The PIN entered here is temporary — the new person chooses their own at first login.</p>
+          <h4 style="margin:18px 0 8px;color:var(--warm-gray)">Former staff</h4>
+          <p class="meta" style="margin-bottom:10px">Kept visible because old bills still carry their name.</p>
+          <div id="admin-staff-former"></div>
+        </div>
+      </div>
+
+      <!-- TABLES & QR -->
+      <div class="admin-section" id="sec-tables">
+        <div class="card">
+          <div class="card-head">
+            <h3>Customer QR ordering</h3>
+          </div>
+          <div id="qr-health"></div>
+          <div class="admin-row">
+            <div><b>Accept QR orders</b><div class="meta">Off shows customers a short message asking them to order with staff.</div></div>
+            <label class="switch"><input type="checkbox" id="qr-enabled-toggle" data-action="toggle-qr-enabled"><span class="slider"></span></label>
+          </div>
+          <div class="admin-row">
+            <div><b>QR handling</b><div class="meta">Send straight to the kitchen, or hold each order for a staff member to accept.</div></div>
+            <select id="qr-approval-select" data-action="set-qr-approval" style="max-width:240px">
+              <option value="direct">Send directly to kitchen</option>
+              <option value="approval">Require staff approval</option>
             </select>
           </div>
-          <button class="btn small" data-action="create-group">Add group</button>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Tables</h3>
+            <button class="btn small" data-action="new-table">➕ Add table</button>
+          </div>
+          <div id="qr-grid" class="qr-grid"></div>
         </div>
       </div>
-      <div class="card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">Modifier Options (Extra Lauk, etc.)</h3>
-        <div id="admin-modifiers"></div>
-      </div>
-      <div class="card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">Tax &amp; Service Charge</h3>
-        <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end">
-          <div>
-            <label for="tax-rate-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Service tax (SST) %</label>
-            <input type="number" id="tax-rate-input" min="0" max="100" step="0.01" style="color:var(--charcoal);width:100px">
+
+      <!-- RESTAURANT -->
+      <div class="admin-section" id="sec-restaurant">
+        <div class="card">
+          <h3>Restaurant details</h3>
+          <p class="meta" style="margin-bottom:14px">Printed at the top of every receipt.</p>
+          <div class="form-grid">
+            <div><label class="label" for="restaurant-name-input">Restaurant name</label><input type="text" id="restaurant-name-input"></div>
+            <div><label class="label" for="restaurant-address-input">Address</label><input type="text" id="restaurant-address-input"></div>
+            <div><label class="label" for="sst-number-input">SST registration number</label><input type="text" id="sst-number-input"></div>
+            <div><button class="btn" data-action="save-restaurant-identity">Save</button></div>
           </div>
-          <div>
-            <label for="svc-rate-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Service charge %</label>
-            <input type="number" id="svc-rate-input" min="0" max="100" step="0.01" style="color:var(--charcoal);width:100px">
-          </div>
-          <button class="btn small" id="save-rates-btn" data-action="save-rates">Save</button>
-        </div>
-        <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;margin-top:16px;padding-top:16px;border-top:1px solid var(--light-gray)">
-          <div style="flex:1;min-width:180px">
-            <label for="restaurant-name-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Restaurant name (printed on receipts)</label>
-            <input type="text" id="restaurant-name-input" style="color:var(--charcoal);width:100%">
-          </div>
-          <div style="flex:2;min-width:220px">
-            <label for="restaurant-address-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Address</label>
-            <input type="text" id="restaurant-address-input" style="color:var(--charcoal);width:100%">
-          </div>
-          <div>
-            <label for="sst-number-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">SST registration number</label>
-            <input type="text" id="sst-number-input" style="color:var(--charcoal);width:160px">
-          </div>
-          <button class="btn small" data-action="save-restaurant-identity">Save</button>
         </div>
       </div>
-      <div class="card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">Staff &amp; PINs</h3>
-        <div id="admin-staff"></div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin:14px 0;padding:14px 0;border-top:1px solid var(--light-gray);border-bottom:1px solid var(--light-gray)">
-          <div>
-            <label for="new-staff-name" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Name</label>
-            <input type="text" id="new-staff-name" style="color:var(--charcoal);width:140px">
+
+      <!-- PAYMENTS & TAX -->
+      <div class="admin-section" id="sec-payments">
+        <div class="card">
+          <h3>Tax &amp; service charge</h3>
+          <div class="form-grid">
+            <div><label class="label" for="tax-rate-input">Service tax (SST) %</label><input type="number" id="tax-rate-input" min="0" max="100" step="0.01"></div>
+            <div><label class="label" for="svc-rate-input">Service charge %</label><input type="number" id="svc-rate-input" min="0" max="100" step="0.01"></div>
+            <div><button class="btn" id="save-rates-btn" data-action="save-rates">Save</button></div>
           </div>
-          <div>
-            <label for="new-staff-role" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Role</label>
-            <select id="new-staff-role" style="color:var(--charcoal)">
-              <option value="staff">staff</option>
-              <option value="kitchen">kitchen</option>
-              <option value="admin">admin</option>
-            </select>
-          </div>
-          <div>
-            <label for="new-staff-pin" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">PIN</label>
-            <input type="password" inputmode="numeric" id="new-staff-pin" style="color:var(--charcoal);width:100px">
-          </div>
-          <div>
-            <label for="new-staff-pin-confirm" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Confirm PIN</label>
-            <input type="password" inputmode="numeric" id="new-staff-pin-confirm" style="color:var(--charcoal);width:100px">
-          </div>
-          <button class="btn small" data-action="create-staff">Add staff</button>
-          <p style="width:100%;color:var(--warm-gray);font-size:12px;margin-top:4px">The PIN entered here is temporary — the new person will be asked to choose their own at first login.</p>
-        </div>
-        <h4 style="margin-bottom:10px;color:var(--warm-gray)">Former staff</h4>
-        <p style="color:var(--warm-gray);font-size:13px;margin-bottom:10px">Kept visible because old bills still carry their name.</p>
-        <div id="admin-staff-former"></div>
-      </div>
-      <div class="card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">Table QR Codes</h3>
-        <p style="color:var(--warm-gray);font-size:13px;margin-bottom:14px">Right-click any QR image to save/print it.</p>
-        <div id="qr-grid" class="qr-grid"></div>
-      </div>
-      <div class="card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">Printers</h3>
-        <div id="admin-printers"></div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
-          <div>
-            <label for="new-printer-name" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Name</label>
-            <input type="text" id="new-printer-name" style="color:var(--charcoal);width:120px" placeholder="Kitchen 1">
-          </div>
-          <div>
-            <label for="new-printer-host" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Host</label>
-            <input type="text" id="new-printer-host" style="color:var(--charcoal);width:130px" placeholder="192.168.1.50">
-          </div>
-          <div>
-            <label for="new-printer-port" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Port</label>
-            <input type="number" id="new-printer-port" style="color:var(--charcoal);width:80px" placeholder="9100">
-          </div>
-          <div>
-            <label for="new-printer-role" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Role</label>
-            <select id="new-printer-role" style="color:var(--charcoal)">
-              <option value="kitchen">kitchen</option>
-              <option value="receipt">receipt</option>
-              <option value="bar">bar</option>
-            </select>
-          </div>
-          <div>
-            <label for="new-printer-width" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Width</label>
-            <select id="new-printer-width" style="color:var(--charcoal)">
-              <option value="42">42 (80mm)</option>
-              <option value="32">32 (58mm)</option>
-            </select>
-          </div>
-          <button class="btn small" data-action="create-printer">Add printer</button>
         </div>
       </div>
-      <div class="card" style="margin-bottom:20px">
-        <h3 style="margin-bottom:12px">Print Jobs</h3>
-        <p style="color:var(--warm-gray);font-size:13px;margin-bottom:14px">Most recent 50 — a failed job shows its error so a jammed printer is visible.</p>
-        <div id="admin-print-jobs"></div>
+
+      <!-- PRINTERS -->
+      <div class="admin-section" id="sec-printers">
+        <div class="card">
+          <h3>Printers</h3>
+          <div id="admin-printers"></div>
+          <div class="form-grid" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
+            <div><label class="label" for="new-printer-name">Name</label><input type="text" id="new-printer-name" placeholder="Kitchen 1"></div>
+            <div><label class="label" for="new-printer-host">Host</label><input type="text" id="new-printer-host" placeholder="192.168.1.50"></div>
+            <div><label class="label" for="new-printer-port">Port</label><input type="number" id="new-printer-port" placeholder="9100"></div>
+            <div><label class="label" for="new-printer-role">Role</label>
+              <select id="new-printer-role"><option value="kitchen">Kitchen</option><option value="receipt">Receipt</option><option value="bar">Drinks / bar</option></select></div>
+            <div><label class="label" for="new-printer-width">Width</label>
+              <select id="new-printer-width"><option value="42">42 (80mm)</option><option value="32">32 (58mm)</option></select></div>
+            <div><button class="btn" data-action="create-printer">Add printer</button></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Print jobs</h3>
+            <button class="btn small ghost" data-action="refresh-print-jobs">↻ Refresh</button>
+          </div>
+          <p class="meta" style="margin-bottom:12px">A failed job can be retried — it reprints the same ticket and changes nothing on the bill.</p>
+          <div id="admin-print-jobs"></div>
+        </div>
       </div>
-      <div class="card">
-        <h3 style="margin-bottom:12px">Activity Log</h3>
-        <div id="audit-log"></div>
+
+      <!-- SYSTEM -->
+      <div class="admin-section" id="sec-system">
+        <div class="card">
+          <div class="card-head">
+            <h3>System status</h3>
+            <button class="btn small ghost" data-action="refresh-system">↻ Check now</button>
+          </div>
+          <div id="system-health"><div class="empty">Checking…</div></div>
+        </div>
+      </div>
+
+      <!-- ACTIVITY -->
+      <div class="admin-section" id="sec-activity">
+        <div class="card">
+          <div class="card-head">
+            <h3>Activity log</h3>
+            <div class="row-actions"><span class="meta" id="audit-last"></span>
+              <button class="btn small outline" data-action="toggle-audit">View activity</button></div>
+          </div>
+          <div id="audit-log" style="display:none"></div>
+        </div>
       </div>
     </section>
   </main>
+
+  <nav id="bottom-nav" aria-label="Main"></nav>
 </div>
 
-<!-- MODIFIER-GROUP MODAL: rendered entirely from the item's attached groups -->
+<!-- FOOD OPTIONS MODAL -->
 <div id="modal-bg" class="modal-bg">
   <div class="modal">
     <h3 id="mod-title"></h3>
     <div id="mod-body"></div>
-    <div style="margin-top:16px">
-      <label style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:8px">Remark (optional)</label>
+    <div style="margin-top:14px">
+      <label class="label" for="mod-remark">Remark (optional)</label>
       <input type="text" id="mod-remark" class="remark-input" placeholder="e.g. kurang pedas, no onion">
       <div class="remark-presets" id="mod-presets"></div>
     </div>
-    <div style="display:flex;gap:8px;margin-top:16px">
-      <button class="btn small" style="background:#6b7280" data-action="close-mod-modal">Cancel</button>
-      <button class="btn small" id="mod-confirm-btn" data-action="confirm-mods">Add to Order</button>
+    <div class="modal-actions">
+      <button class="btn ghost" data-action="close-mod-modal">Cancel</button>
+      <button class="btn" id="mod-confirm-btn" data-action="confirm-mods">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- ITEM REMARK MODAL -->
+<div id="remark-modal" class="modal-bg">
+  <div class="modal">
+    <h3 id="remark-title"></h3>
+    <input type="text" id="remark-input" class="remark-input" aria-label="Remark for this item" placeholder="e.g. kurang manis, less ice">
+    <div class="remark-presets" id="remark-presets"></div>
+    <div class="modal-actions">
+      <button class="btn" data-action="skip-remark">Add — no remark</button>
+      <button class="btn outline" data-action="confirm-remark">Add with remark</button>
     </div>
   </div>
 </div>
@@ -381,68 +395,69 @@
 <div id="pay-modal" class="modal-bg">
   <div class="modal">
     <h3>Payment</h3>
-    <div id="pay-details" style="margin-bottom:20px"></div>
+    <div id="pay-details" style="margin-bottom:18px"></div>
 
-    <div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--light-gray)">
-      <button class="btn small outline" style="width:100%" data-action="open-discount-form">Discount</button>
+    <div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--light-gray)">
+      <button class="btn outline block" data-action="open-discount-form">Discount</button>
       <div id="discount-form" style="display:none;margin-top:12px">
-        <select id="discount-kind" style="color:var(--charcoal);width:100%;margin-bottom:8px">
+        <select id="discount-kind" style="margin-bottom:8px">
           <option value="percent">Percent off</option>
           <option value="amount">Fixed amount off (RM)</option>
           <option value="comp">Comp (100% off)</option>
         </select>
-        <input type="number" id="discount-value" min="0" step="0.01" class="remark-input" placeholder="Value" style="color:var(--charcoal);margin-bottom:8px">
-        <input type="text" id="discount-reason" class="remark-input" placeholder="Reason (required)" style="color:var(--charcoal);margin-bottom:8px">
+        <input type="number" id="discount-value" min="0" step="0.01" placeholder="Value" style="margin-bottom:8px">
+        <input type="text" id="discount-reason" placeholder="Reason (required)" style="margin-bottom:8px">
         <div id="discount-pin-row" style="display:none;margin-bottom:8px">
-          <input type="text" id="discount-admin-name" class="remark-input" placeholder="Admin name" style="color:var(--charcoal);margin-bottom:8px">
-          <input type="password" id="discount-admin-pin" inputmode="numeric" class="remark-input" placeholder="Admin PIN" style="color:var(--charcoal)">
+          <input type="text" id="discount-admin-name" placeholder="Admin name" style="margin-bottom:8px">
+          <input type="password" id="discount-admin-pin" inputmode="numeric" placeholder="Admin PIN">
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn small" data-action="apply-discount">Apply discount</button>
           <button class="btn small outline" data-action="close-discount-form">Cancel</button>
         </div>
       </div>
     </div>
 
-    <div id="refund-section" style="display:none;margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--light-gray)">
-      <button class="btn small outline" style="width:100%;color:var(--red)" data-action="open-refund-form">Refund</button>
+    <div id="refund-section" style="display:none;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--light-gray)">
+      <button class="btn outline block" style="color:var(--red);border-color:var(--red)" data-action="open-refund-form">Refund</button>
       <div id="refund-form" style="display:none;margin-top:12px">
-        <select id="refund-payment" style="color:var(--charcoal);width:100%;margin-bottom:8px"></select>
-        <input type="number" id="refund-amount" min="0" step="0.01" class="remark-input" placeholder="Amount to refund (RM)" style="color:var(--charcoal);margin-bottom:8px">
-        <input type="text" id="refund-reason" class="remark-input" placeholder="Reason (required)" style="color:var(--charcoal);margin-bottom:8px">
+        <select id="refund-payment" style="margin-bottom:8px"></select>
+        <input type="number" id="refund-amount" min="0" step="0.01" placeholder="Amount to refund (RM)" style="margin-bottom:8px">
+        <input type="text" id="refund-reason" placeholder="Reason (required)" style="margin-bottom:8px">
         <div id="refund-pin-row" style="display:none;margin-bottom:8px">
-          <input type="text" id="refund-admin-name" class="remark-input" placeholder="Admin name" style="color:var(--charcoal);margin-bottom:8px">
-          <input type="password" id="refund-admin-pin" inputmode="numeric" class="remark-input" placeholder="Admin PIN" style="color:var(--charcoal)">
+          <input type="text" id="refund-admin-name" placeholder="Admin name" style="margin-bottom:8px">
+          <input type="password" id="refund-admin-pin" inputmode="numeric" placeholder="Admin PIN">
         </div>
-        <div style="display:flex;gap:8px">
-          <button class="btn small" style="color:var(--red)" data-action="apply-refund">Issue refund</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn small danger" data-action="apply-refund">Issue refund</button>
           <button class="btn small outline" data-action="close-refund-form">Cancel</button>
         </div>
       </div>
     </div>
 
-    <div id="pay-cash-row" style="display:none;margin-bottom:16px">
-      <label for="cash-received-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Cash received (RM) — for the full remaining balance</label>
-      <input type="number" id="cash-received-input" min="0" step="0.05" class="remark-input" style="color:var(--charcoal)">
-      <div id="pay-change-due" style="margin-top:8px;font-weight:700;color:var(--charcoal)"></div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:10px">
-      <button class="btn" data-action="pay" data-method="Cash"> Cash</button>
-      <button class="btn sage" data-action="pay" data-method="Card">💳 Card</button>
-      <button class="btn charcoal" data-action="pay" data-method="DuitNow/eWallet"> DuitNow / eWallet</button>
+    <div id="pay-cash-row" style="display:none;margin-bottom:14px">
+      <label class="label" for="cash-received-input">Cash received (RM) — for the full remaining balance</label>
+      <input type="number" id="cash-received-input" min="0" step="0.05">
+      <div id="pay-change-due" style="margin-top:8px;font-weight:800"></div>
     </div>
 
-    <div id="pay-amount-row" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--light-gray)">
-      <label for="pay-amount-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Pay a specific amount (RM)</label>
-      <input type="number" id="pay-amount-input" min="0" step="0.01" class="remark-input" style="color:var(--charcoal);margin-bottom:8px">
-      <div style="display:flex;gap:8px">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <button class="btn primary-lg" data-action="pay" data-method="Cash">💵 Cash</button>
+      <button class="btn primary-lg info" data-action="pay" data-method="Card">💳 Card</button>
+      <button class="btn primary-lg charcoal" data-action="pay" data-method="DuitNow/eWallet">📱 DuitNow / eWallet</button>
+    </div>
+
+    <div id="pay-amount-row" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
+      <label class="label" for="pay-amount-input">Pay a specific amount (RM)</label>
+      <input type="number" id="pay-amount-input" min="0" step="0.01" style="margin-bottom:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn small" data-action="pay-amount">Apply cash</button>
-        <button class="btn small sage" data-action="pay-amount" data-method="Card">Apply card</button>
+        <button class="btn small info" data-action="pay-amount" data-method="Card">Apply card</button>
         <button class="btn small charcoal" data-action="pay-amount" data-method="DuitNow/eWallet">Apply eWallet</button>
       </div>
     </div>
 
-    <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--light-gray)">
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
       <div style="display:flex;gap:8px">
         <button class="btn small outline" style="flex:1" data-action="split-evenly">Split evenly</button>
         <button class="btn small outline" style="flex:1" data-action="split-by-seat">Split by seat</button>
@@ -450,20 +465,7 @@
       <div id="pay-split-result"></div>
     </div>
 
-    <button class="btn outline" style="width:100%;margin-top:12px" data-action="close-pay-modal">Cancel</button>
-  </div>
-</div>
-
-<!-- ITEM REMARK MODAL -->
-<div id="remark-modal" class="modal-bg">
-  <div class="modal">
-    <h3 id="remark-title"></h3>
-    <input type="text" id="remark-input" class="remark-input" aria-label="Remark for this item" placeholder="e.g. kurang manis, less ice, no sugar">
-    <div class="remark-presets" id="remark-presets"></div>
-    <div style="display:flex;gap:8px;margin-top:16px">
-      <button class="btn small" style="background:#6b7280" data-action="skip-remark">Skip</button>
-      <button class="btn small" data-action="confirm-remark">Add</button>
-    </div>
+    <button class="btn ghost block" style="margin-top:12px" data-action="close-pay-modal">Cancel</button>
   </div>
 </div>
 
@@ -476,9 +478,96 @@
     <div class="field"><label for="pin-current">Current PIN</label><input id="pin-current" type="password" inputmode="numeric" aria-label="Current PIN"></div>
     <div class="field"><label for="pin-new">New PIN (4-8 digits)</label><input id="pin-new" type="password" inputmode="numeric" aria-label="New PIN"></div>
     <div class="field"><label for="pin-new-confirm">Confirm new PIN</label><input id="pin-new-confirm" type="password" inputmode="numeric" aria-label="Confirm new PIN"></div>
-    <div style="display:flex;gap:8px">
-      <button class="btn small" data-action="submit-change-pin">Save new PIN</button>
-      <button class="btn small outline" id="pin-modal-cancel" data-action="close-pin-modal">Cancel</button>
+    <div class="modal-actions">
+      <button class="btn" data-action="submit-change-pin">Save new PIN</button>
+      <button class="btn outline" id="pin-modal-cancel" data-action="close-pin-modal">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADD / EDIT MENU ITEM — a restaurant form, no database words -->
+<div id="item-modal" class="modal-bg">
+  <div class="modal wide">
+    <h3 id="item-modal-title">Add item</h3>
+    <div class="field"><label for="item-name">Item name</label><input type="text" id="item-name" placeholder="e.g. Mee Goreng Mamak"></div>
+    <div class="form-grid">
+      <div class="field" style="margin:0"><label for="item-category">Category</label><select id="item-category"></select></div>
+      <div class="field" style="margin:0"><label for="item-price">Price (RM)</label><input type="number" id="item-price" min="0" step="0.05"></div>
+      <div class="field" style="margin:0"><label for="item-station">Prepared at</label><select id="item-station"></select></div>
+    </div>
+    <div class="admin-row" style="border-bottom:none">
+      <div><b>On the menu</b><div class="meta">Turn off to hide this item until you turn it back on.</div></div>
+      <label class="switch"><input type="checkbox" id="item-active"><span class="slider"></span></label>
+    </div>
+    <div>
+      <span class="label">Food options</span>
+      <div class="chip-row" id="item-groups"></div>
+    </div>
+    <div id="item-modal-err" class="err"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-action="close-item-modal">Cancel</button>
+      <button class="btn" data-action="save-item">Save</button>
+    </div>
+    <button class="btn-danger block" id="item-delete-btn" data-action="delete-item" style="margin-top:10px;width:100%;display:none">Delete this item</button>
+  </div>
+</div>
+
+<!-- ADD / EDIT FOOD OPTION GROUP -->
+<div id="group-modal" class="modal-bg">
+  <div class="modal wide">
+    <h3 id="group-modal-title">Food option group</h3>
+    <div class="field"><label for="group-name">Group name</label><input type="text" id="group-name" placeholder="e.g. Extra Lauk"></div>
+    <div class="form-grid">
+      <div class="field" style="margin:0"><label for="group-mode">Choose</label>
+        <select id="group-mode"><option value="radio">One only</option><option value="checkbox">Several</option></select></div>
+      <div class="field" style="margin:0"><label for="group-min">Minimum</label><input type="number" id="group-min" min="0" value="0"></div>
+      <div class="field" style="margin:0"><label for="group-max">Maximum</label><input type="number" id="group-max" min="0" value="1"></div>
+    </div>
+    <div id="group-options"></div>
+    <div class="form-grid" style="margin-top:10px">
+      <div><label class="label" for="new-option-name">New option</label><input type="text" id="new-option-name" placeholder="e.g. Chicken"></div>
+      <div><label class="label" for="new-option-price">Extra charge (RM)</label><input type="number" id="new-option-price" min="0" step="0.05" value="0"></div>
+      <div><button class="btn small" data-action="add-option">➕ Add option</button></div>
+    </div>
+    <div id="group-used-by" class="meta" style="margin-top:12px"></div>
+    <div id="group-modal-err" class="err"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-action="close-group-modal">Close</button>
+      <button class="btn" data-action="save-group">Save</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+      <button class="btn small outline" id="group-duplicate-btn" data-action="duplicate-group" style="display:none">Duplicate</button>
+      <button class="btn-danger" id="group-delete-btn" data-action="delete-group" style="display:none">Delete group</button>
+    </div>
+  </div>
+</div>
+
+<!-- MOVE ORDER -->
+<div id="move-modal" class="modal-bg">
+  <div class="modal">
+    <h3>Move order</h3>
+    <p class="meta" style="margin-bottom:12px">The whole bill moves — nothing is re-entered and the kitchen keeps cooking.</p>
+    <div class="field"><label for="move-target">Move to</label><select id="move-target"></select></div>
+    <div id="move-err" class="err"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-action="close-move">Cancel</button>
+      <button class="btn" data-action="confirm-move">Move order</button>
+    </div>
+  </div>
+</div>
+
+<!-- GENERIC PROMPT (rename a table, a category, a void reason) — replaces
+     window.prompt(), which is unstyled, untranslatable and blocked in some
+     embedded browsers. -->
+<div id="ask-modal" class="modal-bg">
+  <div class="modal">
+    <h3 id="ask-title"></h3>
+    <p class="meta" id="ask-hint" style="margin-bottom:10px"></p>
+    <input type="text" id="ask-input">
+    <div id="ask-err" class="err"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-action="ask-cancel">Cancel</button>
+      <button class="btn" data-action="ask-ok" id="ask-ok">OK</button>
     </div>
   </div>
 </div>

@@ -201,6 +201,7 @@ async function attachSends(orders) {
 async function listStationTickets(stationCode) {
   const r = await pool.query(
     `SELECT t.id, t.status, t.station_code, t.preparing_at, t.ready_at, t.served_at,
+            pu.name AS preparing_by_name, ru.name AS ready_by_name, su.name AS served_by_name,
             s.id AS send_id, s.seq_no, s.sent_at, s.source, s.approval_state,
             u.name AS sent_by_name,
             o.id AS order_id, o.order_type, o.status AS order_status, tb.name AS table_name
@@ -209,6 +210,9 @@ async function listStationTickets(stationCode) {
        JOIN orders o ON o.id = s.order_id
        LEFT JOIN tables tb ON tb.id = o.table_id
        LEFT JOIN users u ON u.id = s.sent_by
+       LEFT JOIN users pu ON pu.id = t.preparing_by
+       LEFT JOIN users ru ON ru.id = t.ready_by
+       LEFT JOIN users su ON su.id = t.served_by
       WHERE t.station_code = $1
         AND s.approval_state = 'approved'
         AND t.status <> 'cancelled'
@@ -234,6 +238,13 @@ async function listStationTickets(stationCode) {
     order_id: row.order_id, order_type: row.order_type, order_status: row.order_status,
     table: row.table_name || null,
     is_addon: row.seq_no > 1,
+    // Who moved this ticket along, kept behind an expandable section on the
+    // card so the main ticket stays readable from across the kitchen (§13).
+    history: [
+      row.preparing_at && { at: row.preparing_at, what: 'Started cooking', who: row.preparing_by_name },
+      row.ready_at && { at: row.ready_at, what: 'Marked ready', who: row.ready_by_name },
+      row.served_at && { at: row.served_at, what: 'Served', who: row.served_by_name },
+    ].filter(Boolean),
     items: items
       .filter(i => i.send_id === row.send_id && i.station_code === row.station_code)
       .map(i => ({
