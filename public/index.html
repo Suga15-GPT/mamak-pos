@@ -133,6 +133,70 @@
       </div>
     </section>
 
+    <!-- SHIFT TAB -->
+    <section id="tab-shift" class="tab">
+      <h2 style="margin-bottom:16px">Shift</h2>
+
+      <div class="card" id="shift-closed-card" style="margin-bottom:20px">
+        <h3 style="margin-bottom:12px">Open Shift</h3>
+        <div style="display:flex;gap:8px;align-items:flex-end">
+          <div>
+            <label for="shift-float-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Float (RM)</label>
+            <input type="number" id="shift-float-input" min="0" step="0.01" value="0" style="color:var(--charcoal);width:120px">
+          </div>
+          <button class="btn small" data-action="open-shift">Open Shift</button>
+        </div>
+      </div>
+
+      <div class="card" id="shift-open-card" style="margin-bottom:20px;display:none">
+        <h3 style="margin-bottom:12px">Current Shift</h3>
+        <div id="shift-status" class="meta" style="margin-bottom:14px"></div>
+        <div id="shift-x-report" style="margin-bottom:16px"></div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:16px;padding:14px 0;border-top:1px solid var(--light-gray);border-bottom:1px solid var(--light-gray)">
+          <div>
+            <label for="movement-kind" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Kind</label>
+            <select id="movement-kind" style="color:var(--charcoal)">
+              <option value="payin">Pay in</option>
+              <option value="payout">Pay out</option>
+            </select>
+          </div>
+          <div>
+            <label for="movement-amount" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Amount (RM)</label>
+            <input type="number" id="movement-amount" min="0" step="0.01" style="color:var(--charcoal);width:100px">
+          </div>
+          <div style="flex:1;min-width:160px">
+            <label for="movement-reason" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Reason</label>
+            <input type="text" id="movement-reason" style="color:var(--charcoal);width:100%">
+          </div>
+          <button class="btn small outline" data-action="add-movement">Record</button>
+        </div>
+
+        <button class="btn small outline" data-action="reveal-close">Close Shift</button>
+
+        <div id="shift-close-form" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--light-gray)">
+          <h4 style="margin-bottom:10px">Count the drawer</h4>
+          <div id="denom-grid"></div>
+          <div style="margin:12px 0;font-weight:700">Counted total: <span id="denom-total">RM 0.00</span></div>
+          <label for="shift-close-note" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Note (required if variance is non-zero)</label>
+          <input type="text" id="shift-close-note" class="remark-input" style="color:var(--charcoal);margin-bottom:12px">
+          <div style="display:flex;gap:8px">
+            <button class="btn small" data-action="confirm-close">Confirm Close</button>
+            <button class="btn small outline" data-action="cancel-close">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="shift-report-card" style="margin-bottom:20px;display:none">
+        <h3 style="margin-bottom:12px">Last Z Report <span id="shift-variance-badge"></span></h3>
+        <div id="shift-z-report"></div>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button class="btn small outline" data-action="export-z-csv">Export CSV</button>
+          <button class="btn small outline" data-action="print-z-report">Print</button>
+        </div>
+      </div>
+    </section>
+
     <!-- ADMIN TAB -->
     <section id="tab-admin" class="tab">
       <h2 style="margin-bottom:16px">Admin Panel</h2>
@@ -179,6 +243,21 @@
             <input type="number" id="svc-rate-input" min="0" max="100" step="0.01" style="color:var(--charcoal);width:100px">
           </div>
           <button class="btn small" id="save-rates-btn" data-action="save-rates">Save</button>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;margin-top:16px;padding-top:16px;border-top:1px solid var(--light-gray)">
+          <div style="flex:1;min-width:180px">
+            <label for="restaurant-name-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Restaurant name (printed on receipts)</label>
+            <input type="text" id="restaurant-name-input" style="color:var(--charcoal);width:100%">
+          </div>
+          <div style="flex:2;min-width:220px">
+            <label for="restaurant-address-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Address</label>
+            <input type="text" id="restaurant-address-input" style="color:var(--charcoal);width:100%">
+          </div>
+          <div>
+            <label for="sst-number-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">SST registration number</label>
+            <input type="text" id="sst-number-input" style="color:var(--charcoal);width:160px">
+          </div>
+          <button class="btn small" data-action="save-restaurant-identity">Save</button>
         </div>
       </div>
       <div class="card" style="margin-bottom:20px">

@@ -1,13 +1,12 @@
 const path = require('path');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { withDb } = require('../helper');
+const { withDb, getFreePort } = require('../helper');
 
 const SRC_DIR = path.join(__dirname, '..', '..', 'src') + path.sep;
 const DB_MODULE = require.resolve('../../src/db');
 const SERVER_MODULE = require.resolve('../../src/server');
 
-function randomPort() { return 20000 + Math.floor(Math.random() * 30000); }
 
 function clearSrcCache() {
   for (const key of Object.keys(require.cache)) {
@@ -24,7 +23,7 @@ async function waitReady(base, retries = 50) {
 }
 
 async function startApp() {
-  const port = randomPort();
+  const port = await getFreePort();
   process.env.PORT = String(port);
   process.env.ADMIN_PIN = '1234';
   clearSrcCache();
@@ -51,6 +50,8 @@ function auth(token) { return { authorization: `Bearer ${token}`, 'content-type'
 async function setup(base) {
   const adminToken = await login(base, 'Admin', '1234');
   const adminAuth = auth(adminToken);
+  // Phase 09: a payment is refused unless a shift is open.
+  await fetch(`${base}/api/shift/open`, { method: 'POST', headers: adminAuth, body: JSON.stringify({ float: 0 }) });
 
   const adminId = (await json(await fetch(`${base}/api/admin/users`, { headers: adminAuth }))).find(u => u.name === 'Admin').id;
   const staffId = (await json(await fetch(`${base}/api/admin/users`, {

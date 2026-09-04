@@ -123,6 +123,13 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
   const due = await amountDue(orderId);
   if (due <= 0) throw AppError('order already settled', 400);
 
+  // Phase 09: the drawer this cash lands in (and the shift a card/eWallet sale
+  // is attributed to) must be the open one — refusing here is the control that
+  // makes shift cash reconciliation trustworthy at all.
+  const openShift = await pool.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
+  const shiftId = openShift.rows[0]?.id;
+  if (!shiftId) throw AppError('no shift is open — open a shift before taking payment', 400);
+
   let apply = amountCents == null ? due : Number(amountCents);
   if (!(apply > 0)) throw AppError('amount must be positive', 400);
 
@@ -143,8 +150,8 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
   }
 
   const p = await pool.query(
-    'INSERT INTO payments (order_id, method, amount_cents, tendered_cents, taken_by) VALUES ($1,$2,$3,$4,$5) RETURNING id',
-    [orderId, method, apply, tendered, userId || null]);
+    'INSERT INTO payments (order_id, method, amount_cents, tendered_cents, taken_by, shift_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+    [orderId, method, apply, tendered, userId || null, shiftId]);
 
   if (roundingAdj) {
     await pool.query('UPDATE orders SET rounding_cents = rounding_cents + $1, total_cents = total_cents + $1 WHERE id = $2',
@@ -154,14 +161,9 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
   const remainingCents = Math.max(0, due - apply + roundingAdj);
   const settled = remainingCents === 0;
   if (settled) {
-    // pay_method/pay_total_cents are legacy columns `GET /api/summary`'s dashboard
-    // still sums (phase 02 kept them "for now"; phase 09 migrates reports off them).
-    // A split payment has no single true method — record whichever leg closed it,
-    // which is exactly right for the common (non-split) case that dashboard cares about.
-    const totalRow = await pool.query('SELECT total_cents FROM orders WHERE id = $1', [orderId]);
     await pool.query(
-      "UPDATE orders SET status = 'paid', paid_at = now(), paid_by = $1, pay_method = $2, pay_total_cents = $3, updated_at = now() WHERE id = $4",
-      [userId || null, method, totalRow.rows[0].total_cents, orderId]);
+      "UPDATE orders SET status = 'paid', paid_at = now(), paid_by = $1, updated_at = now() WHERE id = $2",
+      [userId || null, orderId]);
   }
 
   const changeCents = tendered != null ? tendered - apply : 0;

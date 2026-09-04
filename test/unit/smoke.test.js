@@ -2,17 +2,13 @@ const fs = require('fs');
 const path = require('path');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { withDb } = require('../helper');
+const { withDb, getFreePort } = require('../helper');
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', '..', 'migrations');
 
 const SRC_DIR = path.join(__dirname, '..', '..', 'src') + path.sep;
 const DB_MODULE = require.resolve('../../src/db');
 const SERVER_MODULE = require.resolve('../../src/server');
-
-function randomPort() {
-  return 20000 + Math.floor(Math.random() * 30000);
-}
 
 // server.js now pulls in a tree of route/service/lib modules under src/, each
 // of which captures `pool` from src/db.js at require time. withDb() already
@@ -41,7 +37,7 @@ async function waitReady(base, retries = 50) {
 // Starts the real app (seed + routes) against the withDb-scoped schema, on an
 // ephemeral port so tests never fight each other or the dev server.
 async function startApp() {
-  const port = randomPort();
+  const port = await getFreePort();
   process.env.PORT = String(port);
   process.env.ADMIN_PIN = '1234';
   clearSrcCache();

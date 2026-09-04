@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const net = require('net');
 const { Pool } = require('pg');
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL
@@ -34,4 +35,20 @@ async function withDb(fn) {
   }
 }
 
-module.exports = { withDb, TEST_DATABASE_URL };
+// Binds to port 0 (the OS picks a free one), reads that port back, then
+// releases it — replaces every test file's own `randomPort()` (a guess in
+// 20000-49999), which collided under a full-suite run and failed with
+// EADDRINUSE (an intermittent red build unrelated to the code under test).
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.on('error', reject);
+    srv.listen(0, () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+module.exports = { withDb, TEST_DATABASE_URL, getFreePort };

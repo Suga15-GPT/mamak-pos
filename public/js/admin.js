@@ -12,6 +12,9 @@ export async function refreshAdmin() {
     lastMenu = allMenu;
     $('tax-rate-input').value = (settings.tax_rate_bp / 100).toFixed(2);
     $('svc-rate-input').value = (settings.svc_rate_bp / 100).toFixed(2);
+    $('restaurant-name-input').value = settings.restaurant_name || '';
+    $('restaurant-address-input').value = settings.restaurant_address || '';
+    $('sst-number-input').value = settings.sst_number || '';
 
     $('admin-categories').innerHTML = allMenu.categories.map((c, i) => `
       <div class="admin-row">
@@ -177,6 +180,21 @@ async function saveRates() {
   catch (e) { toast(e.message); }
 }
 
+// Phase 09: receipts and Z reports print these — an SST-registered business
+// can't legally issue a receipt without its registration number on it.
+async function saveRestaurantIdentity() {
+  const restaurant_name = $('restaurant-name-input').value.trim();
+  const restaurant_address = $('restaurant-address-input').value.trim();
+  const sst_number = $('sst-number-input').value.trim();
+  const tax_rate_bp = Math.round(Number($('tax-rate-input').value) * 100);
+  const svc_rate_bp = Math.round(Number($('svc-rate-input').value) * 100);
+  try {
+    await API.patch('/api/settings', { tax_rate_bp, svc_rate_bp, restaurant_name, restaurant_address, sst_number });
+    toast('Restaurant details saved');
+    refreshAdmin();
+  } catch (e) { toast(e.message); }
+}
+
 /* ===== printers (phase 08) ===== */
 async function createPrinter() {
   const name = $('new-printer-name').value.trim();
@@ -226,6 +244,7 @@ $('tab-admin').addEventListener('click', e => {
   if (!el) return;
   const action = el.dataset.action;
   if (action === 'save-rates') saveRates();
+  else if (action === 'save-restaurant-identity') saveRestaurantIdentity();
   else if (action === 'item-move') moveItem(Number(el.dataset.id), Number(el.dataset.dir));
   else if (action === 'cat-move') moveCategory(Number(el.dataset.id), Number(el.dataset.dir));
   else if (action === 'toggle-item-group') toggleItemGroup(Number(el.dataset.item), Number(el.dataset.group), el.dataset.attached === 'true');

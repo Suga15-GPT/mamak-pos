@@ -72,9 +72,14 @@ async function insertOrder(tableId, parsed, note, source, userId = null, idemKey
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Stamps whichever shift is open right now, if any — orders may still be
+    // taken with no shift open (only payment is refused for that), so this is
+    // nullable.
+    const openShift = await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
+    const shiftId = openShift.rows[0]?.id || null;
     const o = await client.query(
-      'INSERT INTO orders (table_id, status, source, note, opened_by, idempotency_key) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-      [tableId, 'sent', source, note || null, userId, idemKey]);
+      'INSERT INTO orders (table_id, status, source, note, opened_by, idempotency_key, shift_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+      [tableId, 'sent', source, note || null, userId, idemKey, shiftId]);
     const orderId = o.rows[0].id;
     for (const l of parsed) {
       const oi = await client.query(
@@ -118,7 +123,7 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
   return orders.map(o => ({
     id: o.id, table: o.table_name, table_id: o.table_id, status: o.status, source: o.source,
     note: o.note, created_at: o.created_at, updated_at: o.updated_at, paid_at: o.paid_at,
-    pay_method: o.pay_method, total: cents2rm(totalCents(o)),
+    total: cents2rm(totalCents(o)),
     // Bill breakdown is only meaningful once paid (snapshotted at payment time);
     // null on open orders rather than a live, still-changeable recomputation.
     subtotal: o.subtotal_cents == null ? null : cents2rm(o.subtotal_cents),

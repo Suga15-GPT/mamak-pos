@@ -1,14 +1,13 @@
 const path = require('path');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { withDb } = require('../helper');
+const { withDb, getFreePort } = require('../helper');
 const { createPrinter } = require('../../src/lib/escpos');
 
 const SRC_DIR = path.join(__dirname, '..', '..', 'src') + path.sep;
 const DB_MODULE = require.resolve('../../src/db');
 const SERVER_MODULE = require.resolve('../../src/server');
 
-function randomPort() { return 20000 + Math.floor(Math.random() * 30000); }
 
 function clearSrcCache() {
   for (const key of Object.keys(require.cache)) {
@@ -25,7 +24,7 @@ async function waitReady(base, retries = 50) {
 }
 
 async function startApp() {
-  const port = randomPort();
+  const port = await getFreePort();
   process.env.PORT = String(port);
   process.env.ADMIN_PIN = '1234';
   clearSrcCache();
@@ -92,6 +91,8 @@ test('a receipt\'s bytes contain the correct total and end with the cut sequence
   await withDb(async db => {
     const base = await startApp();
     const adminToken = await login(base, 'Admin', '1234');
+    // Phase 09: a payment is refused unless a shift is open.
+    await fetch(`${base}/api/shift/open`, { method: 'POST', headers: auth(adminToken), body: JSON.stringify({ float: 0 }) });
     const menu = await json(await fetch(`${base}/api/menu`, { headers: auth(adminToken) }));
     const tables = await json(await fetch(`${base}/api/tables`, { headers: auth(adminToken) }));
     const item = menu.items.find(i => i.name === 'Roti Canai');

@@ -2,13 +2,12 @@ const path = require('path');
 const crypto = require('crypto');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { withDb } = require('../helper');
+const { withDb, getFreePort } = require('../helper');
 
 const SRC_DIR = path.join(__dirname, '..', '..', 'src') + path.sep;
 const DB_MODULE = require.resolve('../../src/db');
 const SERVER_MODULE = require.resolve('../../src/server');
 
-function randomPort() { return 20000 + Math.floor(Math.random() * 30000); }
 
 function clearSrcCache() {
   for (const key of Object.keys(require.cache)) {
@@ -25,7 +24,7 @@ async function waitReady(base, retries = 50) {
 }
 
 async function startApp() {
-  const port = randomPort();
+  const port = await getFreePort();
   process.env.PORT = String(port);
   process.env.ADMIN_PIN = '1234';
   clearSrcCache();

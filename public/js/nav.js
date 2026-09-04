@@ -3,6 +3,7 @@ import { renderTables } from './pos.js';
 import { refreshKitchen } from './kitchen.js';
 import { refreshDashboard } from './dashboard.js';
 import { refreshAdmin } from './admin.js';
+import { refreshShift } from './shift.js';
 
 /* ===== NAV ===== */
 export function buildNav() {
@@ -10,6 +11,7 @@ export function buildNav() {
     { id: 'pos', label: 'Orders', roles: ['admin', 'staff'] },
     { id: 'kitchen', label: 'Kitchen', roles: ['admin', 'staff', 'kitchen'] },
     { id: 'dashboard', label: 'Dashboard', roles: ['admin', 'staff'] },
+    { id: 'shift', label: 'Shift', roles: ['admin', 'staff'] },
     { id: 'admin', label: 'Admin', roles: ['admin'] },
   ];
   const allowed = tabs.filter(t => t.roles.includes(API.user.role));
@@ -27,6 +29,7 @@ function switchTab(id, btn) {
   $('tab-' + id).classList.add('active');
   if (id === 'kitchen') refreshKitchen();
   if (id === 'dashboard') refreshDashboard();
+  if (id === 'shift') refreshShift();
   if (id === 'admin') refreshAdmin();
 }
 
