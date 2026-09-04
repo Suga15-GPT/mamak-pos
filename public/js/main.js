@@ -2,6 +2,7 @@ import { state, $, connectStream, disconnectStream } from './state.js';
 import { loadAll } from './pos.js';
 import { buildNav, refreshLive } from './nav.js';
 import { startOutbox } from './outbox.js';
+import './i18n.js';
 
 /* ===== OFFLINE (phase 07) =====
    Started unconditionally at page load — not gated behind login — so a reload

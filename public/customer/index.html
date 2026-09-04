@@ -63,6 +63,17 @@
     }
   }
 
+  /* Honest status: this page has no logged-in session, so it can't reach the
+     phase-06 SSE stream (staff/admin/kitchen-role only) or an append-to-order
+     endpoint (public API only supports creating an order) — both would need
+     new backend surface out of this phase's scope. What we DO know for a
+     fact — the order was accepted by the kitchen — is shown plainly instead
+     of a fake "live" indicator. */
+  .c-status { margin:20px 0; font-weight:700; color:var(--terra-deep); font-size:15px; }
+  .c-order-summary { text-align:left; max-width:360px; margin:0 auto 8px; }
+  .c-order-summary .row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px dashed var(--light-gray); font-size:14px; }
+  .c-order-summary .row:last-child { border-bottom:none; }
+
   #loading {
     min-height:100vh; display:flex; align-items:center; justify-content:center;
     flex-direction:column; gap:16px; color:var(--warm-gray);
@@ -80,8 +91,9 @@
 
 <div id="app" style="display:none">
   <div class="c-header">
+    <button class="locale-toggle" id="locale-toggle" data-action="toggle-locale" title="Switch language / Tukar bahasa" aria-label="Switch language" style="position:absolute;top:16px;right:16px;background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.4);color:#fff">EN</button>
     <h1 id="table-name"></h1>
-    <p>Scan &amp; Order · No app needed</p>
+    <p data-i18n="customer.subtitle">Scan &amp; Order · No app needed</p>
   </div>
   <div class="c-wrap">
     <div id="menu-cats" class="menu-cats"></div>
@@ -94,22 +106,22 @@
         <span class="count"><b id="bar-count">0</b> items</span>
         <span class="total" id="bar-total">RM 0.00</span>
       </div>
-      <button class="btn" data-action="show-cart">View Order</button>
+      <button class="btn" data-action="show-cart" data-i18n="customer.viewOrder">View Order</button>
     </div>
   </div>
 </div>
 
 <div id="cart-modal" class="modal-bg">
   <div class="modal">
-    <h3>Your Order</h3>
+    <h3 data-i18n="customer.yourOrder">Your Order</h3>
     <div id="cart-lines"></div>
     <div id="cart-empty" class="empty">Your cart is empty</div>
     <div class="totals" id="cart-totals" style="display:none">
       <div class="row grand"><span>Total</span><span id="cart-total-rm"></span></div>
     </div>
     <div style="display:flex;gap:10px;margin-top:24px">
-      <button class="btn outline" style="flex:1" data-action="close-cart-modal">Keep Browsing</button>
-      <button class="btn" style="flex:1" id="submit-btn" data-action="submit-order">Place Order</button>
+      <button class="btn outline" style="flex:1;min-height:56px" data-action="close-cart-modal" data-i18n="customer.keepBrowsing">Keep Browsing</button>
+      <button class="btn primary-lg" style="flex:1" id="submit-btn" data-action="submit-order" data-i18n="customer.placeOrder">Place Order</button>
     </div>
   </div>
 </div>
@@ -117,9 +129,11 @@
 <div id="success-view" class="view" style="display:none">
   <div class="c-success">
     <div class="icon">✓</div>
-    <h2>Order Placed!</h2>
+    <h2 data-i18n="customer.orderPlaced">Order Placed!</h2>
     <p>Your order has been sent to the kitchen.<br>A staff member will bring it to your table shortly.</p>
-    <button class="btn" data-action="reload">Order More</button>
+    <div id="success-status" class="c-status"></div>
+    <div id="success-items" class="c-order-summary"></div>
+    <button class="btn primary-lg" data-action="reload" data-i18n="customer.orderMore">Order More</button>
   </div>
 </div>
 
@@ -129,7 +143,7 @@
     <div id="km-body"></div>
     <div style="margin-top:16px">
       <label style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:8px">Remark (optional)</label>
-      <input type="text" id="km-remark" class="remark-input" placeholder="e.g. kurang pedas, no onion">
+      <input type="text" id="km-remark" class="remark-input" aria-label="Remark for this item" placeholder="e.g. kurang pedas, no onion">
       <div class="remark-presets" id="km-presets"></div>
     </div>
     <div style="display:flex;gap:10px;margin-top:24px">
@@ -142,7 +156,7 @@
 <div id="remark-modal" class="modal-bg">
   <div class="modal">
     <h3 id="rm-title"></h3>
-    <input type="text" id="rm-input" class="remark-input" placeholder="e.g. kurang manis, less ice">
+    <input type="text" id="rm-input" class="remark-input" aria-label="Remark for this item" placeholder="e.g. kurang manis, less ice">
     <div class="remark-presets" id="rm-presets"></div>
     <div style="display:flex;gap:10px;margin-top:24px">
       <button class="btn outline" style="flex:1" data-action="skip-remark">Skip</button>

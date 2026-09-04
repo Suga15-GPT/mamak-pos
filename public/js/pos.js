@@ -8,24 +8,37 @@ export async function loadAll() {
     state.activeCat = state.menu.categories[0]?.id;
     renderTables();
     renderMenu();
+    renderFavs();
   } catch (e) { toast('Failed to load data: ' + e.message); }
 }
 
-/* ===== POS: TABLES ===== */
+/* ===== POS: TABLES =====
+   Semantics (audit #33), stated once: grey = free · amber ('pending') = order
+   open, food not yet served · green ('ready-to-pay') = served, awaiting
+   payment · red outline ('stale') = open 30+ minutes with no status change —
+   a waiter should read the floor in one glance from two metres away. */
 export async function renderTables() {
   let orders = [];
   try { orders = await API.get('/api/orders'); } catch (e) {}
 
-  const tableStatus = {};
-  orders.forEach(o => {
-    if (!tableStatus[o.table_id]) tableStatus[o.table_id] = o.status;
-  });
+  // GET /api/orders (no mode=) already excludes paid/cancelled, and the DB
+  // enforces at most one open order per table, so this is unambiguous.
+  const byTable = {};
+  orders.forEach(o => { byTable[o.table_id] = o; });
 
   $('pos-tables').innerHTML = `<h2 style="margin-bottom:14px">Select a Table</h2>
     <div class="tables-grid">${state.tables.map(t => {
-      const status = tableStatus[t.id];
-      const statusClass = status ? (status === 'served' ? 'busy' : 'open') : '';
-      const statusLabel = status ? `<div class="table-status">${status}</div>` : '';
+      const o = byTable[t.id];
+      let statusClass = '', statusLabel = '';
+      if (o) {
+        statusClass = o.status === 'served' ? 'ready-to-pay' : 'pending';
+        const mins = Math.max(0, Math.floor((Date.now() - new Date(o.updated_at)) / 60000));
+        if (mins >= 30) statusClass += ' stale';
+        const itemCount = (o.items || []).filter(i => !i.voided).reduce((s, i) => s + i.qty, 0);
+        const total = o.grand_total != null ? o.grand_total : o.total;
+        statusLabel = `<div class="table-status">${esc(o.status)} · ${mins}m · ${itemCount} item${itemCount === 1 ? '' : 's'}</div>
+          <div class="table-total">${fmt(total)}</div>`;
+      }
       return `<button class="table-btn ${statusClass}" id="tb-${t.id}" data-action="select-table" data-id="${t.id}">
         ${esc(t.name)}${statusLabel}
       </button>`;
@@ -37,11 +50,14 @@ function selectTable(id) {
   state.selTable = { id, name: t ? t.name : '' };
   state.cart = [];
   liveOrder = null;
+  searchQuery = '';
+  $('item-search').value = '';
   $('pos-tables').style.display = 'none';
   $('pos-workspace').style.display = '';
   $('ws-title').textContent = state.selTable.name;
   renderCart();
   renderMenu();
+  renderFavs();
   checkOpenOrder();
 }
 
@@ -83,16 +99,51 @@ async function checkOpenOrder() {
 }
 
 /* ===== POS: MENU ===== */
+// A mamak menu can run to 200 items — scrolling category-by-category isn't a
+// search strategy, so a non-empty query searches the whole menu by name and
+// ignores the active category rather than filtering within it.
+let searchQuery = '';
+
+function itemButton(it, extraClass = '') {
+  return `<button class="item-btn ${extraClass}" data-action="add-item" data-id="${it.id}">
+    <div class="nm">${esc(it.name)}</div><div class="pr">${fmt(it.price)}</div></button>`;
+}
+
+// Items already shown in the favourites row (below) are left out of the
+// category grid — the same item offered as two separate buttons with the
+// same name is confusing to tap and ambiguous to a screen reader alike.
+let favIds = new Set();
+
 function renderMenu() {
   if (!state.activeCat && state.menu.categories.length) state.activeCat = state.menu.categories[0].id;
   $('menu-cats').innerHTML = state.menu.categories.map(c =>
     `<button class="${c.id === state.activeCat ? 'active' : ''}" data-action="set-cat" data-id="${c.id}">${esc(c.name)}</button>`
   ).join('');
-  const items = state.menu.items.filter(i => i.category_id === state.activeCat);
-  $('menu-items').innerHTML = items.map(it =>
-    `<button class="item-btn" data-action="add-item" data-id="${it.id}">
-      <div class="nm">${esc(it.name)}</div><div class="pr">${fmt(it.price)}</div></button>`
-  ).join('') || '<div class="empty">No items in this category</div>';
+  $('menu-favs').style.display = searchQuery ? 'none' : '';
+  const items = searchQuery
+    ? state.menu.items.filter(i => i.name.toLowerCase().includes(searchQuery))
+    : state.menu.items.filter(i => i.category_id === state.activeCat && !favIds.has(i.id));
+  $('menu-items').innerHTML = items.map(it => itemButton(it)).join('')
+    || `<div class="empty">${searchQuery ? 'No items match your search' : 'No items in this category'}</div>`;
+}
+
+function setSearch(q) { searchQuery = q.trim().toLowerCase(); renderMenu(); }
+
+// Top-selling-today row (from GET /api/summary, already computed server-side)
+// turns 3 taps into 1 for the handful of items that cover most orders.
+async function renderFavs() {
+  try {
+    const s = await API.get('/api/summary');
+    const favs = (s.top_items || [])
+      .map(t => state.menu.items.find(i => i.name === t.name))
+      .filter(Boolean);
+    favIds = new Set(favs.map(f => f.id));
+    $('menu-favs').innerHTML = favs.length
+      ? `<div class="favs-label">Popular today</div>
+         <div class="menu-items favs-row">${favs.map(it => itemButton(it, 'fav')).join('')}</div>`
+      : '';
+  } catch (e) { $('menu-favs').innerHTML = ''; favIds = new Set(); }
+  renderMenu();
 }
 
 /* ===== POS: CART ===== */
@@ -241,7 +292,7 @@ function openModifierModal(it) {
   modifierGroupsFor(it).forEach(g => {
     const opts = state.menu.modifier_options.filter(o => o.group_id === g.id);
     const inputType = g.mode === 'radio' ? 'radio' : 'checkbox';
-    const label = g.min_select > 0 ? `${esc(g.name)} (choose ${g.min_select === g.max_select ? g.min_select : `${g.min_select}-${g.max_select}`})` : esc(g.name);
+    const label = g.min_select > 0 ? `Choose ${g.min_select === g.max_select ? g.min_select : `${g.min_select}-${g.max_select}`} ${esc(g.name)}` : esc(g.name);
     html += `<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin:14px 0 8px">${label}</div>`;
     html += opts.map(o => `<div class="mod-opt"><input type="${inputType}" name="grp-${g.id}" data-group="${g.id}" value="${o.id}"><span style="flex:1">${esc(o.name)}</span>${o.price ? `<span style="color:var(--terra);font-weight:700">+${fmt(o.price)}</span>` : ''}</div>`).join('');
   });
@@ -595,6 +646,8 @@ $('tab-pos').addEventListener('click', e => {
 $('tab-pos').addEventListener('change', e => {
   if (e.target.matches('input[data-action="set-seat"]')) setSeat(Number(e.target.dataset.id), e.target.value);
 });
+
+$('item-search').addEventListener('input', e => setSearch(e.target.value));
 
 $('modal-bg').addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
