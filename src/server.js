@@ -8,6 +8,7 @@ const publicRoutes = require('./routes/public');
 const orderRoutes = require('./routes/orders');
 const adminRoutes = require('./routes/admin');
 const reportRoutes = require('./routes/reports');
+const streamRoutes = require('./routes/stream');
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
@@ -18,6 +19,7 @@ app.use(publicRoutes);
 app.use(orderRoutes);
 app.use(adminRoutes);
 app.use(reportRoutes);
+app.use(streamRoutes);
 
 /* customer page route */
 app.get('/t/:token', (req, res) => {

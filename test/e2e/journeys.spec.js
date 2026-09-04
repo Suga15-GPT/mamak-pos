@@ -102,8 +102,48 @@ test('void a line', async () => {
   test.skip(true, 'Per-line void with reason lands in phase 03 — see docs/prompts/phase-03-order-integrity.md');
 });
 
-test('offline order reconciles', async () => {
-  test.skip(true, 'Offline outbox + reconciliation lands in phase 07 — see docs/prompts/phase-07-offline.md');
+test('offline order reconciles', async ({ page, context, request }) => {
+  await page.goto('/');
+  await page.locator('#lname').fill('Admin');
+  await page.locator('#lpin').fill('1234');
+  await page.getByRole('button', { name: 'Log In' }).click();
+  await expect(page.locator('#uname')).toHaveText(/Admin/);
+
+  await context.setOffline(true);
+
+  await page.getByRole('button', { name: 'T6', exact: true }).click();
+  await page.getByRole('button', { name: 'Roti', exact: true }).click();
+  await page.getByRole('button', { name: /Roti Canai/ }).click();
+  await page.getByRole('button', { name: 'Skip' }).click();
+  await page.getByRole('button', { name: 'Send to Kitchen' }).click();
+  await expect(page.locator('#cart-lines')).toContainText('pending');
+  await expect(page.locator('#offline-banner')).toBeVisible();
+  await expect(page.locator('#offline-banner')).toContainText('1 order');
+
+  await page.getByRole('button', { name: 'Back to Tables' }).click();
+  await page.getByRole('button', { name: 'T7', exact: true }).click();
+  await page.getByRole('button', { name: 'Roti', exact: true }).click();
+  await page.getByRole('button', { name: /Roti Telur/ }).click();
+  await page.getByRole('button', { name: 'Skip' }).click();
+  await page.getByRole('button', { name: 'Send to Kitchen' }).click();
+  await expect(page.locator('#cart-lines')).toContainText('pending');
+  await expect(page.locator('#offline-banner')).toContainText('2 orders');
+
+  await context.setOffline(false);
+
+  await expect(page.locator('#offline-banner')).toBeHidden();
+  await expect(page.locator('#cart-lines')).toContainText('sent');
+
+  const login = await request.post('/api/login', { data: { name: 'Admin', pin: '1234' } });
+  const { token } = await login.json();
+  const orders = await request.get('/api/orders', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+
+  const t6 = orders.find(o => o.table === 'T6');
+  const t7 = orders.find(o => o.table === 'T7');
+  expect(t6).toBeTruthy();
+  expect(t7).toBeTruthy();
+  expect(t6.items.some(i => i.name === 'Roti Canai')).toBe(true);
+  expect(t7.items.some(i => i.name === 'Roti Telur')).toBe(true);
 });
 
 test('shift open → close', async () => {

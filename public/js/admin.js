@@ -5,8 +5,9 @@ let lastMenu = null;
 /* ===== ADMIN ===== */
 export async function refreshAdmin() {
   try {
-    const [allMenu, settings, qrTables, audit] = await Promise.all([
-      API.get('/api/admin/menu'), API.get('/api/settings'), API.get('/api/admin/tables'), API.get('/api/admin/audit?limit=100')
+    const [allMenu, settings, qrTables, audit, printers, printJobs] = await Promise.all([
+      API.get('/api/admin/menu'), API.get('/api/settings'), API.get('/api/admin/tables'), API.get('/api/admin/audit?limit=100'),
+      API.get('/api/admin/printers'), API.get('/api/admin/print-jobs?limit=50'),
     ]);
     lastMenu = allMenu;
     $('tax-rate-input').value = (settings.tax_rate_bp / 100).toFixed(2);
@@ -75,6 +76,28 @@ export async function refreshAdmin() {
         .then(url => { const img = $('qr-img-' + t.id); if (img) img.src = url; })
         .catch(() => {});
     });
+
+    $('admin-printers').innerHTML = printers.map(pr => `
+      <div class="admin-row">
+        <div style="flex:1">
+          <b>${esc(pr.name)}</b>
+          <div class="meta">${esc(pr.host)}:${pr.port} · ${esc(pr.role)} · ${pr.width} chars/line</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <label class="switch" title="Enabled"><input type="checkbox" ${pr.enabled ? 'checked' : ''} data-action="toggle-printer-enabled" data-id="${pr.id}"><span class="slider"></span></label>
+          <button class="btn small outline" data-action="test-print" data-id="${pr.id}">Test print</button>
+          <button class="btn small outline" data-action="delete-printer" data-id="${pr.id}" style="color:var(--red)">Delete</button>
+        </div>
+      </div>`).join('') || '<div class="empty">No printers configured</div>';
+
+    $('admin-print-jobs').innerHTML = printJobs.map(j => `
+      <div class="admin-row">
+        <div>
+          <b>${esc(j.kind)}</b> · ${esc(j.printer_name || 'no printer')} ·
+          <span style="color:${j.status === 'failed' ? 'var(--red)' : j.status === 'done' ? 'var(--sage-deep)' : 'var(--warm-gray)'}">${esc(j.status)}</span>
+          <div class="meta">${new Date(j.created_at).toLocaleString()}${j.order_id != null ? ' · Order #' + j.order_id : ''}${j.attempts ? ' · ' + j.attempts + ' attempt(s)' : ''}${j.last_error ? ' · ' + esc(j.last_error) : ''}</div>
+        </div>
+      </div>`).join('') || '<div class="empty">No print jobs yet</div>';
 
     $('audit-log').innerHTML = audit.map(a => `
       <div class="admin-row">
@@ -154,6 +177,38 @@ async function saveRates() {
   catch (e) { toast(e.message); }
 }
 
+/* ===== printers (phase 08) ===== */
+async function createPrinter() {
+  const name = $('new-printer-name').value.trim();
+  const host = $('new-printer-host').value.trim();
+  const port = $('new-printer-port').value;
+  const role = $('new-printer-role').value;
+  const width = $('new-printer-width').value;
+  if (!name || !host) return toast('Enter a name and host');
+  try {
+    await API.post('/api/admin/printers', { name, host, port, role, width });
+    $('new-printer-name').value = ''; $('new-printer-host').value = ''; $('new-printer-port').value = '';
+    toast('Printer added');
+    refreshAdmin();
+  } catch (e) { toast(e.message); }
+}
+
+async function togglePrinterEnabled(id, enabled) {
+  try { await API.patch('/api/admin/printers/' + id, { enabled }); toast(enabled ? 'Printer enabled' : 'Printer disabled'); }
+  catch (e) { toast(e.message); }
+}
+
+async function deletePrinter(id) {
+  if (!confirm('Delete this printer?')) return;
+  try { await API.del('/api/admin/printers/' + id); toast('Printer deleted'); refreshAdmin(); }
+  catch (e) { toast(e.message); }
+}
+
+async function testPrintPrinter(id) {
+  try { await API.post(`/api/admin/printers/${id}/test-print`, {}); toast('Test print queued'); refreshAdmin(); }
+  catch (e) { toast('Test print failed: ' + e.message); }
+}
+
 $('tab-admin').addEventListener('change', e => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
@@ -163,6 +218,7 @@ $('tab-admin').addEventListener('change', e => {
   else if (action === 'toggle-sold-out-today') toggleSoldOutToday(Number(el.dataset.id), el.checked);
   else if (action === 'group-min') updateGroupSelect(Number(el.dataset.id), 'min_select', el.value);
   else if (action === 'group-max') updateGroupSelect(Number(el.dataset.id), 'max_select', el.value);
+  else if (action === 'toggle-printer-enabled') togglePrinterEnabled(Number(el.dataset.id), el.checked);
 });
 
 $('tab-admin').addEventListener('click', e => {
@@ -174,4 +230,7 @@ $('tab-admin').addEventListener('click', e => {
   else if (action === 'cat-move') moveCategory(Number(el.dataset.id), Number(el.dataset.dir));
   else if (action === 'toggle-item-group') toggleItemGroup(Number(el.dataset.item), Number(el.dataset.group), el.dataset.attached === 'true');
   else if (action === 'create-group') createGroup();
+  else if (action === 'create-printer') createPrinter();
+  else if (action === 'delete-printer') deletePrinter(Number(el.dataset.id));
+  else if (action === 'test-print') testPrintPrinter(Number(el.dataset.id));
 });

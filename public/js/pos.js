@@ -1,4 +1,5 @@
-import { state, $, fmt, esc, toast } from './state.js';
+import { state, $, fmt, esc, toast, onStreamEvent } from './state.js';
+import { enqueue, pending as outboxPending, onOutboxChange } from './outbox.js';
 
 /* ===== DATA LOADING ===== */
 export async function loadAll() {
@@ -156,19 +157,26 @@ function renderCart() {
   $('cart-lines').innerHTML = state.cart.map((l, i) => {
     const lt = (l.price + l.mods.reduce((s, m) => s + m.price, 0)) * l.qty;
     if (!l.voided) rawTotal += lt;
-    if (!l.voided && !l.sent) unsentSubtotal += lt;
+    // A 'pending' line (queued in the outbox, phase 07) isn't reflected in the
+    // server's live bill yet either — fold it in the same way as a still-local,
+    // never-sent line, until checkOpenOrder() confirms it landed.
+    if (!l.voided && l.sent !== true) unsentSubtotal += lt;
     const modStr = l.mods.map(m => m.name + (m.price ? ` +${fmt(m.price)}` : '')).join(', ');
+    // A line is 'pending' (queued in the outbox, not yet confirmed by the
+    // server — phase 07) or true (server-confirmed sent) or falsy (still local).
     const tag = l.voided
       ? ` <small class="sent-tag" style="color:var(--red)">VOID${l.void_reason ? ': ' + esc(l.void_reason) : ''}</small>`
+      : l.sent === 'pending' ? ' <small class="sent-tag" style="opacity:.7">🕒 pending</small>'
       : (l.sent ? ' <small class="sent-tag">sent</small>' : '');
     const controls = l.voided ? ''
+      : l.sent === 'pending' ? ''
       : l.sent ? `<button data-action="void-line" data-id="${i}" style="color:var(--red)">Void</button>`
       : `<div class="qty"><button data-action="cart-qty" data-id="${i}" data-delta="-1">−</button><button data-action="cart-qty" data-id="${i}" data-delta="1">+</button><button data-action="cart-del" data-id="${i}" style="color:var(--red)">✕</button></div>`;
     const seatBadge = l.seat != null ? `<br><small style="color:var(--warm-gray)">Seat ${esc(String(l.seat))}</small>` : '';
     const seatInput = (l.voided || l.sent) ? '' :
       `<input type="number" min="1" placeholder="Seat" value="${l.seat ?? ''}" data-action="set-seat" data-id="${i}"
         style="width:56px;color:var(--charcoal);margin-top:6px;font-size:12px;padding:4px 6px">`;
-    return `<div class="cart-line"${l.voided ? ' style="opacity:.55"' : ''}>
+    return `<div class="cart-line"${l.voided || l.sent === 'pending' ? ' style="opacity:.6"' : ''}>
       <div><b>${l.qty}×</b> ${esc(l.name)}${tag}${modStr ? `<br><small style="color:var(--warm-gray)">${esc(modStr)}</small>` : ''}${l.note ? `<br><small style="color:var(--terra)">📝 ${esc(l.note)}</small>` : ''}${seatBadge}${seatInput}</div>
       <div style="display:flex;align-items:center;gap:10px"><span${l.voided ? ' style="text-decoration:line-through"' : ''}>${fmt(lt)}</span>
         ${controls}
@@ -201,6 +209,9 @@ function setSeat(idx, value) {
 async function voidLine(idx) {
   const line = state.cart[idx];
   if (!line || !line.sent || line.voided) return;
+  // Voids require server confirmation and must fail loudly offline (phase 07)
+  // — a mis-queued void is a cash discrepancy nobody could reconstruct later.
+  if (!navigator.onLine) return toast('Cannot void a line while offline');
   const reason = prompt('Reason for voiding this line (3-200 characters):');
   if (reason === null) return;
   if (reason.trim().length < 3) return toast('Reason must be at least 3 characters');
@@ -272,59 +283,41 @@ function confirmModifiers() {
   closeModal(); renderCart();
 }
 
-/* ===== SEND ORDER ===== */
+/* ===== SEND ORDER =====
+   Writes through the outbox (phase 07): enqueue and return immediately — the
+   waiter is never blocked on the network. Lines render as "pending" (see
+   renderCart) until the outbox confirms the server has them; checkOpenOrder(),
+   triggered on every outbox change, reconciles the cart to server truth once
+   it does. A 409 race (another device already opened this table — phase 03)
+   is handled inside the outbox itself: it converts the queued create into an
+   append and retries once. */
 async function sendOrder() {
   if (!state.selTable || !state.cart.length) return toast('Add items first');
-  const pending = state.cart.filter(l => !l.sent);
-  if (!pending.length) return toast('No new items to send');
-  try {
-    const orders = await API.get('/api/orders');
-    const existing = orders.find(o => o.table_id === state.selTable.id);
+  const toSend = state.cart.filter(l => !l.sent);
+  if (!toSend.length) return toast('No new items to send');
 
-    const items = pending.map(l => ({
-      item_id: l.item_id,
-      qty: l.qty,
-      note: l.note,
-      seat: l.seat || null,
-      modifier_option_ids: l.mods.map(m => {
-        const opt = state.menu.modifier_options.find(o => o.name === m.name);
-        return opt ? opt.id : null;
-      }).filter(Boolean)
-    }));
+  const items = toSend.map(l => ({
+    item_id: l.item_id,
+    qty: l.qty,
+    note: l.note,
+    seat: l.seat || null,
+    modifier_option_ids: l.mods.map(m => {
+      const opt = state.menu.modifier_options.find(o => o.name === m.name);
+      return opt ? opt.id : null;
+    }).filter(Boolean),
+  }));
 
-    if (existing) {
-      await API.post(`/api/orders/${existing.id}/items`, { items });
-      toast('Items added to existing order');
-    } else {
-      await API.post('/api/orders', { table_id: state.selTable.id, items });
-      toast('Order sent to kitchen!');
-    }
+  // liveOrder (kept fresh by checkOpenOrder — selectTable, realtime events,
+  // and outbox reconciliation) tells us whether to create or append, without
+  // depending on a fresh network round-trip that offline can't provide.
+  const request = liveOrder && liveOrder.table_id === state.selTable.id
+    ? { url: `/api/orders/${liveOrder.id}/items`, method: 'POST', body: { items } }
+    : { url: '/api/orders', method: 'POST', body: { table_id: state.selTable.id, items } };
 
-    state.cart = []; renderCart();
-    checkOpenOrder();
-    renderTables();
-  } catch (e) {
-    // Another tablet won the race to open this table first (one_open_order_per_table).
-    // Join that order instead of failing outright.
-    if (e.status === 409 && e.body?.order_id) {
-      try {
-        const items = pending.map(l => ({
-          item_id: l.item_id, qty: l.qty, note: l.note, seat: l.seat || null,
-          modifier_option_ids: l.mods.map(m => {
-            const opt = state.menu.modifier_options.find(o => o.name === m.name);
-            return opt ? opt.id : null;
-          }).filter(Boolean),
-        }));
-        await API.post(`/api/orders/${e.body.order_id}/items`, { items });
-        toast('Another order was already open for this table — joined it');
-        state.cart = []; renderCart();
-        checkOpenOrder();
-        renderTables();
-        return;
-      } catch (e2) { toast('Error: ' + e2.message); console.error(e2); return; }
-    }
-    toast('Error: ' + e.message); console.error(e);
-  }
+  await enqueue(request);
+  toSend.forEach(l => { l.sent = 'pending'; });
+  renderCart();
+  toast(navigator.onLine ? 'Sending to kitchen…' : 'Offline — queued, will send when back online');
 }
 
 /* ===== PAYMENT =====
@@ -382,6 +375,11 @@ function renderPayModal() {
   if (o.payments?.length) {
     rows.push(`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--light-gray)"><b>Paid so far</b></div>`);
     o.payments.forEach(p => rows.push(`<div><small>${esc(p.method)}</small> <span style="float:right"><small>${fmt(p.amount)}</small></span></div>`));
+    // Reprints are a known fraud vector — admin only, and the server always
+    // audits one (phase 08).
+    if (API.user.role === 'admin') {
+      rows.push(`<div style="margin-top:8px"><button class="btn small outline" data-action="reprint-receipt">Reprint receipt</button></div>`);
+    }
   }
   rows.push(`<div style="font-weight:700;color:var(--terra);margin-top:6px">Remaining <span style="float:right">${fmt(o.amount_due)}</span></div>`);
 
@@ -420,6 +418,10 @@ function updateChangeDue() {
 /* method === null pays the full remaining balance; otherwise `amount`/`tendered`
    (RM) pay exactly that much — used for split-by-amount and split-by-seat. */
 async function processPay(method, amount, tendered) {
+  // Payments require server confirmation and must fail loudly offline (phase
+  // 07) — unlike order entry, they are never queued: a mis-queued payment is
+  // a cash discrepancy nobody can reconstruct.
+  if (!navigator.onLine) return toast('Cannot take payment while offline');
   const orderId = $('pay-btn').dataset.orderId;
   try {
     const body = { method };
@@ -465,6 +467,7 @@ function payAmount(method) {
 async function paySplitShare(idx, method) {
   const share = pendingShares?.items[idx];
   if (!share) return;
+  if (!navigator.onLine) return toast('Cannot take payment while offline');
   const orderId = $('pay-btn').dataset.orderId;
   try {
     // Same reasoning as payAmount: no forced tendered for Cash — a split share
@@ -564,6 +567,15 @@ async function removeDiscount(id) {
   } catch (e) { toast('Remove failed: ' + e.message); }
 }
 
+async function reprintReceipt() {
+  const orderId = $('pay-btn').dataset.orderId;
+  if (!confirm('Reprint this receipt? This is logged.')) return;
+  try {
+    await API.post(`/api/orders/${orderId}/reprint-receipt`, {});
+    toast('Receipt reprint queued');
+  } catch (e) { toast('Reprint failed: ' + e.message); }
+}
+
 /* ===== EVENT WIRING ===== */
 $('tab-pos').addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
@@ -613,6 +625,7 @@ $('pay-modal').addEventListener('click', e => {
     else if (action === 'close-discount-form') closeDiscountForm();
     else if (action === 'apply-discount') applyDiscount();
     else if (action === 'remove-discount') removeDiscount(Number(el.dataset.id));
+    else if (action === 'reprint-receipt') reprintReceipt();
     else if (action === 'close-pay-modal') closePayModal();
     return;
   }
@@ -636,3 +649,34 @@ $('remark-modal').addEventListener('click', e => {
   }
   if (e.target === $('remark-modal')) closeRemarkModal();
 });
+
+/* Realtime: a change on any table's order should update the table grid live, or —
+   if this device is sitting inside that table's workspace — its cart/pay button. */
+onStreamEvent(() => {
+  if (!document.getElementById('tab-pos')?.classList.contains('active')) return;
+  if (!state.selTable) renderTables();
+  else checkOpenOrder();
+});
+
+/* ===== OFFLINE (phase 07) =====
+   The outbox flushing reconciles "pending" cart lines back to server truth;
+   the banner only names the offline case explicitly (a queue that is simply
+   still draining while online needs no persistent warning). */
+async function updateOfflineBanner() {
+  const banner = $('offline-banner');
+  if (!banner) return;
+  const items = await outboxPending();
+  if (!navigator.onLine && items.length) {
+    banner.textContent = `Offline — ${items.length} order${items.length === 1 ? '' : 's'} waiting to send`;
+    banner.style.display = 'block';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+onOutboxChange(() => {
+  updateOfflineBanner();
+  if (state.selTable) checkOpenOrder();
+});
+window.addEventListener('online', updateOfflineBanner);
+window.addEventListener('offline', updateOfflineBanner);
+updateOfflineBanner();
