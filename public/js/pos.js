@@ -375,6 +375,11 @@ function renderPayModal() {
   if (o.payments?.length) {
     rows.push(`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--light-gray)"><b>Paid so far</b></div>`);
     o.payments.forEach(p => rows.push(`<div><small>${esc(p.method)}</small> <span style="float:right"><small>${fmt(p.amount)}</small></span></div>`));
+    // Reprints are a known fraud vector — admin only, and the server always
+    // audits one (phase 08).
+    if (API.user.role === 'admin') {
+      rows.push(`<div style="margin-top:8px"><button class="btn small outline" data-action="reprint-receipt">Reprint receipt</button></div>`);
+    }
   }
   rows.push(`<div style="font-weight:700;color:var(--terra);margin-top:6px">Remaining <span style="float:right">${fmt(o.amount_due)}</span></div>`);
 
@@ -562,6 +567,15 @@ async function removeDiscount(id) {
   } catch (e) { toast('Remove failed: ' + e.message); }
 }
 
+async function reprintReceipt() {
+  const orderId = $('pay-btn').dataset.orderId;
+  if (!confirm('Reprint this receipt? This is logged.')) return;
+  try {
+    await API.post(`/api/orders/${orderId}/reprint-receipt`, {});
+    toast('Receipt reprint queued');
+  } catch (e) { toast('Reprint failed: ' + e.message); }
+}
+
 /* ===== EVENT WIRING ===== */
 $('tab-pos').addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
@@ -611,6 +625,7 @@ $('pay-modal').addEventListener('click', e => {
     else if (action === 'close-discount-form') closeDiscountForm();
     else if (action === 'apply-discount') applyDiscount();
     else if (action === 'remove-discount') removeDiscount(Number(el.dataset.id));
+    else if (action === 'reprint-receipt') reprintReceipt();
     else if (action === 'close-pay-modal') closePayModal();
     return;
   }

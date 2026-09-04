@@ -186,6 +186,45 @@
         <p style="color:var(--warm-gray);font-size:13px;margin-bottom:14px">Right-click any QR image to save/print it.</p>
         <div id="qr-grid" class="qr-grid"></div>
       </div>
+      <div class="card" style="margin-bottom:20px">
+        <h3 style="margin-bottom:12px">Printers</h3>
+        <div id="admin-printers"></div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
+          <div>
+            <label for="new-printer-name" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Name</label>
+            <input type="text" id="new-printer-name" style="color:var(--charcoal);width:120px" placeholder="Kitchen 1">
+          </div>
+          <div>
+            <label for="new-printer-host" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Host</label>
+            <input type="text" id="new-printer-host" style="color:var(--charcoal);width:130px" placeholder="192.168.1.50">
+          </div>
+          <div>
+            <label for="new-printer-port" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Port</label>
+            <input type="number" id="new-printer-port" style="color:var(--charcoal);width:80px" placeholder="9100">
+          </div>
+          <div>
+            <label for="new-printer-role" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Role</label>
+            <select id="new-printer-role" style="color:var(--charcoal)">
+              <option value="kitchen">kitchen</option>
+              <option value="receipt">receipt</option>
+              <option value="bar">bar</option>
+            </select>
+          </div>
+          <div>
+            <label for="new-printer-width" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Width</label>
+            <select id="new-printer-width" style="color:var(--charcoal)">
+              <option value="42">42 (80mm)</option>
+              <option value="32">32 (58mm)</option>
+            </select>
+          </div>
+          <button class="btn small" data-action="create-printer">Add printer</button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:20px">
+        <h3 style="margin-bottom:12px">Print Jobs</h3>
+        <p style="color:var(--warm-gray);font-size:13px;margin-bottom:14px">Most recent 50 — a failed job shows its error so a jammed printer is visible.</p>
+        <div id="admin-print-jobs"></div>
+      </div>
       <div class="card">
         <h3 style="margin-bottom:12px">Activity Log</h3>
         <div id="audit-log"></div>

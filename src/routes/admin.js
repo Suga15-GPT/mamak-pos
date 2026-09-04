@@ -5,6 +5,7 @@ const { pool } = require('../db');
 const { requireRole, hashPin } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
 const { rm2cents } = require('../lib/money');
+const printing = require('../services/printing');
 
 const router = express.Router();
 
@@ -179,6 +180,64 @@ router.get('/api/admin/audit', adminOnly, awaitH(async (req, res) => {
     `SELECT a.id, a.at, a.user_id, u.name AS user_name, a.action, a.entity_type, a.entity_id, a.detail
      FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
      ${where} ORDER BY a.at DESC LIMIT $${params.length}`, params);
+  res.json(r.rows);
+}));
+
+/* ===== printers (phase 08) — CRUD, a test print, and the jobs list so a
+   jammed printer is visible instead of silently eating chits/receipts ===== */
+router.get('/api/admin/printers', adminOnly, awaitH(async (req, res) => {
+  const r = await pool.query('SELECT * FROM printers ORDER BY id');
+  res.json(r.rows);
+}));
+
+router.post('/api/admin/printers', adminOnly, awaitH(async (req, res) => {
+  const { name, host, port, role, width, enabled } = req.body || {};
+  if (!name || !host || !['kitchen', 'receipt', 'bar'].includes(role))
+    return res.status(400).json({ error: "name, host, role ('kitchen'|'receipt'|'bar') required" });
+  const r = await pool.query(
+    'INSERT INTO printers (name, host, port, role, width, enabled) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+    [String(name).slice(0, 60), String(host).slice(0, 120), Number(port) || 9100, role, Number(width) || 42, enabled !== false]);
+  res.json({ id: r.rows[0].id });
+}));
+
+router.patch('/api/admin/printers/:id', adminOnly, awaitH(async (req, res) => {
+  const b = req.body || {};
+  const sets = [], vals = [];
+  if (b.name !== undefined) sets.push('name = $' + vals.push(String(b.name).slice(0, 60)));
+  if (b.host !== undefined) sets.push('host = $' + vals.push(String(b.host).slice(0, 120)));
+  if (b.port !== undefined) sets.push('port = $' + vals.push(Number(b.port) || 9100));
+  if (b.role !== undefined) {
+    if (!['kitchen', 'receipt', 'bar'].includes(b.role)) return res.status(400).json({ error: 'bad role' });
+    sets.push('role = $' + vals.push(b.role));
+  }
+  if (b.width !== undefined) sets.push('width = $' + vals.push(Number(b.width) || 42));
+  if (b.enabled !== undefined) sets.push('enabled = $' + vals.push(!!b.enabled));
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  vals.push(req.params.id);
+  await pool.query(`UPDATE printers SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals);
+  res.json({ ok: true });
+}));
+
+router.delete('/api/admin/printers/:id', adminOnly, awaitH(async (req, res) => {
+  await pool.query('DELETE FROM printers WHERE id = $1', [req.params.id]);
+  res.json({ ok: true });
+}));
+
+router.post('/api/admin/printers/:id/test-print', adminOnly, awaitH(async (req, res) => {
+  const jobId = await printing.testPrint(Number(req.params.id));
+  res.json({ ok: true, job_id: jobId });
+}));
+
+router.get('/api/admin/print-jobs', adminOnly, awaitH(async (req, res) => {
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));
+  const params = [];
+  let where = '';
+  if (req.query.status) { params.push(req.query.status); where = `WHERE j.status = $${params.length}`; }
+  params.push(limit);
+  const r = await pool.query(
+    `SELECT j.id, j.kind, j.order_id, j.status, j.attempts, j.last_error, j.created_at, p.name AS printer_name
+     FROM print_jobs j LEFT JOIN printers p ON p.id = j.printer_id
+     ${where} ORDER BY j.id DESC LIMIT $${params.length}`, params);
   res.json(r.rows);
 }));
 

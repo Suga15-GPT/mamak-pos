@@ -6,6 +6,7 @@ const { awaitH } = require('../lib/errors');
 const { cents2rm, rm2cents } = require('../lib/money');
 const { buildOrderItems, insertOrder, ordersWithItems, writeAudit } = require('../services/orders');
 const { publish } = require('../lib/events');
+const printing = require('../services/printing');
 const {
   recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
   splitEvenly, splitBySeat, paidCentsFor, guardAgainstShortfall, settleIfMatchesPaid, previewBillExcludingLine,
@@ -71,6 +72,7 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
       detail: { table_id: Number(table_id), source: 'staff' },
     });
     publish('order.created', { order_id: id, table_id: Number(table_id) });
+    await printing.enqueue('chit', id);
     res.status(201).json({ id });
   } catch (e) {
     if (idemKey && e.code === '23505' && e.constraint === 'uniq_orders_idem') {
@@ -112,12 +114,14 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
   const parsed = await buildOrderItems(pool, req.body.items);
   const client = await pool.connect();
   let duplicate = false;
+  const insertedIds = [];
   try {
     await client.query('BEGIN');
     for (const [i, l] of parsed.entries()) {
       const oi = await client.query(
         'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by, seat, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id',
         [o.rows[0].id, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, req.user.id, l.seat, idemKey ? `${idemKey}:${i}` : null]);
+      insertedIds.push(oi.rows[0].id);
       for (const m of l.mods)
         await client.query('INSERT INTO order_item_mods (order_item_id, name, price_cents) VALUES ($1,$2,$3)',
           [oi.rows[0].id, m.name, m.price_cents]);
@@ -137,6 +141,9 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
 
   await recomputeOrderBill(o.rows[0].id);
   publish('order.updated', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
+  // Appended items get their own chit marked ADDITION rather than reprinting
+  // the whole order — the kitchen only needs to see what's new.
+  await printing.enqueue('chit', o.rows[0].id, { addition: true, itemIds: insertedIds });
   res.json({ ok: true });
 }));
 
@@ -174,6 +181,7 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
   const bill = await recomputeOrderBill(o.rows[0].id);
   await settleIfMatchesPaid(o.rows[0].id, bill.total_cents, paidCents, req.user.id, 'void');
   publish('order.voided', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
+  await printing.enqueue('void', o.rows[0].id, { itemId: li.rows[0].id });
   res.json({ ok: true });
 }));
 
@@ -232,6 +240,7 @@ router.post('/api/orders/:id/pay', requireRole('admin', 'staff'), awaitH(async (
 
   const after = (await pool.query('SELECT * FROM orders WHERE id = $1', [o.rows[0].id])).rows[0];
   publish('order.paid', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
+  if (result.settled) await printing.enqueue('receipt', o.rows[0].id);
   res.json({
     ok: true,
     paid: cents2rm(result.amount_cents),
@@ -247,6 +256,16 @@ router.post('/api/orders/:id/pay', requireRole('admin', 'staff'), awaitH(async (
       total: cents2rm(after.total_cents),
     },
   });
+}));
+
+/* Manual reprint — admin only, and always audited: a reprinted receipt is a
+   known fraud vector (a second copy handed to a customer who already paid,
+   used to claim a refund elsewhere). */
+router.post('/api/orders/:id/reprint-receipt', requireRole('admin'), awaitH(async (req, res) => {
+  const o = await pool.query('SELECT id FROM orders WHERE id = $1', [req.params.id]);
+  if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
+  await printing.reprintReceipt(o.rows[0].id, req.user.id);
+  res.json({ ok: true });
 }));
 
 /* Preview only — does not record anything. ?ways=N for an even split of the
