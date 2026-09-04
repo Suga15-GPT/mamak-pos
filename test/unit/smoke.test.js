@@ -78,7 +78,12 @@ test('seeded admin can log in; a wrong PIN returns 401', async () => {
     });
     assert.equal(right.status, 200);
     const body = await right.json();
-    assert.ok(body.token, 'login response should include a session token');
+    // Phase 11: the session itself is an httpOnly cookie, not a JSON token —
+    // only the CSRF token (useless without also riding that cookie) comes
+    // back in the body.
+    const setCookie = right.headers.get('set-cookie') || '';
+    assert.ok(/^sid=.+HttpOnly/i.test(setCookie), 'login response should set an httpOnly session cookie');
+    assert.ok(body.csrf_token, 'login response should include a csrf_token');
   });
 });
 
@@ -91,10 +96,10 @@ test('GET /api/orders?mode=recent returns 200 (audit #9)', async () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Admin', pin: '1234' }),
     });
-    const { token } = await login.json();
+    const cookie = (login.headers.get('set-cookie') || '').split(';')[0];
 
     const recent = await fetch(`${base}/api/orders?mode=recent`, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: { cookie },
     });
     assert.equal(recent.status, 200);
     const orders = await recent.json();

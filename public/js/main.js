@@ -2,6 +2,7 @@ import { state, $, connectStream, disconnectStream } from './state.js';
 import { loadAll } from './pos.js';
 import { buildNav, refreshLive } from './nav.js';
 import { startOutbox } from './outbox.js';
+import { openChangePinDialog } from './staff.js';
 import './i18n.js';
 
 /* ===== OFFLINE (phase 07) =====
@@ -34,10 +35,7 @@ function showLogin() {
   if (state.pollTimer) clearInterval(state.pollTimer);
   disconnectStream();
 }
-function showApp() {
-  $('login-view').style.display = 'none';
-  $('app-view').style.display = '';
-  $('uname').textContent = API.user.name + ' (' + API.user.role + ')';
+function loadApp() {
   buildNav();
   loadAll();
   connectStream();
@@ -45,6 +43,19 @@ function showApp() {
   // is just the 60s belt-and-braces backstop for a wedged proxy.
   state.pollTimer = setInterval(refreshLive, 60000);
 }
+
+function showApp() {
+  $('login-view').style.display = 'none';
+  $('app-view').style.display = '';
+  $('uname').textContent = API.user.name + ' (' + API.user.role + ')';
+  // must_change_pin blocks every other endpoint server-side (lib/auth.js) —
+  // loading menu/tables/the stream now would just be a wall of 403s behind
+  // a dialog that can't be dismissed anyway. staff.js's pin-changed event
+  // (fired once the mandatory change succeeds) picks up loadApp() from here.
+  if (API.user.must_change_pin) { openChangePinDialog(true); return; }
+  loadApp();
+}
+document.addEventListener('pin-changed-mandatory', loadApp);
 
 /* api.js calls this directly (as a plain global) when a session expires */
 window.showLogin = showLogin;
@@ -58,7 +69,12 @@ document.querySelector('header').addEventListener('click', e => {
   if (!el) return;
   if (el.dataset.action === 'toggle-theme') toggleTheme();
   else if (el.dataset.action === 'logout') doLogout();
+  else if (el.dataset.action === 'change-pin') openChangePinDialog(false);
 });
 
-/* ===== INIT ===== */
-if (API.token && API.user) showApp(); else showLogin();
+/* ===== INIT =====
+   Phase 11: the session itself is an httpOnly cookie this script can't read
+   — API.user (cached at login) is the optimistic signal; if the cookie has
+   actually expired, the first API call 401s and api.js's own handler routes
+   back to the login screen. */
+if (API.user) showApp(); else showLogin();

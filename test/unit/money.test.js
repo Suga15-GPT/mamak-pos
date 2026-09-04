@@ -128,8 +128,12 @@ test('pay by cash snapshots the bill; a later rate change does not alter the sto
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Admin', pin: '1234' }),
     });
-    const { token } = await login.json();
-    const auth = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+    const { csrf_token } = await login.json();
+    // Phase 11: sessions are an httpOnly cookie, not a bearer token — node's
+    // fetch happily sends a manually-set Cookie header (it isn't a browser
+    // sandbox), so the session is carried by hand instead of a cookie jar.
+    const cookie = (login.headers.get('set-cookie') || '').split(';')[0];
+    const auth = { cookie, 'x-csrf-token': csrf_token, 'content-type': 'application/json' };
 
     // Phase 09: a payment is refused unless a shift is open.
     await fetch(`${base}/api/shift/open`, { method: 'POST', headers: auth, body: JSON.stringify({ float: 0 }) });

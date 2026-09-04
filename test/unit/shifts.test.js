@@ -33,14 +33,20 @@ async function startApp() {
 }
 
 async function json(res) { return res.json(); }
+// Phase 11: sessions are an httpOnly cookie, not a bearer token — node's
+// fetch happily sends a manually-set Cookie header (it isn't a browser
+// sandbox), so tests carry the session by hand instead of a cookie jar.
 async function login(base, name, pin) {
   const r = await fetch(`${base}/api/login`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name, pin }),
   });
-  return (await json(r)).token;
+  const body = await json(r);
+  return { cookie: (r.headers.get('set-cookie') || '').split(';')[0], csrfToken: body.csrf_token };
 }
-function auth(token) { return { authorization: `Bearer ${token}`, 'content-type': 'application/json' }; }
+function auth(session) {
+  return { cookie: session.cookie, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' };
+}
 
 async function setup(base) {
   const adminToken = await login(base, 'Admin', '1234');

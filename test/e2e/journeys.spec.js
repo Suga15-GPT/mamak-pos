@@ -4,11 +4,20 @@ const { test, expect } = require('@playwright/test');
 // implemented; "void a line" is still marked pending (a pre-existing gap from
 // phase 03, not touched by phase 09).
 
+// Phase 11: sessions are an httpOnly cookie, not a bearer token — Playwright's
+// `request` fixture keeps its own cookie jar across calls made through it (like
+// a browser would), so logging in once is enough; only the CSRF token needs to
+// be threaded through by hand for mutating calls.
+async function apiLogin(request) {
+  const r = await request.post('/api/login', { data: { name: 'Admin', pin: '1234' } });
+  const body = await r.json();
+  return body.csrf_token;
+}
+
 test('staff login → order → kitchen → pay', async ({ page, request }) => {
   // Phase 09: a payment is refused unless a shift is open.
-  const login = await request.post('/api/login', { data: { name: 'Admin', pin: '1234' } });
-  const { token } = await login.json();
-  await request.post('/api/shift/open', { headers: { Authorization: `Bearer ${token}` }, data: { float: 0 } });
+  const csrfToken = await apiLogin(request);
+  await request.post('/api/shift/open', { headers: { 'X-CSRF-Token': csrfToken }, data: { float: 0 } });
 
   await page.goto('/');
   await page.locator('#lname').fill('Admin');
@@ -46,9 +55,8 @@ test('staff login → order → kitchen → pay', async ({ page, request }) => {
 });
 
 test('QR customer order', async ({ page, request }) => {
-  const login = await request.post('/api/login', { data: { name: 'Admin', pin: '1234' } });
-  const { token } = await login.json();
-  const tables = await request.get('/api/admin/tables', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+  await apiLogin(request);
+  const tables = await request.get('/api/admin/tables').then(r => r.json());
   const t2 = tables.find(t => t.name === 'T2');
 
   await page.goto(t2.url);
@@ -69,11 +77,10 @@ test('QR customer order', async ({ page, request }) => {
 test('split bill', async ({ page, request }) => {
   // Phase 09: a payment is refused unless a shift is open — don't assume an
   // earlier journey left one open, since these tests can run standalone.
-  const login = await request.post('/api/login', { data: { name: 'Admin', pin: '1234' } });
-  const { token } = await login.json();
-  const authHeaders = { Authorization: `Bearer ${token}` };
-  const existingShift = await request.get('/api/shift/current', { headers: authHeaders }).then(r => r.json());
-  if (!existingShift) await request.post('/api/shift/open', { headers: authHeaders, data: { float: 0 } });
+  const csrfToken = await apiLogin(request);
+  const csrfHeaders = { 'X-CSRF-Token': csrfToken };
+  const existingShift = await request.get('/api/shift/current').then(r => r.json());
+  if (!existingShift) await request.post('/api/shift/open', { headers: csrfHeaders, data: { float: 0 } });
 
   // The order stays 'sent' throughout (never advanced through the kitchen), so
   // "Mark Paid" fires the "food still cooking?" confirm() — accept it — and
@@ -147,9 +154,8 @@ test('offline order reconciles', async ({ page, context, request }) => {
   await expect(page.locator('#offline-banner')).toBeHidden();
   await expect(page.locator('#cart-lines')).toContainText('sent');
 
-  const login = await request.post('/api/login', { data: { name: 'Admin', pin: '1234' } });
-  const { token } = await login.json();
-  const orders = await request.get('/api/orders', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+  await apiLogin(request);
+  const orders = await request.get('/api/orders').then(r => r.json());
 
   const t6 = orders.find(o => o.table === 'T6');
   const t7 = orders.find(o => o.table === 'T7');
@@ -162,13 +168,12 @@ test('offline order reconciles', async ({ page, context, request }) => {
 test('shift open → close', async ({ page, request }) => {
   // Close whatever shift an earlier journey left open, so this one exercises
   // a clean open → close cycle of its own end to end through the UI.
-  const login = await request.post('/api/login', { data: { name: 'Admin', pin: '1234' } });
-  const { token } = await login.json();
-  const authHeaders = { Authorization: `Bearer ${token}` };
-  const existingShift = await request.get('/api/shift/current', { headers: authHeaders }).then(r => r.json());
+  const csrfToken = await apiLogin(request);
+  const csrfHeaders = { 'X-CSRF-Token': csrfToken };
+  const existingShift = await request.get('/api/shift/current').then(r => r.json());
   if (existingShift) {
-    const rep = await request.get(`/api/shift/${existingShift.id}/report`, { headers: authHeaders }).then(r => r.json());
-    await request.post('/api/shift/close', { headers: authHeaders, data: { counted: rep.cash.expected_cents / 100 } });
+    const rep = await request.get(`/api/shift/${existingShift.id}/report`).then(r => r.json());
+    await request.post('/api/shift/close', { headers: csrfHeaders, data: { counted: rep.cash.expected_cents / 100 } });
   }
 
   await page.goto('/');

@@ -99,8 +99,12 @@ async function sendOne(entry) {
   let res;
   try {
     res = await fetch(entry.url, {
+      // (Phase 11) auth rides along as the session cookie automatically —
+      // this is same-origin, so no Authorization header to attach by hand
+      // — but a queued write is still a mutating request and needs the
+      // CSRF header just like every other POST/PATCH/DELETE.
       method: entry.method,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + API.token, 'Idempotency-Key': entry.key },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': API.csrfToken, 'Idempotency-Key': entry.key },
       body: JSON.stringify(entry.body),
     });
   } catch (e) {

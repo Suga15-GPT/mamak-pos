@@ -5,6 +5,7 @@ const STORAGE_KEY = 'pos_locale';
 
 const translations = {
   'common.logout': { en: 'Log Out', ms: 'Log Keluar' },
+  'common.changePin': { en: 'Change my PIN', ms: 'Tukar PIN Saya' },
   'nav.pos': { en: 'Orders', ms: 'Pesanan' },
   'nav.kitchen': { en: 'Kitchen', ms: 'Dapur' },
   'nav.dashboard': { en: 'Dashboard', ms: 'Papan Pemuka' },

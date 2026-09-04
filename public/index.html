@@ -89,6 +89,7 @@
       <button class="locale-toggle" id="locale-toggle" data-action="toggle-locale" title="Switch language / Tukar bahasa" aria-label="Switch language">EN</button>
       <button class="theme-toggle" data-action="toggle-theme" title="Toggle dark mode">🌙</button>
       <span id="uname"></span>
+      <button class="logout" data-action="change-pin" data-i18n="common.changePin">Change my PIN</button>
       <button class="logout" data-action="logout" data-i18n="common.logout">Log Out</button>
     </div>
   </header>
@@ -277,6 +278,37 @@
         </div>
       </div>
       <div class="card" style="margin-bottom:20px">
+        <h3 style="margin-bottom:12px">Staff &amp; PINs</h3>
+        <div id="admin-staff"></div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin:14px 0;padding:14px 0;border-top:1px solid var(--light-gray);border-bottom:1px solid var(--light-gray)">
+          <div>
+            <label for="new-staff-name" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Name</label>
+            <input type="text" id="new-staff-name" style="color:var(--charcoal);width:140px">
+          </div>
+          <div>
+            <label for="new-staff-role" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Role</label>
+            <select id="new-staff-role" style="color:var(--charcoal)">
+              <option value="staff">staff</option>
+              <option value="kitchen">kitchen</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+          <div>
+            <label for="new-staff-pin" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">PIN</label>
+            <input type="password" inputmode="numeric" id="new-staff-pin" style="color:var(--charcoal);width:100px">
+          </div>
+          <div>
+            <label for="new-staff-pin-confirm" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Confirm PIN</label>
+            <input type="password" inputmode="numeric" id="new-staff-pin-confirm" style="color:var(--charcoal);width:100px">
+          </div>
+          <button class="btn small" data-action="create-staff">Add staff</button>
+          <p style="width:100%;color:var(--warm-gray);font-size:12px;margin-top:4px">The PIN entered here is temporary — the new person will be asked to choose their own at first login.</p>
+        </div>
+        <h4 style="margin-bottom:10px;color:var(--warm-gray)">Former staff</h4>
+        <p style="color:var(--warm-gray);font-size:13px;margin-bottom:10px">Kept visible because old bills still carry their name.</p>
+        <div id="admin-staff-former"></div>
+      </div>
+      <div class="card" style="margin-bottom:20px">
         <h3 style="margin-bottom:12px">Table QR Codes</h3>
         <p style="color:var(--warm-gray);font-size:13px;margin-bottom:14px">Right-click any QR image to save/print it.</p>
         <div id="qr-grid" class="qr-grid"></div>
@@ -414,6 +446,22 @@
     <div style="display:flex;gap:8px;margin-top:16px">
       <button class="btn small" style="background:#6b7280" data-action="skip-remark">Skip</button>
       <button class="btn small" data-action="confirm-remark">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- CHANGE-MY-PIN MODAL: every role, from the header. When mandatory
+     (must_change_pin), #pin-modal-cancel is hidden and clicking the
+     backdrop does nothing — see staff.js's closeChangePinDialog(). -->
+<div id="pin-modal" class="modal-bg">
+  <div class="modal">
+    <h3 id="pin-modal-title">Change my PIN</h3>
+    <div class="field"><label for="pin-current">Current PIN</label><input id="pin-current" type="password" inputmode="numeric" aria-label="Current PIN"></div>
+    <div class="field"><label for="pin-new">New PIN (4-8 digits)</label><input id="pin-new" type="password" inputmode="numeric" aria-label="New PIN"></div>
+    <div class="field"><label for="pin-new-confirm">Confirm new PIN</label><input id="pin-new-confirm" type="password" inputmode="numeric" aria-label="Confirm new PIN"></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn small" data-action="submit-change-pin">Save new PIN</button>
+      <button class="btn small outline" id="pin-modal-cancel" data-action="close-pin-modal">Cancel</button>
     </div>
   </div>
 </div>

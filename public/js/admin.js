@@ -1,4 +1,5 @@
 import { $, fmt, esc, toast } from './state.js';
+import { refreshStaff } from './staff.js';
 
 let lastMenu = null;
 
@@ -9,6 +10,7 @@ export async function refreshAdmin() {
       API.get('/api/admin/menu'), API.get('/api/settings'), API.get('/api/admin/tables'), API.get('/api/admin/audit?limit=100'),
       API.get('/api/admin/printers'), API.get('/api/admin/print-jobs?limit=50'),
     ]);
+    refreshStaff();
     lastMenu = allMenu;
     $('tax-rate-input').value = (settings.tax_rate_bp / 100).toFixed(2);
     $('svc-rate-input').value = (settings.svc_rate_bp / 100).toFixed(2);
