@@ -5,7 +5,9 @@
 // caching a write here would silently hide the very failures it exists to queue.
 //
 // Bump CACHE_VERSION on each deploy; old caches are dropped on activate.
-const CACHE_VERSION = 'v2';
+// v3: the whole shell changed in the redesign, so every cached asset from v2
+// is stale and must be dropped.
+const CACHE_VERSION = 'v3';
 const CACHE_NAME = `mamak-pos-${CACHE_VERSION}`;
 
 const SHELL_URLS = [

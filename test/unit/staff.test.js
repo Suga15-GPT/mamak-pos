@@ -273,3 +273,29 @@ test('a mutating request without the CSRF header is rejected', async () => {
     assert.equal(r.status, 403);
   });
 });
+
+/* The login limiter exists to stop PIN guessing, so a correct PIN must not
+   spend from it: ten staff signing in correctly behind one router IP at shift
+   change is normal, and locking the restaurant out for it is the same failure
+   `trust proxy` was added to avoid. */
+test('successful logins do not spend the brute-force budget; failures still lock out', async () => {
+  await withDb(async () => {
+    const base = await startApp();
+
+    for (let i = 0; i < 25; i++) {
+      const ok = await login(base, 'Admin', '1234');
+      assert.equal(ok.status, 200, `correct PIN refused on attempt ${i + 1}`);
+    }
+
+    // Ten wrong PINs still exhaust the limiter…
+    for (let i = 0; i < 10; i++) {
+      assert.equal((await login(base, 'Admin', '9182')).status, 401);
+    }
+    const blocked = await login(base, 'Admin', '9182');
+    assert.equal(blocked.status, 429);
+
+    // …and the lockout applies to the right PIN too, so a guesser cannot use a
+    // correct-looking attempt to slip past it.
+    assert.equal((await login(base, 'Admin', '1234')).status, 429);
+  });
+});

@@ -4,9 +4,10 @@ const { pool } = require('../db');
 const { requireRole, verifyPin } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
 const { cents2rm, rm2cents } = require('../lib/money');
-const { buildOrderItems, insertOrder, ordersWithItems, writeAudit } = require('../services/orders');
+const { buildOrderItems, insertOrder, appendSend, ordersWithItems, writeAudit } = require('../services/orders');
 const { publish } = require('../lib/events');
 const printing = require('../services/printing');
+const rounds = require('../services/rounds');
 const {
   recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
   addRefund, listRefunds,
@@ -65,9 +66,11 @@ router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async
   res.json(orders);
 }));
 
-/* tables for staff/kitchen: names only, no qr_token (that stays admin-only) */
+/* tables for staff/kitchen: names only, no qr_token (that stays admin-only).
+   Retired tables are hidden from the floor but kept in the database, because
+   old bills still name them. */
 router.get('/api/tables', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
-  const r = await pool.query('SELECT id, name FROM tables ORDER BY id');
+  const r = await pool.query('SELECT id, name FROM tables WHERE active ORDER BY sort, id');
   res.json(r.rows);
 }));
 
@@ -80,6 +83,12 @@ router.get('/api/tables', requireRole('admin', 'staff', 'kitchen'), awaitH(async
    already uses below. */
 router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res) => {
   const { table_id, items, note } = req.body || {};
+  // Takeaway is a first-class order type, not a table called "Takeaway"
+  // (master spec §23) — it takes no table at all, and any number can be open.
+  const orderType = req.body?.order_type === 'takeaway' ? 'takeaway' : 'dine_in';
+  const tableId = orderType === 'takeaway' ? null : Number(table_id);
+  if (orderType === 'dine_in' && !(tableId > 0)) return res.status(400).json({ error: 'table_id required for a dine-in order' });
+
   const idemKey = req.headers['idempotency-key'] || null;
   if (idemKey) {
     const existing = await pool.query('SELECT id FROM orders WHERE idempotency_key = $1', [idemKey]);
@@ -88,14 +97,15 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
 
   const parsed = await buildOrderItems(pool, items);
   try {
-    const id = await insertOrder(Number(table_id), parsed, String(note || '').slice(0, 300), 'staff', req.user.id, idemKey);
+    const { orderId: id, sendId } = await insertOrder(
+      tableId, parsed, String(note || '').slice(0, 300), 'staff', req.user.id, idemKey, { orderType });
     await recomputeOrderBill(id);
     await writeAudit(pool, {
       userId: req.user.id, action: 'order.create', entityType: 'order', entityId: id,
-      detail: { table_id: Number(table_id), source: 'staff' },
+      detail: { table_id: tableId, order_type: orderType, source: 'staff', send_id: sendId, round: 1 },
     });
-    publish('order.created', { order_id: id, table_id: Number(table_id) });
-    await printing.enqueue('chit', id);
+    publish('order.created', { order_id: id, table_id: tableId });
+    await printing.enqueueRoundChits(sendId);
     res.status(201).json({ id });
   } catch (e) {
     // A concurrent retry of the *same* request (same table, same key) can hit
@@ -111,19 +121,23 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
     if (e.code === '23505' && e.constraint === 'one_open_order_per_table') {
       const existing = await pool.query(
         "SELECT id FROM orders WHERE table_id = $1 AND status NOT IN ('paid','cancelled','refunded') ORDER BY id DESC LIMIT 1",
-        [Number(table_id)]);
+        [tableId]);
       return res.status(409).json({ error: 'table already has an open order', order_id: existing.rows[0]?.id });
     }
     throw e;
   }
 }));
 
-/* append items to an open order. Idempotency-Key (phase 07) covers the whole
-   batch; uniq_order_items_idem is one key per row, so each line gets a
-   derived sub-key (`${key}:${index}`). The insert is one transaction, so a
-   partial batch never persists — checking (or catching a concurrent-retry
-   race on) line 0's derived key is enough to know the whole batch already
-   landed, without needing a batch-level key column of its own. */
+/* Append items to an open order — this opens a NEW kitchen round.
+   The bill stays one bill; the new round starts at 'sent' with its own
+   preparation lifecycle and never inherits the earlier rounds' state, which is
+   the bug this whole redesign exists to fix.
+
+   Idempotency-Key (phase 07) covers the whole batch; uniq_order_items_idem is
+   one key per row, so each line gets a derived sub-key (`${key}:${index}`). The
+   insert is one transaction, so a partial batch never persists — checking (or
+   catching a concurrent-retry race on) line 0's derived key is enough to know
+   the whole batch already landed. */
 router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async (req, res) => {
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0] || ['paid', 'cancelled', 'refunded'].includes(o.rows[0].status))
@@ -139,39 +153,25 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
   }
 
   const parsed = await buildOrderItems(pool, req.body.items);
-  const client = await pool.connect();
-  let duplicate = false;
-  const insertedIds = [];
+  let result;
   try {
-    await client.query('BEGIN');
-    for (const [i, l] of parsed.entries()) {
-      const oi = await client.query(
-        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by, seat, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id',
-        [o.rows[0].id, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, req.user.id, l.seat, idemKey ? `${idemKey}:${i}` : null]);
-      insertedIds.push(oi.rows[0].id);
-      for (const m of l.mods)
-        await client.query('INSERT INTO order_item_mods (order_item_id, name, price_cents) VALUES ($1,$2,$3)',
-          [oi.rows[0].id, m.name, m.price_cents]);
-    }
-    await client.query('UPDATE orders SET updated_at = now() WHERE id = $1', [o.rows[0].id]);
-    await writeAudit(client, {
-      userId: req.user.id, action: 'order.append', entityType: 'order', entityId: o.rows[0].id,
-      detail: { items: parsed.map(l => ({ item_id: l.item.id, name: l.item.name, qty: l.qty })) },
+    result = await appendSend(o.rows[0].id, parsed, 'staff', req.user.id, idemKey, {
+      audit: {
+        userId: req.user.id, action: 'order.append', entityType: 'order', entityId: o.rows[0].id,
+        detail: { items: parsed.map(l => ({ item_id: l.item.id, name: l.item.name, qty: l.qty })) },
+      },
     });
-    await client.query('COMMIT');
   } catch (e) {
-    await client.query('ROLLBACK');
-    if (idemKey && e.code === '23505' && e.constraint === 'uniq_order_items_idem') duplicate = true;
-    else throw e;
-  } finally { client.release(); }
-  if (duplicate) return res.json({ ok: true });
+    if (idemKey && e.code === '23505' && e.constraint === 'uniq_order_items_idem') return res.json({ ok: true });
+    throw e;
+  }
 
   await recomputeOrderBill(o.rows[0].id);
   publish('order.updated', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
-  // Appended items get their own chit marked ADDITION rather than reprinting
-  // the whole order — the kitchen only needs to see what's new.
-  await printing.enqueue('chit', o.rows[0].id, { addition: true, itemIds: insertedIds });
-  res.json({ ok: true });
+  // The new round prints its own chit(s) — only its own lines, at each station
+  // it touches. The original order is never reprinted.
+  await printing.enqueueRoundChits(result.sendId);
+  res.json({ ok: true, send_id: result.sendId, round: result.seqNo });
 }));
 
 /* void a sent line — never deleted, just marked. staff may void while the order is
@@ -183,12 +183,18 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
   if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) return res.status(400).json({ error: 'order closed' });
-  if (o.rows[0].status !== 'sent' && req.user.role !== 'admin')
-    return res.status(403).json({ error: 'admin only once the kitchen has started this order' });
 
   const li = await pool.query('SELECT * FROM order_items WHERE id = $1 AND order_id = $2', [req.params.lineId, o.rows[0].id]);
   if (!li.rows[0]) return res.status(404).json({ error: 'line not found' });
   if (li.rows[0].voided_at) return res.status(400).json({ error: 'already voided' });
+
+  // Now that one bill can hold several rounds at different stages, "has the
+  // kitchen started this?" is a question about *this line's* station ticket,
+  // not about the order as a whole: a still-'sent' add-on stays staff-voidable
+  // even though round 1 was served an hour ago.
+  const lineStatus = await rounds.ticketStatusForLine(pool, li.rows[0].id);
+  if (lineStatus && lineStatus !== 'sent' && req.user.role !== 'admin')
+    return res.status(403).json({ error: 'admin only once the kitchen has started this item' });
 
   // A partially-paid order's status stays 'sent' — voiding a line can drop the
   // total below what's already been paid, which the status check alone (paid
@@ -212,9 +218,14 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
   res.json({ ok: true });
 }));
 
-// 'paid', 'cancelled', and (phase 12) 'refunded' are terminal — no key here
-// means `(TRANSITIONS[cur] || [])` is empty, so nothing can transition out of
-// them via this route (refunds/order.refund is its own endpoint, not a status PATCH).
+/* Order-level status change.
+
+   Cancelling is still an order-level act (an admin writes off the whole bill).
+   Everything else is now really a statement about preparation, so it is applied
+   to every live station ticket on the order that can legally make that move and
+   the order's own status is re-derived from the result. Kitchen staff work
+   tickets directly (PATCH /api/kitchen/tickets/:id); this route is what an
+   order-level correction, and every pre-rounds client, still goes through. */
 const TRANSITIONS = {
   sent: ['preparing', 'cancelled'],
   preparing: ['ready', 'cancelled', 'sent'],
@@ -234,20 +245,83 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
   if (BACKWARD.has(`${cur}>${status}`) && req.user.role === 'kitchen') return res.status(403).json({ error: 'staff/admin only' });
 
   if (status === 'cancelled') {
-    await pool.query('UPDATE orders SET status = $1, closed_by = $2, updated_at = now() WHERE id = $3', [status, req.user.id, o.rows[0].id]);
-    await writeAudit(pool, {
-      userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: o.rows[0].id,
-      detail: { from: cur },
-    });
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('UPDATE orders SET status = $1, closed_by = $2, updated_at = now() WHERE id = $3', [status, req.user.id, o.rows[0].id]);
+      // Cancelling the bill stops every station: a cancelled ticket drops off
+      // the kitchen display instead of being cooked for nobody.
+      await client.query(
+        `UPDATE order_send_tickets SET status = 'cancelled'
+          WHERE send_id IN (SELECT id FROM order_sends WHERE order_id = $1) AND status <> 'served'`, [o.rows[0].id]);
+      await writeAudit(client, {
+        userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: o.rows[0].id,
+        detail: { from: cur },
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   } else {
-    await pool.query('UPDATE orders SET status = $1, updated_at = now() WHERE id = $2', [status, o.rows[0].id]);
-    await writeAudit(pool, {
-      userId: req.user.id, action: 'order.status', entityType: 'order', entityId: o.rows[0].id,
-      detail: { from: cur, to: status },
-    });
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const tickets = (await client.query(
+        `SELECT t.* FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id
+          WHERE s.order_id = $1 AND s.approval_state = 'approved' AND t.status <> 'cancelled' FOR UPDATE OF t`,
+        [o.rows[0].id])).rows;
+      for (const t of tickets) {
+        // Skip a ticket this move doesn't apply to rather than failing the
+        // whole request: an order-level "Ready" on a bill whose drinks are
+        // already ready should still move the food.
+        if (!(rounds.TICKET_TRANSITIONS[t.status] || []).includes(status)) continue;
+        const stamp = { preparing: ['preparing_at', 'preparing_by'], ready: ['ready_at', 'ready_by'], served: ['served_at', 'served_by'] }[status];
+        if (stamp) {
+          await client.query(`UPDATE order_send_tickets SET status = $1, ${stamp[0]} = now(), ${stamp[1]} = $2 WHERE id = $3`,
+            [status, req.user.id, t.id]);
+        } else {
+          await client.query('UPDATE order_send_tickets SET status = $1 WHERE id = $2', [status, t.id]);
+        }
+      }
+      await rounds.deriveOrderStatus(client, o.rows[0].id);
+      await writeAudit(client, {
+        userId: req.user.id, action: 'order.status', entityType: 'order', entityId: o.rows[0].id,
+        detail: { from: cur, to: status, tickets: tickets.length },
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   }
   publish('order.updated', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
   res.json({ ok: true });
+}));
+
+/* Move an open order to another table (master spec §50) — the whole dining
+   order goes with it: rounds, bill, payments and audit are untouched, nothing
+   is re-entered. Refuses a table that already has an open order rather than
+   letting two bills collide on one table. */
+router.post('/api/orders/:id/move', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  const targetId = Number(req.body?.table_id);
+  const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
+  if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) return res.status(400).json({ error: 'order closed' });
+  if (!(targetId > 0)) return res.status(400).json({ error: 'table_id required' });
+
+  const target = (await pool.query('SELECT id, name FROM tables WHERE id = $1', [targetId])).rows[0];
+  if (!target) return res.status(404).json({ error: 'table not found' });
+  if (o.rows[0].table_id === targetId) return res.status(400).json({ error: 'order is already on that table' });
+
+  const from = (await pool.query('SELECT name FROM tables WHERE id = $1', [o.rows[0].table_id])).rows[0]?.name || null;
+  try {
+    await pool.query(
+      "UPDATE orders SET table_id = $1, order_type = 'dine_in', updated_at = now() WHERE id = $2", [targetId, o.rows[0].id]);
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: `${target.name} already has an open order` });
+    throw e;
+  }
+  await writeAudit(pool, {
+    userId: req.user.id, action: 'order.move', entityType: 'order', entityId: o.rows[0].id,
+    detail: { from_table_id: o.rows[0].table_id, from_table: from, to_table_id: targetId, to_table: target.name },
+  });
+  publish('order.updated', { order_id: o.rows[0].id, table_id: targetId });
+  res.json({ ok: true, table_id: targetId, table: target.name });
 }));
 
 /* One payment leg. Body: { method, amount?, tendered? } — amount (RM) defaults to

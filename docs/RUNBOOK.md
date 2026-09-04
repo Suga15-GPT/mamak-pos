@@ -123,3 +123,61 @@ docker compose exec db psql -U postgres -c "DROP DATABASE restore_check;"
 
 An unrestored backup is a rumour — actually run this drill after setting up
 backups for the first time, and periodically afterward, not just once.
+
+## Off-device backups (do this before you need it)
+
+A nightly `pg_dump` on the same machine as the database protects against a bad
+migration or a dropped table. It does **not** protect against losing the
+machine: the live database and every backup of it are on the same disk, and go
+together.
+
+Set a destination in `.env` and `scripts/backup.sh` copies each dump to it
+after writing the local one:
+
+```bash
+# One of these three shapes. Nothing else is invented if it is unset.
+BACKUP_REMOTE_TARGET=s3://my-bucket/mamak      # needs the aws CLI + AWS_* creds
+BACKUP_REMOTE_TARGET=backup@nas.local:/mamak   # needs rsync + a mounted SSH key
+BACKUP_REMOTE_TARGET=/mnt/usb/mamak            # a mounted NAS or external disk
+```
+
+`BACKUP_REMOTE_CMD` overrides the whole step if you already have a tool: it is
+run with the dump's path as `$1`.
+
+Credentials are never stored in the repository. Supply them the way the tool
+expects — `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` in `.env` (already passed
+through to the `backup` service in `docker-compose.yml`), or an SSH key mounted
+into the container — and keep `.env` out of git.
+
+A failed off-device copy is reported loudly but never discards the local dump
+that already succeeded.
+
+### Checking it is actually happening
+
+Each run records the time and outcome in the database, and **Admin → System**
+shows it:
+
+- 🟢 *Last backup* — a backup reported in within the last 48 hours.
+- 🔴 *Last backup* — **no backup has ever reported in.** Nothing is protecting
+  this data. Fix it today.
+- 🟠 *Off-device backup: not configured* — backups exist only on this machine.
+
+An unrestored backup is still a rumour — run the restore drill above after
+setting this up, and periodically afterwards.
+
+## BASE_URL and the table QR codes
+
+`BASE_URL` is the address a **customer's phone** must be able to reach. It is
+what gets encoded into every printed QR sticker.
+
+If it is unset, QR links are guessed from whichever address the admin browser
+used — which is usually `localhost`, and a `localhost` QR is silently useless
+on every phone in the restaurant.
+
+**Admin → Tables & QR** shows a red banner when the value could not work, and
+**Admin → System** reports the same thing under *QR public address*. Both check
+the value in use at that moment, so fixing `BASE_URL` and restarting turns them
+green immediately.
+
+After changing `BASE_URL`, reprint the stickers: **Admin → Tables & QR → Print**
+on each table.

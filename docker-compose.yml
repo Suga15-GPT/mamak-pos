@@ -36,6 +36,11 @@ services:
   # Nightly pg_dump via scripts/backup.sh, kept 14 days — see docs/RUNBOOK.md
   # for the restore drill. postgres:16-alpine already carries pg_dump and
   # (via busybox) crond, so this needs no extra image.
+  #
+  # BACKUP_REMOTE_TARGET is what makes these backups survive the loss of this
+  # host: without it, the live database and every backup of it sit on the same
+  # machine and die together. Set it in .env (see .env.example) and mount
+  # whatever credential the destination needs — never bake one into the image.
   backup:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -48,6 +53,11 @@ services:
       PGUSER: postgres
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       PGDATABASE: postgres
+      BACKUP_REMOTE_TARGET: ${BACKUP_REMOTE_TARGET:-}
+      BACKUP_REMOTE_CMD: ${BACKUP_REMOTE_CMD:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
     volumes:
       - ./scripts:/scripts:ro
       - backups:/backups

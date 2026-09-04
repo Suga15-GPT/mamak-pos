@@ -15,11 +15,12 @@ async function findEnabledPrinters(role) {
   return r.rows;
 }
 
-async function insertJob(printerId, kind, orderId, payload, status = 'queued', lastError = null) {
+async function insertJob(printerId, kind, orderId, payload, status = 'queued', lastError = null, meta = {}) {
   const r = await pool.query(
-    `INSERT INTO print_jobs (printer_id, kind, order_id, payload, status, last_error, attempts)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-    [printerId, kind, orderId, payload, status, lastError, status === 'failed' ? MAX_ATTEMPTS : 0]);
+    `INSERT INTO print_jobs (printer_id, kind, order_id, payload, status, last_error, attempts, send_id, station_code, retry_of)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+    [printerId, kind, orderId, payload, status, lastError, status === 'failed' ? MAX_ATTEMPTS : 0,
+     meta.sendId || null, meta.stationCode || null, meta.retryOf || null]);
   return r.rows[0].id;
 }
 
@@ -30,15 +31,19 @@ async function insertJob(printerId, kind, orderId, payload, status = 'queued', l
 // that triggered this: with nothing to print to, the job is recorded failed
 // immediately (order_id still set, so it's visible in the jobs list) rather
 // than silently dropped.
-async function enqueueForRole(kind, orderId, role, buildPayload) {
-  const printers = await findEnabledPrinters(role);
+async function enqueueForRole(kind, orderId, role, buildPayload, meta = {}) {
+  let printers = await findEnabledPrinters(role);
+  // A shop with one printer must not lose its drinks chits because no 'bar'
+  // printer exists: fall back to the kitchen, which is where those chits went
+  // before stations existed.
+  if (!printers.length && role !== 'kitchen' && role !== 'receipt') printers = await findEnabledPrinters('kitchen');
   if (!printers.length) {
-    await insertJob(null, kind, orderId, Buffer.alloc(0), 'failed', `no enabled '${role}' printer configured`);
+    await insertJob(null, kind, orderId, Buffer.alloc(0), 'failed', `no enabled '${role}' printer configured`, meta);
     return;
   }
   for (const printer of printers) {
     const payload = await buildPayload(printer.width);
-    await insertJob(printer.id, kind, orderId, payload);
+    await insertJob(printer.id, kind, orderId, payload, 'queued', null, meta);
   }
   setImmediate(() => processQueue().catch(e => console.error('print queue error:', e.message)));
 }
@@ -46,22 +51,22 @@ async function enqueueForRole(kind, orderId, role, buildPayload) {
 /* ===== templates ===== */
 
 async function loadOrderForPrint(orderId) {
+  // LEFT JOIN tables: a takeaway order has no table (migration 012).
   const o = await pool.query(
     `SELECT o.*, t.name AS table_name, u.name AS opened_by_name
-     FROM orders o JOIN tables t ON t.id = o.table_id
+     FROM orders o LEFT JOIN tables t ON t.id = o.table_id
      LEFT JOIN users u ON u.id = o.opened_by
      WHERE o.id = $1`, [orderId]);
   if (!o.rows[0]) throw AppError('order not found', 404);
   return o.rows[0];
 }
 
-async function loadItems(orderId, itemIds = null) {
-  const r = await pool.query(
-    itemIds
-      ? 'SELECT * FROM order_items WHERE order_id = $1 AND id = ANY($2::int[]) ORDER BY id'
-      : 'SELECT * FROM order_items WHERE order_id = $1 AND voided_at IS NULL ORDER BY id',
-    itemIds ? [orderId, itemIds] : [orderId]);
-  const items = r.rows;
+// What staff call this order out as. Takeaway has no table to name.
+function orderLabel(order) {
+  return order.order_type === 'takeaway' ? `TAKEAWAY #${order.id}` : `Table ${order.table_name}`;
+}
+
+async function withMods(items) {
   if (!items.length) return [];
   const mods = await pool.query(
     'SELECT * FROM order_item_mods WHERE order_item_id = ANY($1::int[]) ORDER BY id', [items.map(i => i.id)]);
@@ -71,26 +76,56 @@ async function loadItems(orderId, itemIds = null) {
   return items;
 }
 
+async function loadItems(orderId, itemIds = null) {
+  const r = await pool.query(
+    itemIds
+      ? 'SELECT * FROM order_items WHERE order_id = $1 AND id = ANY($2::int[]) ORDER BY id'
+      : 'SELECT * FROM order_items WHERE order_id = $1 AND voided_at IS NULL ORDER BY id',
+    itemIds ? [orderId, itemIds] : [orderId]);
+  return withMods(r.rows);
+}
+
+// The round, its order, and just the lines one station is responsible for.
+async function loadSendForPrint(sendId, stationCode) {
+  const s = await pool.query(
+    `SELECT s.*, u.name AS sent_by_name, ps.name AS station_name
+       FROM order_sends s
+       LEFT JOIN users u ON u.id = s.sent_by
+       CROSS JOIN LATERAL (SELECT name FROM prep_stations WHERE code = $2) ps
+      WHERE s.id = $1`, [sendId, stationCode]);
+  if (!s.rows[0]) throw AppError('round not found', 404);
+  const order = await loadOrderForPrint(s.rows[0].order_id);
+  const items = await withMods((await pool.query(
+    `SELECT * FROM order_items WHERE send_id = $1 AND station_code = $2 AND voided_at IS NULL ORDER BY id`,
+    [sendId, stationCode])).rows);
+  return { send: s.rows[0], order, items };
+}
+
 function chitLine(p, item) {
   p.doubleHeight(true).bold(true).text(`${item.qty}x ${item.name}\n`).bold(false).doubleHeight(false);
   for (const m of item.mods) p.text(`   + ${m.name}\n`);
   if (item.note) p.bold(true).text(`   NOTE: ${item.note}\n`).bold(false);
 }
 
-// Kitchen chit — big and skimmable, not pretty: order #, table, time, staff,
-// double-height qty-first item lines, modifiers indented, notes in bold, no
-// prices (the kitchen doesn't care, and it wastes paper). One chit per order;
-// an appended batch prints a new chit headed ADDITION instead of repeating the
-// whole order (itemIds names just the newly appended lines).
-async function buildChit(orderId, width, { addition = false, itemIds = null } = {}) {
-  const order = await loadOrderForPrint(orderId);
-  const items = await loadItems(orderId, itemIds);
+// Kitchen/drinks chit — big and skimmable, not pretty: order #, table, round,
+// time, who sent it, double-height qty-first item lines, modifiers indented,
+// notes in bold, no prices (the station doesn't care, and it wastes paper).
+//
+// One chit per (round, station). Round 2 prints *only* round 2's lines for
+// *that* station — the original order is never reprinted just because an add-on
+// was sent, which is the behaviour a mamak kitchen depends on.
+async function buildChit(sendId, stationCode, width) {
+  const { send, order, items } = await loadSendForPrint(sendId, stationCode);
   const p = createPrinter(width);
-  p.init().align(1).bold(true).text(`${addition ? '*** ADDITION ***' : 'KITCHEN CHIT'}\n`).bold(false);
+  p.init().align(1).bold(true)
+    .text(`${send.seq_no > 1 ? `*** ADD-ON · ROUND ${send.seq_no} ***` : 'KITCHEN CHIT'}\n`)
+    .text(`${send.station_name.toUpperCase()}\n`).bold(false);
   p.align(0);
-  p.text(`Order #${order.id}  Table ${order.table_name}\n`);
-  p.text(`${nowKL()}\n`);
-  p.text(`Staff: ${order.opened_by_name || '-'}\n`);
+  p.text(`${orderLabel(order).toUpperCase()}   ORDER #${order.id}\n`);
+  p.text(`Round ${send.seq_no}   ${nowKL()}\n`);
+  // Every send records who sent it (master spec §13); a QR round says so
+  // instead of naming a staff member who never touched it.
+  p.text(`By: ${send.source === 'qr' ? 'CUSTOMER QR' : (send.sent_by_name || order.opened_by_name || '-')}\n`);
   p.line('=');
   items.forEach(item => chitLine(p, item));
   p.line('=');
@@ -107,7 +142,7 @@ async function buildVoidChit(orderId, width, itemId) {
   const p = createPrinter(width);
   p.init().align(1).bold(true).text('*** VOID ***\n').bold(false);
   p.align(0);
-  p.text(`Order #${order.id}  Table ${order.table_name}\n`);
+  p.text(`Order #${order.id}  ${orderLabel(order)}\n`);
   p.line('=');
   items.forEach(item => {
     chitLine(p, item);
@@ -138,7 +173,7 @@ async function buildReceipt(orderId, width) {
   if (settings.sst_number) p.text(`SST Reg: ${settings.sst_number}\n`);
   p.align(0);
   p.line('-');
-  p.text(`Order #${order.id}  Table ${order.table_name}\n`);
+  p.text(`Order #${order.id}  ${orderLabel(order)}\n`);
   p.text(`${nowKL()}\n`);
   p.text(`Staff: ${order.opened_by_name || '-'}\n`);
   p.line('-');
@@ -269,18 +304,65 @@ async function processQueue() {
   }
 }
 
-// The public entry point named by the phase prompt. Never throws: a print
-// failure — no printer, a bad payload, whatever — must never block or fail
-// the order that's asking for a chit/receipt to be queued.
+/* One chit per (round, station), routed to that station's own printer role.
+   Never throws: a print failure — no printer, a bad payload, whatever — must
+   never block or fail the order that asked for the chit. */
+async function enqueueRoundChits(sendId) {
+  try {
+    const send = (await pool.query('SELECT id, order_id FROM order_sends WHERE id = $1', [sendId])).rows[0];
+    if (!send) return;
+    const stations = (await pool.query(
+      `SELECT DISTINCT oi.station_code, ps.printer_role
+         FROM order_items oi JOIN prep_stations ps ON ps.code = oi.station_code
+        WHERE oi.send_id = $1 AND oi.voided_at IS NULL`, [sendId])).rows;
+    for (const st of stations) {
+      await enqueueForRole('chit', send.order_id, st.printer_role,
+        width => buildChit(sendId, st.station_code, width),
+        { sendId, stationCode: st.station_code });
+    }
+  } catch (e) {
+    console.error(`printing.enqueueRoundChits(${sendId}) failed:`, e.message);
+  }
+}
+
+// The public entry point named by the phase prompt. Never throws, same reason.
 async function enqueue(kind, orderId, opts = {}) {
   try {
-    if (kind === 'chit') return await enqueueForRole('chit', orderId, 'kitchen', width => buildChit(orderId, width, opts));
-    if (kind === 'void') return await enqueueForRole('void', orderId, 'kitchen', width => buildVoidChit(orderId, width, opts.itemId));
+    if (kind === 'void') {
+      // A void chit belongs at the station that is cooking the line.
+      const st = (await pool.query(
+        `SELECT oi.station_code, ps.printer_role FROM order_items oi
+           JOIN prep_stations ps ON ps.code = oi.station_code WHERE oi.id = $1`, [opts.itemId])).rows[0];
+      return await enqueueForRole('void', orderId, st?.printer_role || 'kitchen',
+        width => buildVoidChit(orderId, width, opts.itemId), { stationCode: st?.station_code || null });
+    }
     if (kind === 'receipt') return await enqueueForRole('receipt', orderId, 'receipt', width => buildReceipt(orderId, width));
     throw new Error(`unknown print kind '${kind}'`);
   } catch (e) {
     console.error(`printing.enqueue(${kind}, ${orderId}) failed:`, e.message);
   }
+}
+
+/* Re-queues a failed job's *stored payload* verbatim (master spec §48): the
+   exact bytes that failed to reach the printer, on the same printer, as a new
+   job marked retry_of. It creates no order, no round, no charge, and touches
+   no bill — the only thing it does is try the paper again. Always audited,
+   for the same reason a receipt reprint is. */
+async function retryJob(jobId, userId) {
+  const job = (await pool.query('SELECT * FROM print_jobs WHERE id = $1', [jobId])).rows[0];
+  if (!job) throw AppError('print job not found', 404);
+  if (job.status !== 'failed') throw AppError('only a failed job can be retried', 400);
+  if (!job.printer_id) throw AppError('this job has no printer to retry to — configure a printer first', 400);
+  if (!job.payload || !job.payload.length) throw AppError('this job has no stored ticket to reprint', 400);
+
+  const newId = await insertJob(job.printer_id, job.kind, job.order_id, job.payload, 'queued', null,
+    { sendId: job.send_id, stationCode: job.station_code, retryOf: job.id });
+  await writeAudit(pool, {
+    userId, action: 'print.retry', entityType: 'print_job', entityId: job.id,
+    detail: { new_job_id: newId, kind: job.kind, order_id: job.order_id, send_id: job.send_id, station: job.station_code },
+  });
+  setImmediate(() => processQueue().catch(e => console.error('print queue error:', e.message)));
+  return newId;
 }
 
 // Admin "Test print" — targets one specific printer directly, no order context.
@@ -302,4 +384,7 @@ async function reprintReceipt(orderId, userId) {
   return enqueue('receipt', orderId);
 }
 
-module.exports = { enqueue, testPrint, reprintReceipt, processQueue, buildChit, buildVoidChit, buildReceipt, buildZReport, printShiftReport };
+module.exports = {
+  enqueue, enqueueRoundChits, retryJob, testPrint, reprintReceipt, processQueue,
+  buildChit, buildVoidChit, buildReceipt, buildZReport, printShiftReport,
+};

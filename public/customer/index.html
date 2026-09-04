@@ -2,111 +2,68 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<!-- Pinch-zoom stays available: it is an accessibility control, and the page
+     is built not to need it. -->
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>Order — Mamak POS</title>
 <link rel="stylesheet" href="/style.css">
 <style>
-  body { background:var(--cream); padding-bottom:90px; }
+  body { padding-bottom:96px; }
 
-  .menu-cats {
+  /* Sticky, one-row, horizontally scrolling category tabs — same rules as the
+     staff till (master spec §37): no wrapping, ≥44px targets, active tab
+     scrolled into view. */
+  #menu-cats {
     position:sticky; top:0; z-index:30; background:var(--cream);
-    padding:16px 0; margin:0 -20px; padding-left:20px; padding-right:20px;
-    display:flex; gap:10px; overflow-x:auto; scrollbar-width:none;
-  }
-  .menu-cats::-webkit-scrollbar { display:none; }
-  .menu-cats button {
-    padding:12px 20px; border:2px solid var(--light-gray); background:var(--white);
-    border-radius:30px; font-size:14px; font-weight:600; color:var(--warm-gray);
-    white-space:nowrap; transition:all .3s var(--bounce); flex-shrink:0;
-  }
-  .menu-cats button:hover { border-color:var(--terra-light); color:var(--terra); transform:translateY(-2px); }
-  .menu-cats button.active {
-    background:var(--terra); color:var(--white); border-color:var(--terra);
-    box-shadow:0 4px 15px rgba(196,101,74,.3);
+    padding:12px 0; margin:0 -16px 4px; padding-left:16px; padding-right:16px;
   }
 
-  .menu-items { display:flex; flex-direction:column; gap:14px; margin-top:8px; }
+  .menu-items { display:flex; flex-direction:column; gap:10px; margin-top:6px; }
   .item-btn {
-    background:var(--white); border:2px solid transparent; border-radius:var(--radius-md);
-    padding:20px; display:flex; justify-content:space-between; align-items:center;
-    transition:all .3s var(--bounce); box-shadow:var(--shadow-sm);
-    position:relative; overflow:hidden;
+    flex-direction:row; align-items:center; justify-content:space-between;
+    padding:16px; min-height:64px; gap:12px;
   }
-  .item-btn::after {
-    content:'+'; position:absolute; right:20px; top:50%; transform:translateY(-50%);
-    width:36px; height:36px; background:var(--terra-pale); color:var(--terra);
-    border-radius:50%; display:flex; align-items:center; justify-content:center;
-    font-size:20px; font-weight:700; transition:all .3s var(--bounce);
-  }
-  .item-btn:hover { transform:translateY(-3px); box-shadow:var(--shadow-md); border-color:var(--terra-light); }
-  .item-btn:hover::after { background:var(--terra); color:var(--white); transform:translateY(-50%) scale(1.1); }
-  .item-btn:active { transform:scale(.97); }
-  .item-btn:active::after { transform:translateY(-50%) scale(.9); }
-  .item-btn .info { flex:1; padding-right:50px; }
-  .item-btn .nm { font-weight:700; font-size:16px; line-height:1.4; margin-bottom:4px; }
-  .item-btn .customisable { font-size:12px; color:var(--terra); font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
-  .item-btn .pr { font-family:'Playfair Display',serif; font-size:20px; font-weight:700; color:var(--terra); }
-
-  #cart-bar .inner {
-    max-width:680px; margin:0 auto; display:flex; align-items:center; justify-content:space-between;
-  }
-  #cart-bar .summary { display:flex; flex-direction:column; }
-  #cart-bar .count { font-size:13px; color:var(--warm-gray); font-weight:500; }
-  #cart-bar .total { font-family:'Playfair Display',serif; font-size:22px; font-weight:700; color:var(--terra); }
-  #cart-bar .btn { padding:14px 28px; font-size:15px; }
-
-  @media(max-width:600px){
-    .modal-bg { align-items:flex-end; padding:0; }
-    .modal {
-      width:100%; max-width:100%; border-radius:var(--radius-lg) var(--radius-lg) 0 0;
-      max-height:85vh; animation:slideUp .4s var(--bounce) both;
-    }
-  }
-
-  /* Honest status: this page has no logged-in session, so it can't reach the
-     phase-06 SSE stream (staff/admin/kitchen-role only) or an append-to-order
-     endpoint (public API only supports creating an order) — both would need
-     new backend surface out of this phase's scope. What we DO know for a
-     fact — the order was accepted by the kitchen — is shown plainly instead
-     of a fake "live" indicator. */
-  .c-status { margin:20px 0; font-weight:700; color:var(--terra-deep); font-size:15px; }
-  .c-order-summary { text-align:left; max-width:360px; margin:0 auto 8px; }
-  .c-order-summary .row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px dashed var(--light-gray); font-size:14px; }
-  .c-order-summary .row:last-child { border-bottom:none; }
-
-  #loading {
-    min-height:100vh; display:flex; align-items:center; justify-content:center;
-    flex-direction:column; gap:16px; color:var(--warm-gray);
-  }
-  #loading::after {
-    content:''; width:40px; height:40px; border:3px solid var(--light-gray);
-    border-top-color:var(--terra); border-radius:50%; animation:spin 1s linear infinite;
-  }
-  @keyframes spin { to{transform:rotate(360deg)} }
+  .item-btn .info { flex:1; min-width:0; }
+  .item-btn .nm { font-weight:700; font-size:16px; line-height:1.3; }
+  .item-btn .customisable { font-size:12px; color:var(--terra-deep); font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .item-btn .pr { font-family:'Playfair Display',serif; font-size:19px; font-weight:700; color:var(--terra-deep); margin:0; flex-shrink:0; }
+  .item-btn .add { font-size:22px; font-weight:800; color:var(--terra-deep); flex-shrink:0; }
 </style>
 </head>
 <body>
 
 <div id="loading">Loading menu…</div>
 
+<!-- Ordering paused: a plain sentence, not a broken menu -->
+<div id="paused-view" style="display:none">
+  <div class="c-success">
+    <div class="icon" style="background:var(--amber)">⏸</div>
+    <h2>Ordering is paused</h2>
+    <p id="paused-message" data-i18n="customer.paused">Online ordering is temporarily paused. Please order with our staff.</p>
+  </div>
+</div>
+
 <div id="app" style="display:none">
   <div class="c-header">
-    <button class="locale-toggle" id="locale-toggle" data-action="toggle-locale" title="Switch language / Tukar bahasa" aria-label="Switch language" style="position:absolute;top:16px;right:16px;background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.4);color:#fff">EN</button>
+    <button class="icon-btn" id="locale-toggle" data-action="toggle-locale" title="Switch language / Tukar bahasa"
+            aria-label="Switch language" style="position:absolute;top:14px;right:14px;background:rgba(255,255,255,.18);color:#fff">EN</button>
     <h1 id="table-name"></h1>
     <p data-i18n="customer.subtitle">Scan &amp; Order · No app needed</p>
   </div>
   <div class="c-wrap">
-    <div id="menu-cats" class="menu-cats"></div>
+    <div id="my-orders"></div>
+    <div id="menu-cats" class="cat-tabs" aria-label="Menu categories"></div>
     <div id="menu-items" class="menu-items"></div>
   </div>
 
   <div id="cart-bar" style="display:none">
     <div class="inner">
-      <div class="summary">
-        <span class="count"><b id="bar-count">0</b> items</span>
-        <span class="total" id="bar-total">RM 0.00</span>
+      <div>
+        <div class="count"><b id="bar-count">0</b> items</div>
+        <div class="total" id="bar-total">RM 0.00</div>
       </div>
-      <button class="btn" data-action="show-cart" data-i18n="customer.viewOrder">View Order</button>
+      <button class="btn primary-lg" style="width:auto" data-action="show-cart" data-i18n="customer.viewOrder">View Order</button>
     </div>
   </div>
 </div>
@@ -115,13 +72,13 @@
   <div class="modal">
     <h3 data-i18n="customer.yourOrder">Your Order</h3>
     <div id="cart-lines"></div>
-    <div id="cart-empty" class="empty">Your cart is empty</div>
+    <div id="cart-empty" class="empty">Nothing added yet</div>
     <div class="totals" id="cart-totals" style="display:none">
       <div class="row grand"><span>Total</span><span id="cart-total-rm"></span></div>
     </div>
-    <div style="display:flex;gap:10px;margin-top:24px">
-      <button class="btn outline" style="flex:1;min-height:56px" data-action="close-cart-modal" data-i18n="customer.keepBrowsing">Keep Browsing</button>
-      <button class="btn primary-lg" style="flex:1" id="submit-btn" data-action="submit-order" data-i18n="customer.placeOrder">Place Order</button>
+    <div class="modal-actions">
+      <button class="btn ghost" data-action="close-cart-modal" data-i18n="customer.keepBrowsing">Keep Browsing</button>
+      <button class="btn" id="submit-btn" data-action="submit-order" data-i18n="customer.placeOrder">Place Order</button>
     </div>
   </div>
 </div>
@@ -129,11 +86,12 @@
 <div id="success-view" class="view" style="display:none">
   <div class="c-success">
     <div class="icon">✓</div>
-    <h2 data-i18n="customer.orderPlaced">Order Placed!</h2>
-    <p>Your order has been sent to the kitchen.<br>A staff member will bring it to your table shortly.</p>
-    <div id="success-status" class="c-status"></div>
+    <h2 data-i18n="customer.orderSent">Order sent</h2>
+    <p id="success-table"></p>
+    <div id="success-steps" class="c-steps"></div>
+    <div id="success-status" class="meta" style="margin:8px 0 16px"></div>
     <div id="success-items" class="c-order-summary"></div>
-    <button class="btn primary-lg" data-action="reload" data-i18n="customer.orderMore">Order More</button>
+    <button class="btn primary-lg" style="max-width:320px" data-action="order-more" data-i18n="customer.orderMore">Order More</button>
   </div>
 </div>
 
@@ -141,14 +99,14 @@
   <div class="modal">
     <h3 id="km-title"></h3>
     <div id="km-body"></div>
-    <div style="margin-top:16px">
-      <label style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:8px">Remark (optional)</label>
+    <div style="margin-top:14px">
+      <label class="label" for="km-remark">Remark (optional)</label>
       <input type="text" id="km-remark" class="remark-input" aria-label="Remark for this item" placeholder="e.g. kurang pedas, no onion">
       <div class="remark-presets" id="km-presets"></div>
     </div>
-    <div style="display:flex;gap:10px;margin-top:24px">
-      <button class="btn outline" style="flex:1" data-action="close-mods">Cancel</button>
-      <button class="btn" style="flex:1" id="km-confirm-btn" data-action="confirm-mods">Add to Order</button>
+    <div class="modal-actions">
+      <button class="btn ghost" data-action="close-mods">Cancel</button>
+      <button class="btn" id="km-confirm-btn" data-action="confirm-mods">Add</button>
     </div>
   </div>
 </div>
@@ -158,12 +116,14 @@
     <h3 id="rm-title"></h3>
     <input type="text" id="rm-input" class="remark-input" aria-label="Remark for this item" placeholder="e.g. kurang manis, less ice">
     <div class="remark-presets" id="rm-presets"></div>
-    <div style="display:flex;gap:10px;margin-top:24px">
-      <button class="btn outline" style="flex:1" data-action="skip-remark">Skip</button>
-      <button class="btn" style="flex:1" data-action="confirm-remark">Add</button>
+    <div class="modal-actions">
+      <button class="btn" data-action="skip-remark">Add</button>
+      <button class="btn outline" data-action="confirm-remark">Add with remark</button>
     </div>
   </div>
 </div>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script type="module" src="/customer/customer.js"></script>
 </body>

@@ -47,6 +47,14 @@ function uuid() {
   });
 }
 
+// What the server said when an entry finally landed, keyed by the entry id the
+// caller was handed at enqueue() time. A create returns the new order's id, and
+// the caller (a takeaway ticket, which has no table to look itself up by) has
+// no other way to learn it. Bounded: entries are dropped as they are read, and
+// the map only ever holds writes this tab queued.
+const results = new Map();
+export function resultFor(entryId) { return results.get(entryId); }
+
 const listeners = new Set();
 // Fires whenever the queue changes (enqueued, sent, failed) — callers re-read
 // pending()/failedEntries() themselves rather than being handed the diff.
@@ -113,7 +121,12 @@ async function sendOne(entry) {
     return false;
   }
 
-  if (res.ok) { await remove(entry.id); return true; }
+  if (res.ok) {
+    const body = await res.json().catch(() => null);
+    if (body && body.id) results.set(entry.id, body);
+    await remove(entry.id);
+    return true;
+  }
 
   if (res.status === 409 && !entry.converted && entry.method === 'POST' && entry.url === '/api/orders') {
     // one_open_order_per_table (phase 03): another device created the order

@@ -113,6 +113,23 @@ function rateLimit(key, max, windowMs) {
   if (arr.length >= max) { rl.set(key, arr); return false; }
   arr.push(now); rl.set(key, arr); return true;
 }
+
+// Split check/record, for the login limiter: a *successful* login is proof the
+// PIN is known, so it must not spend the brute-force budget. Counting it did —
+// which locked out a whole restaurant behind one router IP during a shift
+// change, exactly the failure `trust proxy` was added to avoid (server.js).
+function rateLimitExceeded(key, max, windowMs) {
+  const now = Date.now();
+  const arr = (rl.get(key) || []).filter(t => now - t < windowMs);
+  rl.set(key, arr);
+  return arr.length >= max;
+}
+function rateLimitRecord(key, windowMs) {
+  const now = Date.now();
+  const arr = (rl.get(key) || []).filter(t => now - t < windowMs);
+  arr.push(now);
+  rl.set(key, arr);
+}
 const rlSweepTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, arr] of rl) {
@@ -122,6 +139,7 @@ const rlSweepTimer = setInterval(() => {
 rlSweepTimer.unref();
 
 module.exports = {
-  SESSION_TTL, hashPin, verifyPin, pinPolicyError, requireRole, rateLimit,
+  SESSION_TTL, hashPin, verifyPin, pinPolicyError, requireRole,
+  rateLimit, rateLimitExceeded, rateLimitRecord,
   parseCookies, setSessionCookie, clearSessionCookie, csrfOk,
 };

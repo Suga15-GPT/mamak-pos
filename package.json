@@ -5,7 +5,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test --test-force-exit test/unit/**/*.test.js"
+    "test": "node --test --test-force-exit test/unit/*.test.js"
   },
   "dependencies": {
     "express": "^4.19.2",

@@ -1,6 +1,7 @@
 const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
+const rounds = require('./rounds');
 
 // "Orderable" = available and not sold out today (sold_out_until resets itself
 // at KL midnight rather than requiring an admin to remember to flip it back).
@@ -68,7 +69,30 @@ async function buildOrderItems(client, rawItems) {
   });
 }
 
-async function insertOrder(tableId, parsed, note, source, userId = null, idemKey = null) {
+/* Writes one round's worth of lines. Every line carries the round it was sent
+   in (send_id) and a snapshot of the station that prepared it — moving an item
+   to another station tomorrow must not rewrite yesterday's ticket. */
+async function insertSendLines(client, orderId, sendId, parsed, userId, idemKey = null) {
+  const insertedIds = [];
+  for (const [i, l] of parsed.entries()) {
+    const oi = await client.query(
+      `INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by, seat, idempotency_key, send_id, station_code)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+      [orderId, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, userId, l.seat,
+       idemKey ? `${idemKey}:${i}` : null, sendId, l.item.station_code || 'kitchen']);
+    insertedIds.push(oi.rows[0].id);
+    for (const m of l.mods) {
+      await client.query('INSERT INTO order_item_mods (order_item_id, name, price_cents) VALUES ($1,$2,$3)',
+        [oi.rows[0].id, m.name, m.price_cents]);
+    }
+  }
+  return insertedIds;
+}
+
+/* Creates a dining order and its first kitchen round in one transaction.
+   `tableId` is null for a takeaway order — the bill exists without a table. */
+async function insertOrder(tableId, parsed, note, source, userId = null, idemKey = null, opts = {}) {
+  const { orderType = 'dine_in', approvalState = 'approved', publicRef = null } = opts;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -78,21 +102,40 @@ async function insertOrder(tableId, parsed, note, source, userId = null, idemKey
     const openShift = await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
     const shiftId = openShift.rows[0]?.id || null;
     const o = await client.query(
-      'INSERT INTO orders (table_id, status, source, note, opened_by, idempotency_key, shift_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
-      [tableId, 'sent', source, note || null, userId, idemKey, shiftId]);
+      `INSERT INTO orders (table_id, status, source, note, opened_by, idempotency_key, shift_id, order_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [tableId, 'sent', source, note || null, userId, idemKey, shiftId, orderType]);
     const orderId = o.rows[0].id;
-    for (const l of parsed) {
-      const oi = await client.query(
-        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by, seat) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
-        [orderId, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, userId, l.seat]);
-      for (const m of l.mods) {
-        await client.query(
-          'INSERT INTO order_item_mods (order_item_id, name, price_cents) VALUES ($1,$2,$3)',
-          [oi.rows[0].id, m.name, m.price_cents]);
-      }
+
+    const send = await rounds.createSend(client, orderId, { source, userId, approvalState, publicRef });
+    await insertSendLines(client, orderId, send.id, parsed, userId);
+    if (approvalState === 'approved') {
+      await rounds.openTickets(client, send.id, parsed.map(l => l.item.station_code || 'kitchen'));
     }
     await client.query('COMMIT');
-    return orderId;
+    return { orderId, sendId: send.id, seqNo: send.seq_no };
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}
+
+/* Appends a new round to an order that is already open. Returns the new round
+   and the ids of the lines it holds, so the caller can print exactly those. */
+async function appendSend(orderId, parsed, source, userId = null, idemKey = null, opts = {}) {
+  const { approvalState = 'approved', publicRef = null, audit = null } = opts;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const send = await rounds.createSend(client, orderId, { source, userId, approvalState, publicRef });
+    const insertedIds = await insertSendLines(client, orderId, send.id, parsed, userId, idemKey);
+    if (audit) await writeAudit(client, audit);
+    if (approvalState === 'approved') {
+      await rounds.openTickets(client, send.id, parsed.map(l => l.item.station_code || 'kitchen'));
+      // A fresh round is 'sent', so the order rolls back up to 'sent' even if
+      // every earlier round was already served — this is the add-on bug fix.
+      await rounds.deriveOrderStatus(client, orderId);
+    }
+    await client.query('UPDATE orders SET updated_at = now() WHERE id = $1', [orderId]);
+    await client.query('COMMIT');
+    return { sendId: send.id, seqNo: send.seq_no, insertedIds };
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
 
@@ -104,8 +147,9 @@ async function writeAudit(client, { userId, action, entityType, entityId, detail
 }
 
 async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at ASC') {
+  // LEFT JOIN: a takeaway order has no table at all (migration 012).
   const oq = await pool.query(
-    `SELECT o.*, t.name AS table_name FROM orders o JOIN tables t ON t.id = o.table_id ${where} ${orderBy}`, params);
+    `SELECT o.*, t.name AS table_name FROM orders o LEFT JOIN tables t ON t.id = o.table_id ${where} ${orderBy}`, params);
   const orders = oq.rows;
   if (!orders.length) return [];
   const ids = orders.map(o => o.id);
@@ -120,8 +164,12 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
   // Voided lines never count toward a total — paid or still open.
   const totalCents = o => o.items.filter(i => !i.voided_at).reduce((s, i) =>
     s + (i.price_cents + i.mods.reduce((a, m) => a + m.price_cents, 0)) * i.qty, 0);
-  return orders.map(o => ({
+  const shaped = orders.map(o => ({
     id: o.id, table: o.table_name, table_id: o.table_id, status: o.status, source: o.source,
+    order_type: o.order_type,
+    // A takeaway order has no table; the floor still needs something to read on
+    // a tile, and "Takeaway #128" is what staff call it out as.
+    label: o.table_name || `Takeaway #${o.id}`,
     note: o.note, created_at: o.created_at, updated_at: o.updated_at, paid_at: o.paid_at,
     total: cents2rm(totalCents(o)),
     // Bill breakdown is only meaningful once paid (snapshotted at payment time);
@@ -135,10 +183,17 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
     tax_rate_bp: o.tax_rate_bp, svc_rate_bp: o.svc_rate_bp,
     items: o.items.map(i => ({
       id: i.id, item_id: i.item_id, name: i.name, qty: i.qty, price: cents2rm(i.price_cents), note: i.note, seat: i.seat,
+      send_id: i.send_id, station: i.station_code,
       mods: i.mods.map(m => ({ name: m.name, price: cents2rm(m.price_cents) })),
       voided: !!i.voided_at, void_reason: i.void_reason || null,
     })),
   }));
+  // Rounds carry the preparation state now, so every order ships with them:
+  // the bill view separates "already sent" from "new items" off `send_id`, and
+  // each line learns its own round number and station state here.
+  return rounds.attachSends(shaped);
 }
 
-module.exports = { buildOrderItems, insertOrder, ordersWithItems, writeAudit, ORDERABLE_SQL };
+module.exports = {
+  buildOrderItems, insertOrder, appendSend, insertSendLines, ordersWithItems, writeAudit, ORDERABLE_SQL,
+};

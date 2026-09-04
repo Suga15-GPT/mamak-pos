@@ -4,7 +4,7 @@
 it needs; this file tells you what is in them and roughly where. Keep it accurate —
 every phase updates the rows it touches.
 
-## Current state (after phase 11 — hardening and deployment)
+## State after phase 11 (hardening and deployment)
 
 | File | Lines | Contains |
 |---|---|---|
@@ -281,3 +281,44 @@ Seeds on first boot: 6 categories, 25 items, 2 modifier groups, 14 tables, and a
 npm test              # node --test against TEST_DATABASE_URL (default localhost:5432/postgres)
 npx playwright test   # six E2E journeys against a dedicated mamak_e2e database (auto-booted)
 ```
+
+## Current state (after the master redesign — rounds, stations, order types, UI)
+
+The redesign split three ideas that used to share `orders.status`: the customer's
+bill, one batch sent to preparation, and how far a station has got with it. The
+rows below are the ones it added or materially changed; every other row above
+still stands.
+
+Read `docs/REDESIGN-STATE.md` first — it is the short version of the decisions.
+
+| File | Lines | Contains |
+|---|---|---|
+| `migrations/012_rounds_stations_order_types.sql` | 166 | **New.** `prep_stations` (code, name, sort, active, `printer_role`), `items.station_code`; `order_sends` (one *round* per order: `seq_no`, `source`, `sent_at`, `sent_by`, `approval_state`, `public_ref`) and `order_send_tickets` (one row per `(send_id, station_code)` carrying the `sent→preparing→ready→served` lifecycle with actor+timestamp on each move); `order_items.send_id` + snapshotted `station_code`; `print_jobs.send_id`/`station_code`/`retry_of`; `orders.order_type` (`dine_in`\|`takeaway`) with `table_id` made nullable and a CHECK tying the two together; backfills every existing order into round 1 at its current kitchen state; seeds `qr_ordering_enabled`/`qr_require_approval` |
+| `migrations/013_admin_crud.sql` | 25 | **New.** `tables.active`/`tables.sort` with name-uniqueness narrowed to active tables only, `modifier_groups.sort`, and the `last_backup_at`/`last_backup_note` settings rows `scripts/backup.sh` writes |
+| `src/services/rounds.js` | 284 | **New.** The rounds model: `createSend` (allocates `seq_no` off the existing rounds so a double-submit collides on the unique index), `openTickets`, `deriveOrderStatus` (rolls the order's live tickets up into `orders.status` by operational priority — `sent` beats `preparing` beats `ready` beats `served`; terminal statuses are never overwritten), `ticketStatusForLine`, `advanceTicket` (transactional, `FOR UPDATE`, stamps who/when), `attachSends` (hangs rounds+tickets off already-loaded orders in one round trip and tells each line its round and round state), `listStationTickets` (the kitchen/drinks display), `listPendingSends` (the QR approval queue) |
+| `src/services/health.js` | 149 | **New.** Admin → System. Every check is measured, never assumed: a real `SELECT version()` with latency, the realtime hub's subscriber count, live kitchen ticket counts, a bounded TCP probe per enabled printer, `qrHealth`, the QR switches, the last backup a backup actually recorded, and `fs.statfsSync` disk state — omitted entirely where it cannot be read |
+| `src/lib/baseurl.js` | 62 | **New.** `publicBaseUrl(req)` (configured `BASE_URL`, else the request's own origin) and `qrHealth(req)`, which says plainly when printed QR codes would resolve to localhost or an unset base URL — the failure nobody notices until a customer complains |
+| `src/routes/kitchen.js` | 114 | **New.** `/api/kitchen/stations`, `/api/kitchen/tickets?station=` (the display), `PATCH /api/kitchen/tickets/:id` (advance one station ticket), and the QR approval queue: `/api/kitchen/pending`, `POST /api/kitchen/sends/:id/approve` (opens the tickets and prints), `POST .../reject` (voids the lines rather than deleting them) |
+| `src/services/orders.js` | 199 | `insertOrder` now opens round 1 and its tickets in the same transaction and takes an `orderType`; **new** `appendSend` opens a *new* round on an open order (the add-on fix) and re-derives the rollup; `insertSendLines` snapshots each line's station; `ordersWithItems` LEFT JOINs `tables` (takeaway has none), adds `order_type`/`label`, and attaches rounds |
+| `src/services/printing.js` | 390 | Chits are per `(round, station)`: `buildChit(sendId, stationCode, width)` prints only that round's lines for that station, headed `ADD-ON · ROUND n` with who sent it. `enqueueRoundChits(sendId)` routes each station to its own printer role, falling back to the kitchen printer when none is configured. **New** `retryJob` re-queues a failed job's stored payload verbatim on the same printer, marked `retry_of`, and audits it |
+| `src/routes/orders.js` | 451 | `POST /api/orders` takes `order_type`; `POST /api/orders/:id/items` opens a new round via `appendSend`; void permission is now decided by *the line's own* ticket state, not the order's; `PATCH /api/orders/:id` applies a status to every live ticket and re-derives; **new** `POST /api/orders/:id/move` moves an open order between tables, audited |
+| `src/routes/public.js` | 174 | `POST /api/public/orders` appends a new round when the table already has an open bill (instead of 409-ing), honours the pause and approval settings, and returns only an opaque `public_ref`; **new** `GET /api/public/sends/:ref` lets a customer follow their own round; `GET /api/t/:token` carries the ordering switches |
+| `src/routes/admin.js` | 596 | Full menu CRUD with safe deletes (an item on a live order, a category with items, a group still attached all refuse and say why), food-option group/option CRUD + duplicate, preparation stations, table rename/retire/reissue-QR, `GET /api/admin/qr-health`, print-job retry, and `GET /api/admin/system` |
+| `src/routes/reports.js` | 248 | **New** `GET /api/dashboard`: one round trip for today's sales with a yesterday comparison, dine-in vs takeaway, hourly sales, payment mix, top items, kitchen preparation stats and today's voids/discounts/refunds — all aggregated in Postgres, all integer cents until the JSON boundary. `/api/settings` now patches each field independently and carries the QR switches |
+| `src/routes/auth.js` | 73 | `POST /api/login` only spends the brute-force budget on *failed* attempts — counting successes locked out a whole restaurant behind one router IP at shift change |
+| `public/style.css` | 812 | The Mamak Modern design system: warm ivory ground, white cards, teh-tarik burnt orange, pandan green, one blue, one red — all CSS custom properties, with dark mode as a re-pointing of the same tokens. Keeps the old variable *names* deliberately. Table grid, bill panel, kitchen columns, KPI/chart blocks, admin sections, bottom navigation, sheet-style modals on phones, and the print-only QR region |
+| `public/index.html` | 580 | Shell for the redesigned app: floor (tables + a separate takeaway section), POS workspace with sticky category tabs and a bill split by round, the four-column kitchen display, the dashboard, shift, and Admin's eight sections — plus the item, food-option-group, move-order and generic ask dialogs |
+| `public/js/pos.js` | 943 | The floor and the bill: tiles whose state is words+icon (never colour alone), takeaway as its own section, a bill split into "already sent" (grouped by round, with that round's state) and "new items", a send button that says how many items it will send, per-line remarks instead of a dialog per item, move-order, the collapsed round timeline, and the payment/discount/refund/split flows |
+| `public/js/kitchen.js` | 202 | The station display: station switcher, four columns, exactly one next action per ticket, a short undo, add-on and QR badges, elapsed minutes always written out, and the QR approval queue |
+| `public/js/admin.js` | 813 | The eight admin sections and their CRUD, including the item and food-option editors, QR health and table management (copy/download/print a QR), printers and print-job retry, system health, and an activity log written as sentences with the raw JSON behind a disclosure |
+| `public/js/dashboard.js` | 130 | KPI cards and hand-drawn SVG charts (sales by hour, top items, payment mix, kitchen state) — no charting library for twelve numbers |
+| `public/js/nav.js` | 82 | Role-based navigation painted into two shells — top tabs on a tablet, a thumb-reachable bottom bar on a phone — with a badge for QR orders waiting |
+| `public/js/state.js` | 155 | Adds the shared vocabulary (`STATE_WORDS`, `stateWords`, `minsSince`, `ageClass`) so the floor, kitchen, bill and customer page never disagree, and `ask()` — a styled replacement for `window.prompt()`, which some embedded browsers suppress outright |
+| `public/customer/customer.js` | 364 | The QR page: paused message, order, **Order More** (a second round on the same bill), and honest per-round progress polled from the round's own opaque reference |
+| `test/unit/rounds.test.js` | 290 | **New.** The add-on regression (master spec §53), station routing, per-line void permission, send attribution, and move-order |
+| `test/unit/qr_takeaway.test.js` | 314 | **New.** QR order-more, pause, approve/reject, settle-in-progress refusal, takeaway as a first-class type, retired tables, and QR URL health |
+| `test/unit/admin_crud.test.js` | 263 | **New.** Menu/category/group/option CRUD including every safe-delete refusal and the snapshot guarantees |
+| `test/unit/print_retry.test.js` | 158 | **New.** A real failed print (a printer on a dead port), then a retry that reprints byte-identically and creates no order, round, charge or bill change |
+| `test/e2e/journeys.spec.js` | 335 | The six original journeys, rewritten for the new UI, plus the add-on regression, QR order-more, takeaway, and a responsive matrix asserting the document never exceeds the viewport at 390/430/768/1024/1366 |
+| `docs/REDESIGN-STATE.md` | 73 | **New.** The short standing record of the redesign's decisions |
+| `docs/HOW-TO-USE-MAMAK-POS.md` | 621 | **New.** The staff handbook, written for someone with no computer experience, with a one-page quick start to print and stick by the till |

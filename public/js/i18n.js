@@ -5,10 +5,15 @@ const STORAGE_KEY = 'pos_locale';
 
 const translations = {
   'common.logout': { en: 'Log Out', ms: 'Log Keluar' },
+  'common.refresh': { en: 'Refresh', ms: 'Muat Semula' },
   'common.changePin': { en: 'Change my PIN', ms: 'Tukar PIN Saya' },
-  'nav.pos': { en: 'Orders', ms: 'Pesanan' },
+  // The destination is the floor plan, and "Tables" is what staff call it —
+  // the tab heading and the nav label have to be the same word.
+  'nav.pos': { en: 'Tables', ms: 'Meja' },
   'nav.kitchen': { en: 'Kitchen', ms: 'Dapur' },
-  'nav.dashboard': { en: 'Dashboard', ms: 'Papan Pemuka' },
+  // "Sales" is what the screen is headed and what staff call it; the nav label
+  // has to be the same word.
+  'nav.dashboard': { en: 'Sales', ms: 'Jualan' },
   'nav.shift': { en: 'Shift', ms: 'Syif' },
   'nav.admin': { en: 'Admin', ms: 'Admin' },
 
@@ -28,12 +33,25 @@ const translations = {
   'pos.total': { en: 'Total', ms: 'Jumlah' },
   'pos.sendToKitchen': { en: 'Send to Kitchen', ms: 'Hantar ke Dapur' },
   'pos.markPaid': { en: 'Mark Paid', ms: 'Tandakan Dibayar' },
+  'pos.pay': { en: 'Pay', ms: 'Bayar' },
+  'pos.tables': { en: 'Tables', ms: 'Meja' },
+  'pos.takeaway': { en: 'Takeaway', ms: 'Bungkus' },
+  'pos.newTakeaway': { en: 'New Takeaway', ms: 'Bungkus Baru' },
+  'pos.moveOrder': { en: 'Move', ms: 'Pindah' },
+  'pos.timeline': { en: 'Order timeline', ms: 'Sejarah Pesanan' },
 
-  'kitchen.heading': { en: 'Kitchen Orders', ms: 'Pesanan Dapur' },
+  'kitchen.heading': { en: 'Kitchen', ms: 'Dapur' },
   'kitchen.served': { en: ' Served (Waiting for Payment)', ms: ' Dihidang (Menunggu Bayaran)' },
+  'kitchen.colNew': { en: '🔔 New', ms: '🔔 Baru' },
+  'kitchen.colPreparing': { en: '🍳 Cooking', ms: '🍳 Masak' },
+  'kitchen.colReady': { en: '✅ Ready', ms: '✅ Siap' },
+  'kitchen.colServed': { en: '🍽 Served', ms: '🍽 Dihidang' },
 
-  'dashboard.heading': { en: 'Sales Dashboard', ms: 'Papan Pemuka Jualan' },
-  'dashboard.topItems': { en: 'Top Items Today', ms: 'Item Terlaris Hari Ini' },
+  'dashboard.heading': { en: 'Sales', ms: 'Jualan' },
+  'dashboard.topItems': { en: 'Top items today', ms: 'Item Terlaris Hari Ini' },
+  'dashboard.hourly': { en: 'Sales by hour', ms: 'Jualan Mengikut Jam' },
+  'dashboard.paymentMix': { en: 'Payment mix', ms: 'Kaedah Bayaran' },
+  'dashboard.kitchenState': { en: 'Kitchen right now', ms: 'Dapur Sekarang' },
 
   'customer.subtitle': { en: 'Scan & Order · No app needed', ms: 'Imbas & Pesan · Tiada aplikasi diperlukan' },
   'customer.viewOrder': { en: 'View Order', ms: 'Lihat Pesanan' },
@@ -42,6 +60,10 @@ const translations = {
   'customer.placeOrder': { en: 'Place Order', ms: 'Buat Pesanan' },
   'customer.orderPlaced': { en: 'Order Placed!', ms: 'Pesanan Dihantar!' },
   'customer.orderMore': { en: 'Order More', ms: 'Pesan Lagi' },
+  'customer.orderSent': { en: 'Order sent', ms: 'Pesanan Dihantar' },
+  'customer.kitchenReceived': { en: 'The kitchen has your order.', ms: 'Dapur telah terima pesanan anda.' },
+  'customer.waitingStaff': { en: 'A staff member is checking your order.', ms: 'Staf sedang menyemak pesanan anda.' },
+  'customer.paused': { en: 'Online ordering is temporarily paused. Please order with our staff.', ms: 'Pesanan dalam talian dijeda sementara. Sila pesan dengan staf kami.' },
 };
 
 function currentLocale() {

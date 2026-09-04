@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { pool } = require('../db');
 const {
-  verifyPin, hashPin, pinPolicyError, rateLimit, requireRole,
+  verifyPin, hashPin, pinPolicyError, rateLimitExceeded, rateLimitRecord, requireRole,
   parseCookies, setSessionCookie, clearSessionCookie,
 } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
@@ -10,14 +10,26 @@ const { writeAudit } = require('../services/orders');
 
 const router = express.Router();
 
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 10;
+
+/* The limiter exists to stop PIN guessing, so only a *failed* attempt spends
+   from it. Counting successes too locked out an entire restaurant behind one
+   router IP at shift change — ten staff signing in correctly is normal, ten
+   wrong PINs is not. A guesser only ever produces failures, so the protection
+   is unchanged. */
 router.post('/api/login', awaitH(async (req, res) => {
-  if (!rateLimit('login:' + req.ip, 10, 10 * 60 * 1000))
+  const limiterKey = 'login:' + req.ip;
+  if (rateLimitExceeded(limiterKey, LOGIN_MAX_FAILURES, LOGIN_WINDOW_MS))
     return res.status(429).json({ error: 'too many login attempts, try again later' });
   const { name, pin } = req.body || {};
   if (!name || !pin) return res.status(400).json({ error: 'name and pin required' });
   const r = await pool.query('SELECT * FROM users WHERE lower(name) = lower($1) AND active', [name.trim()]);
   const u = r.rows[0];
-  if (!u || !verifyPin(pin, u.pin_hash)) return res.status(401).json({ error: 'wrong name or PIN' });
+  if (!u || !verifyPin(pin, u.pin_hash)) {
+    rateLimitRecord(limiterKey, LOGIN_WINDOW_MS);
+    return res.status(401).json({ error: 'wrong name or PIN' });
+  }
 
   // Session fixation: never extend whatever session this browser already
   // carried into the newly-authenticated one — always issue a fresh id.
