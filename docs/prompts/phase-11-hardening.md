@@ -36,6 +36,15 @@ fetch working — it becomes simpler, since cookies ride along with `<img>` requ
 Add to `migrations/009_sessions.sql`: `last_seen_at` on `sessions`, and rotate the
 session id on login (session fixation).
 
+**Then delete the `?token=` fallback on `GET /api/stream`.** Phase 06 had to accept
+the session token in the query string because `EventSource` cannot set an
+`Authorization` header — which puts a live session token into reverse-proxy access
+logs, browser history, and anything reading a URL. Cookies remove the reason it
+exists: `EventSource` sends them automatically. Once cookie auth works, that route
+must authenticate exactly like every other one, and the query-string branch must be
+gone, not merely deprioritised. Verify with a request carrying `?token=` and no
+cookie: it must be a 401.
+
 **2. `trust proxy` (#26).** `app.set('trust proxy', 1)` when `TRUST_PROXY=1`.
 Without it, behind any reverse proxy every request appears to come from one IP and
 the login limiter locks out the entire restaurant on the tenth wrong PIN of the day.

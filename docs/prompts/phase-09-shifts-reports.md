@@ -100,6 +100,24 @@ that totals as you type — cashiers count notes, not a single number. Show vari
 in red or green at close and require a note when it is non-zero. Z report is
 printable via phase 08 and exportable as CSV.
 
+**7. Restaurant identity settings — receipts are currently unbranded and not
+compliant.** Phase 08's receipt template already reads `restaurant_name`,
+`restaurant_address` and `sst_number` from `settings`, but **nothing anywhere writes
+them**, so every receipt prints "Mamak POS" with no address and no SST number. For
+an SST-registered business the registration number on the receipt is a legal
+requirement, so today's receipts cannot be issued as-is. Add these three to the
+admin settings screen alongside the tax rates from phase 02, and print the same
+header on the Z report. Keep the graceful fallback for a shop that has not filled
+them in.
+
+**8. Fix the flaky test port allocation.** Five files in `test/unit/` each define
+`randomPort() { return 20000 + Math.floor(Math.random() * 30000) }`, which collides
+under a full-suite run and fails with `EADDRINUSE` — an intermittent red build that
+has nothing to do with the code under test, and the fastest way to teach everyone to
+ignore CI. Replace all five with a single shared helper in `test/helper.js` that
+listens on port `0` and reads the OS-assigned port back off the server. Delete the
+duplicated local definitions.
+
 ## Tests — `test/unit/shifts.test.js`
 
 - Opening a second shift while one is open → 409 (the DB index enforces it).
@@ -112,9 +130,10 @@ printable via phase 08 and exportable as CSV.
 ## Verify
 
 ```bash
-npm test
+npm test          # run it three times — the port fix must hold, no EADDRINUSE
 ```
 
 Then by hand: open a shift with RM 200 float, ring one cash and one card sale, pay
 out RM 20, close counting the exact expected amount, and confirm variance is 0 and
-the Z report's figures tie out.
+the Z report's figures tie out. Set the restaurant name and SST number in Admin and
+confirm both appear on a printed receipt and on the Z report.
