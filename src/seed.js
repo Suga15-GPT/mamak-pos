@@ -30,9 +30,13 @@ async function seed() {
       const catIds = [];
       for (const name of CATS)
         catIds.push((await client.query('INSERT INTO categories (name) VALUES ($1) RETURNING id', [name])).rows[0].id);
+      // Categories 3 and 4 are the drinks ones — a fresh install should route
+      // them to the Drinks station exactly as migration 012 does for an
+      // existing menu (seed() runs *after* migrate(), so it can't rely on it).
+      const DRINK_CATS = new Set([3, 4]);
       for (const [ci, name, cents, kandar] of ITEMS)
-        await client.query('INSERT INTO items (category_id, name, price_cents, kandar) VALUES ($1,$2,$3,$4)',
-          [catIds[ci], name, cents, kandar]);
+        await client.query('INSERT INTO items (category_id, name, price_cents, kandar, station_code) VALUES ($1,$2,$3,$4,$5)',
+          [catIds[ci], name, cents, kandar, DRINK_CATS.has(ci) ? 'drinks' : 'kitchen']);
       // min_select/max_select match what migrations/004_menu.sql backfills onto
       // pre-existing radio/checkbox groups — a fresh seed should behave the same.
       const g1 = (await client.query(
@@ -54,10 +58,12 @@ async function seed() {
   }
   const t = await pool.query('SELECT count(*)::int n FROM tables');
   if (t.rows[0].n === 0) {
-    const names = [...Array(12)].map((_, i) => `T${i + 1}`).concat(['Counter', 'Takeaway']);
+    // "Takeaway" is no longer a table: migration 012 made it a real order type,
+    // so a fresh install seeds only physical tables.
+    const names = [...Array(12)].map((_, i) => `T${i + 1}`).concat(['Counter']);
     for (const n of names)
       await pool.query('INSERT INTO tables (name, qr_token) VALUES ($1,$2)', [n, crypto.randomBytes(5).toString('hex')]);
-    console.log('Seeded 14 tables');
+    console.log('Seeded 13 tables');
   }
   const u = await pool.query('SELECT count(*)::int n FROM users');
   if (u.rows[0].n === 0) {
