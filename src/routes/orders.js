@@ -47,11 +47,24 @@ router.get('/api/tables', requireRole('admin', 'staff', 'kitchen'), awaitH(async
   res.json(r.rows);
 }));
 
+/* Idempotency-Key (phase 07): a client-generated UUID per submission batch, so
+   the offline outbox can retry a create it's unsure landed without risking a
+   duplicate order. A duplicate key returns the original result with 200
+   instead of erroring or creating a second row — checked up front for the
+   common (sequential) retry, and again by catching the unique-index violation
+   for the concurrent-retry race, the same pattern one_open_order_per_table
+   already uses below. */
 router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res) => {
   const { table_id, items, note } = req.body || {};
+  const idemKey = req.headers['idempotency-key'] || null;
+  if (idemKey) {
+    const existing = await pool.query('SELECT id FROM orders WHERE idempotency_key = $1', [idemKey]);
+    if (existing.rows[0]) return res.status(200).json({ id: existing.rows[0].id });
+  }
+
   const parsed = await buildOrderItems(pool, items);
   try {
-    const id = await insertOrder(Number(table_id), parsed, String(note || '').slice(0, 300), 'staff', req.user.id);
+    const id = await insertOrder(Number(table_id), parsed, String(note || '').slice(0, 300), 'staff', req.user.id, idemKey);
     await recomputeOrderBill(id);
     await writeAudit(pool, {
       userId: req.user.id, action: 'order.create', entityType: 'order', entityId: id,
@@ -60,6 +73,10 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
     publish('order.created', { order_id: id, table_id: Number(table_id) });
     res.status(201).json({ id });
   } catch (e) {
+    if (idemKey && e.code === '23505' && e.constraint === 'uniq_orders_idem') {
+      const existing = await pool.query('SELECT id FROM orders WHERE idempotency_key = $1', [idemKey]);
+      return res.status(200).json({ id: existing.rows[0].id });
+    }
     // one_open_order_per_table: a second tablet raced us to the same table.
     // Not a 500 — tell the client which order already exists so it can join it.
     if (e.code === '23505' && e.constraint === 'one_open_order_per_table') {
@@ -72,7 +89,12 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
   }
 }));
 
-/* append items to an open order */
+/* append items to an open order. Idempotency-Key (phase 07) covers the whole
+   batch; uniq_order_items_idem is one key per row, so each line gets a
+   derived sub-key (`${key}:${index}`). The insert is one transaction, so a
+   partial batch never persists — checking (or catching a concurrent-retry
+   race on) line 0's derived key is enough to know the whole batch already
+   landed, without needing a batch-level key column of its own. */
 router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async (req, res) => {
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0] || ['paid', 'cancelled'].includes(o.rows[0].status))
@@ -81,14 +103,21 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
   // adding more lines would make what was just paid for wrong.
   if (await hasPayments(o.rows[0].id)) return res.status(409).json({ error: 'order has a payment recorded; cannot add items' });
 
+  const idemKey = req.headers['idempotency-key'] || null;
+  if (idemKey) {
+    const existing = await pool.query('SELECT 1 FROM order_items WHERE idempotency_key = $1', [`${idemKey}:0`]);
+    if (existing.rows[0]) return res.json({ ok: true });
+  }
+
   const parsed = await buildOrderItems(pool, req.body.items);
   const client = await pool.connect();
+  let duplicate = false;
   try {
     await client.query('BEGIN');
-    for (const l of parsed) {
+    for (const [i, l] of parsed.entries()) {
       const oi = await client.query(
-        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by, seat) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
-        [o.rows[0].id, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, req.user.id, l.seat]);
+        'INSERT INTO order_items (order_id, item_id, name, price_cents, qty, note, added_by, seat, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id',
+        [o.rows[0].id, l.item.id, l.item.name, l.item.price_cents, l.qty, l.note || null, req.user.id, l.seat, idemKey ? `${idemKey}:${i}` : null]);
       for (const m of l.mods)
         await client.query('INSERT INTO order_item_mods (order_item_id, name, price_cents) VALUES ($1,$2,$3)',
           [oi.rows[0].id, m.name, m.price_cents]);
@@ -99,7 +128,12 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
       detail: { items: parsed.map(l => ({ item_id: l.item.id, name: l.item.name, qty: l.qty })) },
     });
     await client.query('COMMIT');
-  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (idemKey && e.code === '23505' && e.constraint === 'uniq_order_items_idem') duplicate = true;
+    else throw e;
+  } finally { client.release(); }
+  if (duplicate) return res.json({ ok: true });
 
   await recomputeOrderBill(o.rows[0].id);
   publish('order.updated', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });

@@ -68,13 +68,13 @@ async function buildOrderItems(client, rawItems) {
   });
 }
 
-async function insertOrder(tableId, parsed, note, source, userId = null) {
+async function insertOrder(tableId, parsed, note, source, userId = null, idemKey = null) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const o = await client.query(
-      'INSERT INTO orders (table_id, status, source, note, opened_by) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-      [tableId, 'sent', source, note || null, userId]);
+      'INSERT INTO orders (table_id, status, source, note, opened_by, idempotency_key) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+      [tableId, 'sent', source, note || null, userId, idemKey]);
     const orderId = o.rows[0].id;
     for (const l of parsed) {
       const oi = await client.query(

@@ -50,6 +50,9 @@
   .conn-dot.connected { background:#16a34a; }
   .conn-dot.reconnecting { background:#f59e0b; }
   .conn-dot.offline { background:#dc2626; }
+
+  /* Offline outbox banner (phase 07) */
+  #offline-banner { display:none; background:#dc2626; color:#fff; text-align:center; font-size:13px; font-weight:700; padding:8px; letter-spacing:.02em; }
 </style>
 </head>
 <body>
@@ -70,6 +73,7 @@
 
 <!-- MAIN APP -->
 <div id="app-view" class="view" style="display:none">
+  <div id="offline-banner"></div>
   <header>
     <span class="brand">Mamak POS</span>
     <div class="user">
