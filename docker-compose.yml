@@ -2,6 +2,7 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    mem_limit: 512m
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       TZ: ${TZ:-Asia/Kuala_Lumpur}
@@ -17,17 +18,44 @@ services:
   app:
     build: .
     restart: unless-stopped
+    mem_limit: 256m
     environment:
+      NODE_ENV: production
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/postgres
       ADMIN_PIN: ${ADMIN_PIN:?set ADMIN_PIN in .env}
       BASE_URL: ${BASE_URL:-http://localhost:3000}
       PORT: "${PORT:-3000}"
       TZ: ${TZ:-Asia/Kuala_Lumpur}
+      TRUST_PROXY: "${TRUST_PROXY:-0}"
     ports:
       - "3000:3000"
     depends_on:
       db:
         condition: service_healthy
 
+  # Nightly pg_dump via scripts/backup.sh, kept 14 days — see docs/RUNBOOK.md
+  # for the restore drill. postgres:16-alpine already carries pg_dump and
+  # (via busybox) crond, so this needs no extra image.
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 128m
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: postgres
+    volumes:
+      - ./scripts:/scripts:ro
+      - backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "echo '0 3 * * * /scripts/backup.sh >>/backups/backup.log 2>&1' | crontab - &&
+       crond -f -l 2"
+
 volumes:
   dbdata:
+  backups:

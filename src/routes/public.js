@@ -38,6 +38,9 @@ router.get('/api/t/:token', publicH(async (req, res) => {
 router.post('/api/public/orders', publicH(async (req, res) => {
   if (!rateLimit(req.ip, 20, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many orders, please ask staff' });
   const { table_token, items, note } = req.body || {};
+  // Per-IP alone under-protects a busy table: one phone hotspot is one IP for
+  // a whole group of diners, so also cap by the table itself.
+  if (!rateLimit('table:' + table_token, 20, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many orders, please ask staff' });
   const t = await pool.query('SELECT id FROM tables WHERE qr_token = $1', [table_token]);
   if (!t.rows[0]) return res.status(400).json({ error: 'invalid table' });
   const parsed = await buildOrderItems(pool, items);

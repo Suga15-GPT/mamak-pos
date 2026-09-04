@@ -1,4 +1,5 @@
 import { $, fmt, esc } from '../js/state.js';
+import '../js/i18n.js';
 
 let menu = { categories: [], items: [], modifier_groups: [], modifier_options: [] };
 let tableToken = null, tableName = '', tableId = null;
@@ -108,7 +109,7 @@ function openModifiers(it) {
   modifierGroupsFor(it).forEach(g => {
     const opts = menu.modifier_options.filter(o => o.group_id === g.id);
     const inputType = g.mode === 'radio' ? 'radio' : 'checkbox';
-    const label = g.min_select > 0 ? `${esc(g.name)} (choose ${g.min_select === g.max_select ? g.min_select : `${g.min_select}-${g.max_select}`})` : esc(g.name);
+    const label = g.min_select > 0 ? `Choose ${g.min_select === g.max_select ? g.min_select : `${g.min_select}-${g.max_select}`} ${esc(g.name)}` : esc(g.name);
     html += `<div style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin:18px 0 10px">${label}</div>`;
     html += opts.map(o => `<div class="mod-opt"><input type="${inputType}" name="grp-${g.id}" data-group="${g.id}" value="${o.id}"><span style="flex:1">${esc(o.name)}</span>${o.price ? `<span style="color:var(--terra);font-weight:700">+${fmt(o.price)}</span>` : ''}</div>`).join('');
   });
@@ -189,10 +190,27 @@ async function submitOrder() {
         const opt = menu.modifier_options.find(o => o.name === m.name); return opt ? opt.id : null;
       }).filter(Boolean)
     }));
-    await fetch('/api/public/orders', {
+    const r = await fetch('/api/public/orders', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ table_token: tableToken, items })
     });
+    const body = await r.json().catch(() => ({}));
+    if (r.status === 409) {
+      // The table already has an open order — the public API has no way to
+      // append to it (only staff/admin can, via an authenticated route), so
+      // say so plainly rather than a generic failure.
+      alert('This table already has an order with the kitchen. Please ask a staff member to add these items for you.');
+      $('submit-btn').disabled = false; $('submit-btn').textContent = 'Place Order';
+      return;
+    }
+    if (!r.ok) throw new Error(body.error || 'failed');
+
+    $('success-status').textContent = 'Status: Sent to kitchen';
+    $('success-items').innerHTML = cart.map(l => {
+      const lt = (l.price + l.mods.reduce((s, m) => s + m.price, 0)) * l.qty;
+      return `<div class="row"><span>${l.qty}× ${esc(l.name)}</span><span>${fmt(lt)}</span></div>`;
+    }).join('');
+    cart = [];
     $('cart-modal').classList.remove('show');
     $('app').style.display = 'none'; $('cart-bar').style.display = 'none';
     $('success-view').style.display = '';

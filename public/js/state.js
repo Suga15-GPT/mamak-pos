@@ -26,8 +26,11 @@ export function esc(s) {
 
 /* ===== REALTIME (phase 06) =====
    One EventSource for the whole app; tabs subscribe via onStreamEvent and decide
-   for themselves whether to refetch (they know which tab is active). EventSource
-   can't set an Authorization header, so the token travels as ?token= instead. */
+   for themselves whether to refetch (they know which tab is active).
+   (Phase 11) EventSource can't set an Authorization header, but it sends
+   cookies automatically on a same-origin connection — now that sessions are
+   an httpOnly cookie instead of a bearer token, there's nothing left to pass
+   in the URL at all. */
 let es = null;
 let reconnectDelay = 1000;
 let reconnectTimer = null;
@@ -60,9 +63,9 @@ function dispatchStream(event) {
 export function connectStream() {
   clearTimeout(reconnectTimer);
   if (es) { es.close(); es = null; }
-  if (!API.token) return;
+  if (!API.user) return;
   setConnDot('reconnecting');
-  const url = '/api/stream?token=' + encodeURIComponent(API.token) + (lastSeq ? '&since=' + lastSeq : '');
+  const url = '/api/stream' + (lastSeq ? '?since=' + lastSeq : '');
   es = new EventSource(url);
   const onEvent = ev => {
     let data;

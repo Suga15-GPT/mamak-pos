@@ -10,6 +10,10 @@
   --sand: #f5ece4;
   --sage: #a8bfa0;
   --sage-deep: #7d9970;
+  /* Referenced across pos.js/admin.js/shift.js/customer.js for void/delete/
+     remove actions but never actually defined — those colours were silently
+     falling back to inherit. 6.13:1 on the light-mode surfaces it's used on. */
+  --red: #b91c1c;
   --charcoal: #2d2926;
   --warm-gray: #6b5e57;
   --light-gray: #d4ccc6;
@@ -34,8 +38,16 @@ body {
   -webkit-font-smoothing:antialiased;
   overflow-x:hidden;
 }
-button { cursor:pointer; font-family:inherit; border:none; outline:none; }
+/* A tablet has no hover: double-tap-to-zoom on a fast-tapped button is a bug,
+   not a feature — kill it everywhere a control is meant to be tapped. */
+button, input, select, textarea, a { touch-action:manipulation; }
+button { cursor:pointer; font-family:inherit; border:none; outline:none; min-height:44px; min-width:44px; }
 input,select,textarea { font-family:inherit; outline:none; }
+
+/* Every interactive element gets a visible keyboard-focus ring — hover alone
+   is not an affordance a tablet (or a keyboard-only counter user) can reach. */
+:focus-visible { outline:3px solid var(--terra-deep); outline-offset:2px; }
+body.dark :focus-visible { outline-color:var(--terra-light); }
 
 /* ===== ANIMATIONS ===== */
 @keyframes fadeUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
@@ -51,8 +63,11 @@ input,select,textarea { font-family:inherit; outline:none; }
 /* ===== BUTTONS ===== */
 .btn {
   display:inline-flex; align-items:center; justify-content:center; gap:8px;
-  padding:14px 28px; border-radius:var(--radius-sm);
-  background:var(--terra); color:var(--white);
+  padding:14px 28px; border-radius:var(--radius-sm); min-height:44px;
+  /* --terra itself is ~3.96:1 with white text — short of the 4.5:1 body-text
+     minimum at this font-size/weight. terra-deep clears it (6.13:1); the
+     hover state (already terra-deep) no longer needs to do the work alone. */
+  background:var(--terra-deep); color:var(--white);
   font-size:15px; font-weight:700; letter-spacing:.02em;
   transition:all .3s var(--ease);
   box-shadow:var(--shadow-sm);
@@ -63,18 +78,30 @@ input,select,textarea { font-family:inherit; outline:none; }
   background:linear-gradient(135deg,rgba(255,255,255,.2),transparent);
   opacity:0; transition:opacity .3s;
 }
-.btn:hover { transform:translateY(-2px); box-shadow:var(--shadow-md); background:var(--terra-deep); }
+.btn:hover { transform:translateY(-2px); box-shadow:var(--shadow-md); background:#7d3822; }
 .btn:hover::after { opacity:1; }
 .btn:active { transform:translateY(0) scale(.97); }
 .btn:disabled { background:var(--light-gray); color:var(--warm-gray); box-shadow:none; cursor:not-allowed; transform:none; }
 .btn:disabled:hover { background:var(--light-gray); transform:none; box-shadow:none; }
-.btn.small { padding:10px 18px; font-size:13px; border-radius:10px; }
-.btn.outline { background:transparent; color:var(--terra); border:2px solid var(--terra); box-shadow:none; }
+.btn.small { padding:10px 18px; font-size:13px; border-radius:10px; min-height:40px; }
+.btn.outline { background:transparent; color:var(--terra-deep); border:2px solid var(--terra-deep); box-shadow:none; }
 .btn.outline:hover { background:var(--terra-pale); transform:translateY(-2px); }
-.btn.sage { background:var(--sage-deep); }
-.btn.sage:hover { background:#6b8a5e; }
+.btn.sage { background:#5f7a53; }
+.btn.sage:hover { background:#4d6544; }
 .btn.charcoal { background:var(--charcoal); }
 .btn.charcoal:hover { background:#1a1715; }
+/* Main order-path actions (Send to Kitchen, Mark Paid, Place Order) get the
+   larger 56px touch target the phase asks for; everything else keeps 44px. */
+.btn.primary-lg { min-height:56px; padding:16px 28px; font-size:16px; width:100%; }
+/* A destructive control (void, delete line, remove discount) is never just a
+   text colour next to a common action — it gets its own pill, its own
+   background, and breathing room so a fast thumb can't hit it by accident. */
+.btn-danger, [data-action="void-line"], [data-action="cart-del"], [data-action="remove-discount"] {
+  color:#b91c1c; background:#fee2e2; border-radius:10px; padding:8px 12px;
+  min-height:44px; min-width:44px; font-weight:700; margin-left:10px;
+}
+.btn-danger:hover, [data-action="void-line"]:hover, [data-action="cart-del"]:hover, [data-action="remove-discount"]:hover { background:#fecaca; }
+body.dark .btn-danger, body.dark [data-action="void-line"], body.dark [data-action="cart-del"], body.dark [data-action="remove-discount"] { background:#4a1f1f; color:#fca5a5; }
 
 /* ===== LOGIN ===== */
 .login-wrap {
@@ -133,11 +160,12 @@ nav button {
   color:var(--warm-gray); border-bottom:3px solid transparent;
   white-space:nowrap; transition:all .3s var(--ease); position:relative;
 }
-nav button:hover { color:var(--terra); }
-nav button.active { color:var(--terra); border-bottom-color:var(--terra); }
+nav button:hover { color:var(--terra-deep); }
+/* --terra text at this size/weight is 3.75:1 — short of 4.5:1; terra-deep clears it. */
+nav button.active { color:var(--terra-deep); border-bottom-color:var(--terra-deep); }
 nav button.active::before {
   content:''; position:absolute; bottom:-1px; left:50%; transform:translateX(-50%);
-  width:6px; height:6px; background:var(--terra); border-radius:50%;
+  width:6px; height:6px; background:var(--terra-deep); border-radius:50%;
 }
 
 main { padding:28px; max-width:1280px; margin:0 auto; }
@@ -170,29 +198,57 @@ main { padding:28px; max-width:1280px; margin:0 auto; }
 .table-btn:hover { transform:translateY(-4px) scale(1.03); border-color:var(--terra-light); box-shadow:var(--shadow-md); }
 .table-btn:hover::before { opacity:1; }
 .table-btn:active { transform:scale(.96); }
-.table-btn.open { border-color:var(--sage); background:linear-gradient(135deg,#f0f7ed,var(--white)); color:var(--sage-deep); }
-.table-btn.busy { border-color:var(--terra-light); background:linear-gradient(135deg,var(--terra-pale),var(--white)); color:var(--terra); }
+/* Semantics (audit #33), stated once: grey = free (default, below) ·
+   amber = order open, food not yet served (.pending) ·
+   green = served, awaiting payment (.ready-to-pay) ·
+   red outline = open 30+ minutes with no status change (.stale), on top of
+   whichever colour above already applies. */
+.table-btn.pending { border-color:#d97706; background:linear-gradient(135deg,#fef3e2,var(--white)); color:#92400e; }
+.table-btn.ready-to-pay { border-color:var(--sage); background:linear-gradient(135deg,#f0f7ed,var(--white)); color:#3f5c35; }
+.table-btn.stale { box-shadow:0 0 0 3px #dc2626; }
+.table-status { font-size:11px; margin-top:6px; opacity:.9; text-transform:none; letter-spacing:0; line-height:1.4; }
+.table-total { font-size:13px; font-weight:800; margin-top:2px; }
 
-/* ===== POS LAYOUT ===== */
-.pos-grid { display:grid; grid-template-columns:1fr 400px; gap:24px; align-items:start; }
-@media(max-width:960px){ .pos-grid{grid-template-columns:1fr;} }
+/* ===== POS LAYOUT =====
+   Three panes on a tablet in landscape: categories left, items centre, the
+   running bill right — the bill is never a tab, it's always in view. */
+.pos-grid { display:grid; grid-template-columns:180px 1fr 380px; gap:20px; align-items:start; }
+@media(max-width:1180px){ .pos-grid{grid-template-columns:150px 1fr 320px; gap:16px;} }
+@media(max-width:960px){ .pos-grid{grid-template-columns:1fr;} .pos-cats-rail{order:-1;} }
+
+.pos-cats-rail .menu-cats { flex-direction:column; align-items:stretch; }
+.pos-cats-rail .menu-cats button { text-align:left; border-radius:var(--radius-sm); }
 
 .menu-cats { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; }
 .menu-cats button {
   padding:10px 18px; border:2px solid var(--light-gray); background:var(--white);
   border-radius:30px; font-size:13px; font-weight:600; color:var(--warm-gray);
-  transition:all .3s var(--bounce);
+  transition:all .3s var(--bounce); min-height:44px;
 }
-.menu-cats button:hover { border-color:var(--terra-light); color:var(--terra); transform:translateY(-2px); }
+.menu-cats button:hover { border-color:var(--terra-light); color:var(--terra-deep); transform:translateY(-2px); }
 .menu-cats button.active {
-  background:var(--terra); color:var(--white); border-color:var(--terra);
+  background:var(--terra-deep); color:var(--white); border-color:var(--terra-deep);
   box-shadow:0 4px 15px rgba(196,101,74,.3);
 }
+
+#item-search {
+  width:100%; padding:12px 16px; border:2px solid var(--light-gray); border-radius:var(--radius-sm);
+  font-size:15px; background:var(--cream); margin-bottom:16px; min-height:44px;
+}
+#item-search:focus { border-color:var(--terra); background:var(--white); }
+
+.menu-favs:empty { display:none; }
+.menu-favs .favs-label {
+  font-size:12px; color:var(--warm-gray); text-transform:uppercase; letter-spacing:.08em;
+  font-weight:700; margin-bottom:8px;
+}
+.favs-row { margin-bottom:20px; padding-bottom:16px; border-bottom:1px dashed var(--light-gray); }
+.item-btn.fav { border-color:var(--terra-light); }
 
 .menu-items { display:grid; grid-template-columns:repeat(auto-fill,minmax(155px,1fr)); gap:12px; }
 .item-btn {
   background:var(--white); border:2px solid transparent; border-radius:var(--radius-sm);
-  padding:16px; text-align:left; transition:all .3s var(--bounce);
+  padding:16px; text-align:left; transition:all .3s var(--bounce); min-height:56px;
   box-shadow:var(--shadow-sm); position:relative; overflow:hidden;
 }
 .item-btn::after {
@@ -205,7 +261,8 @@ main { padding:28px; max-width:1280px; margin:0 auto; }
 .item-btn:hover::after { border-width:0 36px 36px 0; }
 .item-btn:active { transform:scale(.96); }
 .item-btn .nm { font-weight:700; font-size:14px; line-height:1.3; }
-.item-btn .pr { color:var(--terra); font-size:14px; font-weight:700; margin-top:6px; }
+.item-btn .pr { color:var(--terra-deep); font-size:14px; font-weight:700; margin-top:6px; }
+body.dark .item-btn .pr { color:var(--terra-light); }
 
 /* ===== CART ===== */
 .cart-line {
@@ -214,13 +271,15 @@ main { padding:28px; max-width:1280px; margin:0 auto; }
   animation:fadeIn .3s var(--ease) both;
 }
 .cart-line:last-child { border-bottom:none; }
-.qty { display:flex; gap:6px; align-items:center; }
+.qty { display:flex; gap:8px; align-items:center; }
+/* Called out explicitly by the phase: 30px was too small for a thumb in a
+   hurry. 44px is the floor everywhere; this is on the main order path. */
 .qty button {
-  width:30px; height:30px; border:2px solid var(--light-gray); background:var(--white);
-  border-radius:8px; font-size:16px; font-weight:700; color:var(--charcoal);
+  width:44px; height:44px; border:2px solid var(--light-gray); background:var(--white);
+  border-radius:10px; font-size:18px; font-weight:700; color:var(--charcoal);
   transition:all .2s var(--bounce); display:flex; align-items:center; justify-content:center;
 }
-.qty button:hover { border-color:var(--terra); color:var(--terra); transform:scale(1.1); }
+.qty button:hover { border-color:var(--terra); color:var(--terra-deep); transform:scale(1.1); }
 .qty button:active { transform:scale(.9); }
 .totals { margin-top:18px; }
 .totals .row { display:flex; justify-content:space-between; padding:6px 0; font-size:14px; color:var(--warm-gray); }
@@ -229,7 +288,9 @@ main { padding:28px; max-width:1280px; margin:0 auto; }
   border-top:2px solid var(--terra-pale); margin-top:12px; padding-top:14px;
 }
 
-/* ===== KITCHEN ===== */
+/* ===== KITCHEN =====
+   Read at 2+ metres off a wall screen: big bold qty-first lines, an age
+   badge that shifts colour as urgency rises, and a void that can't be missed. */
 .k-order {
   background:var(--white); border-radius:var(--radius-md); padding:22px;
   margin-bottom:16px; box-shadow:var(--shadow-sm);
@@ -239,29 +300,45 @@ main { padding:28px; max-width:1280px; margin:0 auto; }
 .k-order:hover { box-shadow:var(--shadow-md); transform:translateX(4px); }
 .k-order.preparing { border-left-color:var(--terra); }
 .k-order.ready { border-left-color:var(--sage-deep); }
+.k-order.has-void { border-left-color:#dc2626; }
+@keyframes voidFlash { 0%,100%{background:var(--white)} 50%{background:#fecaca} }
+.k-order.void-flash { animation:voidFlash 1s ease-in-out 2; }
+body.dark .k-order.void-flash { animation-name:voidFlashDark; }
+@keyframes voidFlashDark { 0%,100%{background:#2d2926} 50%{background:#4a1f1f} }
 .k-order .head { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; }
-.k-order .head b { font-size:17px; }
+.k-order .head b { font-size:20px; }
 .k-order ul { list-style:none; }
-.k-order li { padding:8px 0; border-bottom:1px dashed var(--light-gray); font-size:15px; line-height:1.5; }
+.k-order li { padding:10px 0; border-bottom:1px dashed var(--light-gray); font-size:20px; line-height:1.4; font-weight:600; }
 .k-order li:last-child { border-bottom:none; }
-.k-order li small { color:var(--warm-gray); display:block; font-size:13px; margin-top:2px; }
+.k-order li small { color:var(--warm-gray); display:block; font-size:14px; font-weight:500; margin-top:2px; }
 
 .badge {
-  display:inline-block; padding:4px 12px; border-radius:20px;
-  font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--white);
+  display:inline-block; padding:6px 14px; border-radius:20px;
+  font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--white);
 }
-.badge.sent { background:var(--terra-light); }
-.badge.preparing { background:var(--terra); }
-.badge.ready { background:var(--sage-deep); }
+/* These backgrounds are white-text small-caps — checked against 4.5:1. */
+.badge.sent { background:#b0532f; }
+.badge.preparing { background:var(--terra-deep); }
+.badge.ready { background:#5f7a53; }
 .badge.served { background:var(--charcoal); }
+.badge.age-fresh { background:#15803d; }
+.badge.age-warm { background:#b45309; }
+.badge.age-late { background:#b91c1c; }
+.badge.void { background:#b91c1c; }
 
 .k-actions { display:flex; gap:10px; margin-top:16px; }
 .k-actions button {
   flex:1; padding:12px; border-radius:var(--radius-sm); color:var(--white);
-  font-weight:700; font-size:14px; transition:all .3s var(--bounce);
+  font-weight:700; font-size:16px; min-height:56px; transition:all .3s var(--bounce);
 }
 .k-actions button:hover { transform:translateY(-2px); box-shadow:var(--shadow-md); filter:brightness(1.1); }
 .k-actions button:active { transform:scale(.96); }
+.k-undo {
+  display:inline-flex; align-items:center; gap:6px; margin-top:10px;
+  background:var(--sand); color:var(--warm-gray); padding:8px 16px; border-radius:10px;
+  font-weight:700; font-size:13px; min-height:44px;
+}
+.k-undo:hover { background:var(--terra-pale); color:var(--terra-deep); }
 
 /* ===== DASHBOARD ===== */
 .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:18px; margin-bottom:24px; }
@@ -335,8 +412,8 @@ main { padding:28px; max-width:1280px; margin:0 auto; }
 .mod-opt:hover { background:var(--terra-pale); margin:0 -12px; padding:12px; border-radius:var(--radius-sm); }
 .mod-opt input { width:20px; height:20px; accent-color:var(--terra); cursor:pointer; }
 
-.remark-presets { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
-.remark-presets button { padding:8px 14px; font-size:12px; }
+.remark-presets { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.remark-presets button { padding:10px 14px; font-size:12px; min-height:44px; }
 
 .empty { text-align:center; color:var(--warm-gray); padding:48px 20px; font-size:15px; }
 

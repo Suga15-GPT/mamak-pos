@@ -7,23 +7,31 @@
 <link rel="stylesheet" href="style.css">
 <style>
   /* Dark mode */
-  body.dark { --cream:#1a1715; --sand:#2d2926; --white:#2d2926; --charcoal:#fdf8f4; --warm-gray:#d4ccc6; --light-gray:#4a423d; --terra-pale:#3d2a24; }
+  body.dark { --cream:#1a1715; --sand:#2d2926; --white:#2d2926; --charcoal:#fdf8f4; --warm-gray:#d4ccc6; --light-gray:#4a423d; --terra-pale:#3d2a24; --red:#fca5a5; }
   body.dark .card,body.dark .table-btn,body.dark .item-btn,body.dark .k-order,body.dark .stat,body.dark .qr-card,body.dark .modal { background:#2d2926; border-color:#4a423d; }
   body.dark header,body.dark nav { background:#2d2926; }
   body.dark .field input { background:#1a1715; border-color:#4a423d; color:#fdf8f4; }
   body.dark .menu-cats button { background:#2d2926; border-color:#4a423d; color:#d4ccc6; }
   body.dark .login-wrap { background:linear-gradient(160deg,#3d2a24,#1a1715,#2d2926); }
+  /* Table-grid state colours re-tuned for the dark surface — the light-mode
+     hues (checked against a white card) drop below 4.5:1 on #2d2926. */
+  body.dark .table-btn.pending { background:linear-gradient(135deg,#3d2a1a,#2d2926); color:#fbbf24; border-color:#b45309; }
+  body.dark .table-btn.ready-to-pay { background:linear-gradient(135deg,#1f2e1a,#2d2926); color:#86efac; border-color:#5f7a53; }
 
   /* Theme toggle */
-  .theme-toggle { background:none; border:2px solid var(--light-gray); width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:18px; transition:all .3s var(--bounce); }
+  .theme-toggle { background:none; border:2px solid var(--light-gray); width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:18px; transition:all .3s var(--bounce); }
   .theme-toggle:hover { border-color:var(--terra); transform:rotate(180deg); }
 
+  /* Locale toggle (phase 10) */
+  .locale-toggle { background:none; border:2px solid var(--light-gray); min-width:44px; height:44px; padding:0 12px; border-radius:22px; font-size:13px; font-weight:700; color:var(--warm-gray); transition:all .3s var(--bounce); }
+  .locale-toggle:hover { border-color:var(--terra); color:var(--terra-deep); }
+
   /* Back button */
-  .back-btn { display:inline-flex; align-items:center; gap:8px; padding:10px 18px; background:var(--sand); border-radius:10px; font-size:14px; font-weight:600; color:var(--warm-gray); margin-bottom:16px; transition:all .3s var(--bounce); }
-  .back-btn:hover { background:var(--terra-pale); color:var(--terra); transform:translateX(-4px); }
+  .back-btn { display:inline-flex; align-items:center; gap:8px; padding:10px 18px; background:var(--sand); border-radius:10px; font-size:14px; font-weight:600; color:var(--warm-gray); margin-bottom:16px; transition:all .3s var(--bounce); min-height:44px; }
+  .back-btn:hover { background:var(--terra-pale); color:var(--terra-deep); transform:translateX(-4px); }
 
   /* Remark input */
-  .remark-input { width:100%; padding:10px 14px; border:2px solid var(--light-gray); border-radius:10px; font-size:14px; margin-top:8px; background:var(--cream); transition:all .3s; }
+  .remark-input { width:100%; padding:10px 14px; border:2px solid var(--light-gray); border-radius:10px; font-size:14px; margin-top:8px; background:var(--cream); transition:all .3s; min-height:44px; }
   .remark-input:focus { border-color:var(--terra); background:var(--white); }
 
   /* Kitchen served section */
@@ -34,15 +42,15 @@
   .k-actions button { color:#fff !important; }
   .k-actions button:disabled { opacity:.4; cursor:not-allowed; transform:none !important; }
 
-  /* Pay button in cart */
-  .pay-btn { background:var(--sage-deep); margin-top:10px; }
-  .pay-btn:hover { background:#6b8a5e; }
+  /* Pay button in cart — part of the main order path, so it gets the larger
+     touch target too. */
+  .pay-btn { background:#5f7a53; margin-top:10px; min-height:56px; font-size:16px; }
+  .pay-btn:hover { background:#4d6544; }
 
-  /* Table status badge */
-  .table-status { font-size:10px; margin-top:4px; opacity:.8; text-transform:uppercase; letter-spacing:.05em; }
-
-  /* Cart line already sent to the kitchen (read-only, still billed) */
-  .sent-tag { background:var(--sage-deep); color:#fff; padding:2px 8px; border-radius:20px; font-size:10px;
+  /* Cart line already sent to the kitchen (read-only, still billed).
+     sage-deep-on-white text was 3.15:1 — short of 4.5:1 at this size; the
+     darker shade below clears it (checked against both light and dark cards). */
+  .sent-tag { background:#4d6544; color:#fff; padding:4px 10px; border-radius:20px; font-size:11px;
               font-weight:700; text-transform:uppercase; letter-spacing:.05em; vertical-align:middle; }
 
   /* Realtime connection indicator (phase 06) */
@@ -62,11 +70,11 @@
   <div class="login-wrap">
     <div class="login-card">
       <h1>Mamak POS</h1>
-      <p>Staff &amp; Admin Login</p>
-      <div class="field"><label>Name</label><input id="lname" value="Admin"></div>
-      <div class="field"><label>PIN</label><input id="lpin" type="password" inputmode="numeric" value="1234"></div>
-      <button class="btn" data-action="login">Log In</button>
-      <div id="lerr" class="err"></div>
+      <p data-i18n="login.subtitle">Staff &amp; Admin Login</p>
+      <div class="field"><label for="lname" data-i18n="login.name">Name</label><input id="lname" value="Admin"></div>
+      <div class="field"><label for="lpin" data-i18n="login.pin">PIN</label><input id="lpin" type="password" inputmode="numeric" value="1234"></div>
+      <button class="btn primary-lg" data-action="login" data-i18n="login.submit">Log In</button>
+      <div id="lerr" class="err" role="alert" aria-live="assertive"></div>
     </div>
   </div>
 </div>
@@ -78,9 +86,11 @@
     <span class="brand">Mamak POS</span>
     <div class="user">
       <span id="conn-dot" class="conn-dot offline" title="Live connection status"></span>
+      <button class="locale-toggle" id="locale-toggle" data-action="toggle-locale" title="Switch language / Tukar bahasa" aria-label="Switch language">EN</button>
       <button class="theme-toggle" data-action="toggle-theme" title="Toggle dark mode">🌙</button>
       <span id="uname"></span>
-      <button class="logout" data-action="logout">Log Out</button>
+      <button class="logout" data-action="change-pin" data-i18n="common.changePin">Change my PIN</button>
+      <button class="logout" data-action="logout" data-i18n="common.logout">Log Out</button>
     </div>
   </header>
   <nav id="nav"></nav>
@@ -89,25 +99,32 @@
     <section id="tab-pos" class="tab">
       <div id="pos-tables"></div>
       <div id="pos-workspace" style="display:none">
-        <button class="back-btn" data-action="back-to-tables">← Back to Tables</button>
+        <button class="back-btn" data-action="back-to-tables">← <span data-i18n="pos.backToTables">Back to Tables</span></button>
         <div class="pos-grid">
+          <!-- Categories rail — always visible alongside items and the bill,
+               never a tab of its own. -->
+          <div class="card pos-cats-rail">
+            <h3 style="margin-bottom:14px" data-i18n="pos.categories">Categories</h3>
+            <div id="menu-cats" class="menu-cats"></div>
+          </div>
           <div class="card">
             <h3 id="ws-title" style="margin-bottom:14px"></h3>
-            <div id="menu-cats" class="menu-cats"></div>
+            <input type="search" id="item-search" data-i18n-placeholder="pos.search" placeholder="Search items…" aria-label="Search menu items">
+            <div id="menu-favs" class="menu-favs"></div>
             <div id="menu-items" class="menu-items"></div>
           </div>
           <div class="card">
-            <h3 style="margin-bottom:14px">Current Order</h3>
+            <h3 style="margin-bottom:14px" data-i18n="pos.currentOrder">Current Order</h3>
             <div id="cart-lines"></div>
-            <div id="cart-empty" class="empty">No items yet</div>
+            <div id="cart-empty" class="empty" data-i18n="pos.noItems">No items yet</div>
             <div class="totals" id="cart-totals" style="display:none">
-              <div class="row"><span>Subtotal</span><span id="cart-subtotal-rm"></span></div>
-              <div class="row" id="cart-svc-row" style="display:none"><span>Service charge</span><span id="cart-svc-rm"></span></div>
-              <div class="row"><span>SST</span><span id="cart-tax-rm"></span></div>
-              <div class="row grand"><span>Total</span><span id="cart-total-rm"></span></div>
+              <div class="row"><span data-i18n="pos.subtotal">Subtotal</span><span id="cart-subtotal-rm"></span></div>
+              <div class="row" id="cart-svc-row" style="display:none"><span data-i18n="pos.serviceCharge">Service charge</span><span id="cart-svc-rm"></span></div>
+              <div class="row"><span data-i18n="pos.sst">SST</span><span id="cart-tax-rm"></span></div>
+              <div class="row grand"><span data-i18n="pos.total">Total</span><span id="cart-total-rm"></span></div>
             </div>
-            <button class="btn" style="margin-top:16px" data-action="send-order">Send to Kitchen</button>
-            <button class="btn pay-btn" id="pay-btn" style="display:none" data-action="open-pay">Mark Paid</button>
+            <button class="btn primary-lg" style="margin-top:16px" data-action="send-order" data-i18n="pos.sendToKitchen">Send to Kitchen</button>
+            <button class="btn primary-lg pay-btn" id="pay-btn" style="display:none" data-action="open-pay" data-i18n="pos.markPaid">Mark Paid</button>
           </div>
         </div>
       </div>
@@ -115,21 +132,85 @@
 
     <!-- KITCHEN TAB -->
     <section id="tab-kitchen" class="tab">
-      <h2 style="margin-bottom:16px">Kitchen Orders</h2>
+      <h2 style="margin-bottom:16px" data-i18n="kitchen.heading">Kitchen Orders</h2>
       <div id="kitchen-active"></div>
       <div id="kitchen-served" class="kitchen-section" style="display:none">
-        <h3> Served (Waiting for Payment)</h3>
+        <h3 data-i18n="kitchen.served"> Served (Waiting for Payment)</h3>
         <div id="kitchen-served-list"></div>
       </div>
     </section>
 
     <!-- DASHBOARD TAB -->
     <section id="tab-dashboard" class="tab">
-      <h2 style="margin-bottom:16px">Sales Dashboard</h2>
+      <h2 style="margin-bottom:16px" data-i18n="dashboard.heading">Sales Dashboard</h2>
       <div id="dash-stats" class="stats"></div>
       <div class="card">
-        <h3 style="margin-bottom:12px">Top Items Today</h3>
+        <h3 style="margin-bottom:12px" data-i18n="dashboard.topItems">Top Items Today</h3>
         <div id="dash-top"></div>
+      </div>
+    </section>
+
+    <!-- SHIFT TAB -->
+    <section id="tab-shift" class="tab">
+      <h2 style="margin-bottom:16px">Shift</h2>
+
+      <div class="card" id="shift-closed-card" style="margin-bottom:20px">
+        <h3 style="margin-bottom:12px">Open Shift</h3>
+        <div style="display:flex;gap:8px;align-items:flex-end">
+          <div>
+            <label for="shift-float-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Float (RM)</label>
+            <input type="number" id="shift-float-input" min="0" step="0.01" value="0" style="color:var(--charcoal);width:120px">
+          </div>
+          <button class="btn small" data-action="open-shift">Open Shift</button>
+        </div>
+      </div>
+
+      <div class="card" id="shift-open-card" style="margin-bottom:20px;display:none">
+        <h3 style="margin-bottom:12px">Current Shift</h3>
+        <div id="shift-status" class="meta" style="margin-bottom:14px"></div>
+        <div id="shift-x-report" style="margin-bottom:16px"></div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:16px;padding:14px 0;border-top:1px solid var(--light-gray);border-bottom:1px solid var(--light-gray)">
+          <div>
+            <label for="movement-kind" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Kind</label>
+            <select id="movement-kind" style="color:var(--charcoal)">
+              <option value="payin">Pay in</option>
+              <option value="payout">Pay out</option>
+            </select>
+          </div>
+          <div>
+            <label for="movement-amount" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Amount (RM)</label>
+            <input type="number" id="movement-amount" min="0" step="0.01" style="color:var(--charcoal);width:100px">
+          </div>
+          <div style="flex:1;min-width:160px">
+            <label for="movement-reason" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Reason</label>
+            <input type="text" id="movement-reason" style="color:var(--charcoal);width:100%">
+          </div>
+          <button class="btn small outline" data-action="add-movement">Record</button>
+        </div>
+
+        <button class="btn small outline" data-action="reveal-close">Close Shift</button>
+
+        <div id="shift-close-form" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--light-gray)">
+          <h4 style="margin-bottom:10px">Count the drawer</h4>
+          <div id="denom-grid"></div>
+          <div style="margin:12px 0;font-weight:700">Counted total: <span id="denom-total">RM 0.00</span></div>
+          <label for="shift-close-note" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Note (required if variance is non-zero)</label>
+          <input type="text" id="shift-close-note" class="remark-input" style="color:var(--charcoal);margin-bottom:12px">
+          <div style="display:flex;gap:8px">
+            <button class="btn small" data-action="confirm-close">Confirm Close</button>
+            <button class="btn small outline" data-action="cancel-close">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="shift-report-card" style="margin-bottom:20px;display:none">
+        <h3 style="margin-bottom:12px">Last Z Report <span id="shift-variance-badge"></span></h3>
+        <div id="shift-z-report"></div>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button class="btn small outline" data-action="export-z-csv">Export CSV</button>
+          <button class="btn small outline" data-action="print-z-report">Print</button>
+        </div>
       </div>
     </section>
 
@@ -180,6 +261,52 @@
           </div>
           <button class="btn small" id="save-rates-btn" data-action="save-rates">Save</button>
         </div>
+        <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;margin-top:16px;padding-top:16px;border-top:1px solid var(--light-gray)">
+          <div style="flex:1;min-width:180px">
+            <label for="restaurant-name-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Restaurant name (printed on receipts)</label>
+            <input type="text" id="restaurant-name-input" style="color:var(--charcoal);width:100%">
+          </div>
+          <div style="flex:2;min-width:220px">
+            <label for="restaurant-address-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Address</label>
+            <input type="text" id="restaurant-address-input" style="color:var(--charcoal);width:100%">
+          </div>
+          <div>
+            <label for="sst-number-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">SST registration number</label>
+            <input type="text" id="sst-number-input" style="color:var(--charcoal);width:160px">
+          </div>
+          <button class="btn small" data-action="save-restaurant-identity">Save</button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:20px">
+        <h3 style="margin-bottom:12px">Staff &amp; PINs</h3>
+        <div id="admin-staff"></div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin:14px 0;padding:14px 0;border-top:1px solid var(--light-gray);border-bottom:1px solid var(--light-gray)">
+          <div>
+            <label for="new-staff-name" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Name</label>
+            <input type="text" id="new-staff-name" style="color:var(--charcoal);width:140px">
+          </div>
+          <div>
+            <label for="new-staff-role" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Role</label>
+            <select id="new-staff-role" style="color:var(--charcoal)">
+              <option value="staff">staff</option>
+              <option value="kitchen">kitchen</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+          <div>
+            <label for="new-staff-pin" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">PIN</label>
+            <input type="password" inputmode="numeric" id="new-staff-pin" style="color:var(--charcoal);width:100px">
+          </div>
+          <div>
+            <label for="new-staff-pin-confirm" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Confirm PIN</label>
+            <input type="password" inputmode="numeric" id="new-staff-pin-confirm" style="color:var(--charcoal);width:100px">
+          </div>
+          <button class="btn small" data-action="create-staff">Add staff</button>
+          <p style="width:100%;color:var(--warm-gray);font-size:12px;margin-top:4px">The PIN entered here is temporary — the new person will be asked to choose their own at first login.</p>
+        </div>
+        <h4 style="margin-bottom:10px;color:var(--warm-gray)">Former staff</h4>
+        <p style="color:var(--warm-gray);font-size:13px;margin-bottom:10px">Kept visible because old bills still carry their name.</p>
+        <div id="admin-staff-former"></div>
       </div>
       <div class="card" style="margin-bottom:20px">
         <h3 style="margin-bottom:12px">Table QR Codes</h3>
@@ -314,7 +441,7 @@
 <div id="remark-modal" class="modal-bg">
   <div class="modal">
     <h3 id="remark-title"></h3>
-    <input type="text" id="remark-input" class="remark-input" placeholder="e.g. kurang manis, less ice, no sugar">
+    <input type="text" id="remark-input" class="remark-input" aria-label="Remark for this item" placeholder="e.g. kurang manis, less ice, no sugar">
     <div class="remark-presets" id="remark-presets"></div>
     <div style="display:flex;gap:8px;margin-top:16px">
       <button class="btn small" style="background:#6b7280" data-action="skip-remark">Skip</button>
@@ -323,7 +450,23 @@
   </div>
 </div>
 
-<div id="toast" class="toast"></div>
+<!-- CHANGE-MY-PIN MODAL: every role, from the header. When mandatory
+     (must_change_pin), #pin-modal-cancel is hidden and clicking the
+     backdrop does nothing — see staff.js's closeChangePinDialog(). -->
+<div id="pin-modal" class="modal-bg">
+  <div class="modal">
+    <h3 id="pin-modal-title">Change my PIN</h3>
+    <div class="field"><label for="pin-current">Current PIN</label><input id="pin-current" type="password" inputmode="numeric" aria-label="Current PIN"></div>
+    <div class="field"><label for="pin-new">New PIN (4-8 digits)</label><input id="pin-new" type="password" inputmode="numeric" aria-label="New PIN"></div>
+    <div class="field"><label for="pin-new-confirm">Confirm new PIN</label><input id="pin-new-confirm" type="password" inputmode="numeric" aria-label="Confirm new PIN"></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn small" data-action="submit-change-pin">Save new PIN</button>
+      <button class="btn small outline" id="pin-modal-cancel" data-action="close-pin-modal">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script src="api.js"></script>
 <script type="module" src="/js/main.js"></script>

@@ -21,9 +21,19 @@ const router = express.Router();
 const discountAuthTokens = new Map();
 
 router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
-  const orders = req.query.mode === 'recent'
-    ? await ordersWithItems('', [], 'ORDER BY o.id DESC LIMIT 15')
-    : await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled')", []);
+  let orders;
+  if (req.query.mode === 'recent') {
+    orders = await ordersWithItems('', [], 'ORDER BY o.id DESC LIMIT 15');
+  } else {
+    // #29: an open order forgotten for a week must not sit in every response
+    // forever — bounded even on the default "everything open" call. ?since=
+    // (an ISO timestamp) narrows to orders touched since then, for a caller
+    // that already holds everything older.
+    const sinceDate = req.query.since ? new Date(req.query.since) : null;
+    orders = sinceDate && !isNaN(sinceDate)
+      ? await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled') AND o.updated_at > $1", [sinceDate], 'ORDER BY o.id ASC LIMIT 200')
+      : await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled')", [], 'ORDER BY o.id ASC LIMIT 200');
+  }
 
   // Live payments-so-far + remaining balance, for the "RM X.XX remaining" display
   // and the payment modal's split/partial flows; discounts-so-far, so the payment
@@ -75,9 +85,13 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
     await printing.enqueue('chit', id);
     res.status(201).json({ id });
   } catch (e) {
-    if (idemKey && e.code === '23505' && e.constraint === 'uniq_orders_idem') {
+    // A concurrent retry of the *same* request (same table, same key) can hit
+    // either unique index first depending on Postgres's own check ordering —
+    // not just uniq_orders_idem specifically. Whenever a key was supplied,
+    // check for it on any unique violation, not only that one constraint.
+    if (idemKey && e.code === '23505') {
       const existing = await pool.query('SELECT id FROM orders WHERE idempotency_key = $1', [idemKey]);
-      return res.status(200).json({ id: existing.rows[0].id });
+      if (existing.rows[0]) return res.status(200).json({ id: existing.rows[0].id });
     }
     // one_open_order_per_table: a second tablet raced us to the same table.
     // Not a 500 — tell the client which order already exists so it can join it.

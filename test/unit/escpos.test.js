@@ -1,14 +1,13 @@
 const path = require('path');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { withDb } = require('../helper');
+const { withDb, getFreePort } = require('../helper');
 const { createPrinter } = require('../../src/lib/escpos');
 
 const SRC_DIR = path.join(__dirname, '..', '..', 'src') + path.sep;
 const DB_MODULE = require.resolve('../../src/db');
 const SERVER_MODULE = require.resolve('../../src/server');
 
-function randomPort() { return 20000 + Math.floor(Math.random() * 30000); }
 
 function clearSrcCache() {
   for (const key of Object.keys(require.cache)) {
@@ -25,7 +24,7 @@ async function waitReady(base, retries = 50) {
 }
 
 async function startApp() {
-  const port = randomPort();
+  const port = await getFreePort();
   process.env.PORT = String(port);
   process.env.ADMIN_PIN = '1234';
   clearSrcCache();
@@ -36,14 +35,20 @@ async function startApp() {
 }
 
 async function json(res) { return res.json(); }
+// Phase 11: sessions are an httpOnly cookie, not a bearer token — node's
+// fetch happily sends a manually-set Cookie header (it isn't a browser
+// sandbox), so tests carry the session by hand instead of a cookie jar.
 async function login(base, name, pin) {
   const r = await fetch(`${base}/api/login`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name, pin }),
   });
-  return (await json(r)).token;
+  const body = await json(r);
+  return { cookie: (r.headers.get('set-cookie') || '').split(';')[0], csrfToken: body.csrf_token };
 }
-function auth(token) { return { authorization: `Bearer ${token}`, 'content-type': 'application/json' }; }
+function auth(session) {
+  return { cookie: session.cookie, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' };
+}
 
 /* ===== row(): the one to get right, it's every line of every receipt ===== */
 
@@ -92,6 +97,8 @@ test('a receipt\'s bytes contain the correct total and end with the cut sequence
   await withDb(async db => {
     const base = await startApp();
     const adminToken = await login(base, 'Admin', '1234');
+    // Phase 09: a payment is refused unless a shift is open.
+    await fetch(`${base}/api/shift/open`, { method: 'POST', headers: auth(adminToken), body: JSON.stringify({ float: 0 }) });
     const menu = await json(await fetch(`${base}/api/menu`, { headers: auth(adminToken) }));
     const tables = await json(await fetch(`${base}/api/tables`, { headers: auth(adminToken) }));
     const item = menu.items.find(i => i.name === 'Roti Canai');

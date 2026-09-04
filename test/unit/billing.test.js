@@ -1,7 +1,7 @@
 const path = require('path');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { withDb } = require('../helper');
+const { withDb, getFreePort } = require('../helper');
 const { splitEvenly } = require('../../src/services/billing');
 const { rm2cents, roundHalfUp, cents2rm } = require('../../src/lib/money');
 
@@ -9,7 +9,6 @@ const SRC_DIR = path.join(__dirname, '..', '..', 'src') + path.sep;
 const DB_MODULE = require.resolve('../../src/db');
 const SERVER_MODULE = require.resolve('../../src/server');
 
-function randomPort() { return 20000 + Math.floor(Math.random() * 30000); }
 
 function clearSrcCache() {
   for (const key of Object.keys(require.cache)) {
@@ -26,7 +25,7 @@ async function waitReady(base, retries = 50) {
 }
 
 async function startApp() {
-  const port = randomPort();
+  const port = await getFreePort();
   process.env.PORT = String(port);
   process.env.ADMIN_PIN = '1234';
   clearSrcCache();
@@ -37,22 +36,36 @@ async function startApp() {
 }
 
 async function json(res) { return res.json(); }
+// Phase 11: sessions are an httpOnly cookie, not a bearer token — node's
+// fetch happily sends a manually-set Cookie header (it isn't a browser
+// sandbox), so tests carry the session by hand instead of a cookie jar.
 async function login(base, name, pin) {
   const r = await fetch(`${base}/api/login`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name, pin }),
   });
-  return (await json(r)).token;
+  const body = await json(r);
+  return { cookie: (r.headers.get('set-cookie') || '').split(';')[0], csrfToken: body.csrf_token };
 }
-function auth(token) { return { authorization: `Bearer ${token}`, 'content-type': 'application/json' }; }
+function auth(session) {
+  return { cookie: session.cookie, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' };
+}
 
 async function setup(base) {
   const adminToken = await login(base, 'Admin', '1234');
   const adminAuth = auth(adminToken);
+  // Phase 09: a payment is refused unless a shift is open.
+  await fetch(`${base}/api/shift/open`, { method: 'POST', headers: adminAuth, body: JSON.stringify({ float: 0 }) });
+  // '1111' would fail the phase-11 PIN policy (all-same digit) — this passes it.
   const staffId = (await json(await fetch(`${base}/api/admin/users`, {
-    method: 'POST', headers: adminAuth, body: JSON.stringify({ name: 'Staffer', role: 'staff', pin: '1111' }),
+    method: 'POST', headers: adminAuth, body: JSON.stringify({ name: 'Staffer', role: 'staff', pin: '6284' }),
   }))).id;
-  const staffToken = await login(base, 'Staffer', '1111');
+  const staffToken = await login(base, 'Staffer', '6284');
+  // A brand-new account starts with must_change_pin — clear it so the many
+  // tests below exercise their own scenario, not that gate.
+  await fetch(`${base}/api/me/pin`, {
+    method: 'POST', headers: auth(staffToken), body: JSON.stringify({ current_pin: '6284', new_pin: '4816' }),
+  });
   const menu = await json(await fetch(`${base}/api/menu`, { headers: adminAuth }));
   const tables = await json(await fetch(`${base}/api/tables`, { headers: adminAuth }));
   return {

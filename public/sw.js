@@ -5,7 +5,7 @@
 // caching a write here would silently hide the very failures it exists to queue.
 //
 // Bump CACHE_VERSION on each deploy; old caches are dropped on activate.
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const CACHE_NAME = `mamak-pos-${CACHE_VERSION}`;
 
 const SHELL_URLS = [
@@ -21,6 +21,9 @@ const SHELL_URLS = [
   '/js/admin.js',
   '/js/nav.js',
   '/js/main.js',
+  '/js/shift.js',
+  '/js/staff.js',
+  '/js/i18n.js',
 ];
 
 self.addEventListener('install', event => {

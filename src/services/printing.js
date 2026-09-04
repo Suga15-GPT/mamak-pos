@@ -167,6 +167,55 @@ async function buildReceipt(orderId, width) {
   return p.toBuffer();
 }
 
+// X/Z report (phase 09) — same restaurant header as the receipt, then the
+// shift's headline figures. `data` is the object services/shifts.js's
+// report() already computed; this only formats it, never queries the DB.
+async function buildZReport(shiftId, width, data) {
+  const p = createPrinter(width);
+  p.init().align(1);
+  p.bold(true).text(`${data.restaurant.restaurant_name || 'Mamak POS'}\n`).bold(false);
+  if (data.restaurant.restaurant_address) p.text(`${data.restaurant.restaurant_address}\n`);
+  if (data.restaurant.sst_number) p.text(`SST Reg: ${data.restaurant.sst_number}\n`);
+  p.align(0);
+  p.line('=');
+  p.bold(true).text(`${data.final ? 'Z REPORT' : 'X REPORT'} — Shift #${shiftId}\n`).bold(false);
+  p.text(`${nowKL()}\n`);
+  p.line('-');
+  p.row('Gross sales', formatRM(data.gross_cents));
+  p.row('Discounts', formatRM(data.discounts_cents));
+  p.row('Comps', formatRM(data.comps_cents));
+  p.row('Voids', `${data.voids_count} / ${formatRM(data.voids_cents)}`);
+  p.row('Net sales', formatRM(data.net_sales_cents));
+  p.row('Service charge', formatRM(data.service_charge_cents));
+  p.row('SST', formatRM(data.tax_cents));
+  p.row('Rounding', formatRM(data.rounding_cents));
+  p.line('-');
+  data.payment_mix.forEach(m => p.row(m.method, formatRM(m.cents)));
+  p.line('-');
+  p.row('Orders', String(data.order_count));
+  p.row('Avg check', formatRM(data.avg_check_cents));
+  p.line('-');
+  p.bold(true).text('Cash reconciliation\n').bold(false);
+  p.row('Float', formatRM(data.cash.float_cents));
+  p.row('Cash sales', formatRM(data.cash.cash_sales_cents));
+  p.row('Pay in', formatRM(data.cash.payins_cents));
+  p.row('Pay out', formatRM(data.cash.payouts_cents));
+  p.row('Expected', formatRM(data.cash.expected_cents));
+  if (data.cash.counted_cents != null) p.row('Counted', formatRM(data.cash.counted_cents));
+  if (data.cash.variance_cents != null) p.row('Variance', formatRM(data.cash.variance_cents));
+  p.line('-');
+  p.bold(true).text('Voids & discounts by staff\n').bold(false);
+  data.staff_voids.forEach(v => p.row(v.staff, `${v.count} / ${formatRM(v.cents)}`));
+  p.line('=');
+  p.text('\n\n');
+  p.cut();
+  return p.toBuffer();
+}
+
+async function printShiftReport(shiftId, data) {
+  return enqueueForRole('report', null, 'receipt', width => buildZReport(shiftId, width, data));
+}
+
 /* ===== dispatch ===== */
 
 function sendToPrinter(host, port, payload, timeoutMs = 3000) {
@@ -247,4 +296,4 @@ async function reprintReceipt(orderId, userId) {
   return enqueue('receipt', orderId);
 }
 
-module.exports = { enqueue, testPrint, reprintReceipt, processQueue, buildChit, buildVoidChit, buildReceipt };
+module.exports = { enqueue, testPrint, reprintReceipt, processQueue, buildChit, buildVoidChit, buildReceipt, buildZReport, printShiftReport };
