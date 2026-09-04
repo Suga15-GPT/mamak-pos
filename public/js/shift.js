@@ -41,18 +41,24 @@ function renderReportSummary(el, r) {
       <tr><td>Discounts</td><td style="text-align:right">${fmt(r.discounts_cents / 100)}</td></tr>
       <tr><td>Comps</td><td style="text-align:right">${fmt(r.comps_cents / 100)}</td></tr>
       <tr><td>Voids</td><td style="text-align:right">${r.voids_count} / ${fmt(r.voids_cents / 100)}</td></tr>
+      <tr><td>Refunds</td><td style="text-align:right">${fmt(r.refunds_cents / 100)}</td></tr>
       <tr><td style="font-weight:700">Net sales</td><td style="text-align:right;font-weight:700">${fmt(r.net_sales_cents / 100)}</td></tr>
       <tr><td>Service charge</td><td style="text-align:right">${fmt(r.service_charge_cents / 100)}</td></tr>
       <tr><td>SST</td><td style="text-align:right">${fmt(r.tax_cents / 100)}</td></tr>
       <tr><td>Rounding</td><td style="text-align:right">${fmt(r.rounding_cents / 100)}</td></tr>
       <tr><td>Orders</td><td style="text-align:right">${r.order_count} (avg ${fmt(r.avg_check_cents / 100)})</td></tr>
+      <tr><td>Open orders carried fwd</td><td style="text-align:right">${r.carried_forward.count} / ${fmt(r.carried_forward.cents / 100)}</td></tr>
     </table>
     <div style="margin-top:10px;font-weight:700">Payment mix</div>
     ${r.payment_mix.map(m => `<div>${esc(m.method)}: ${fmt(m.cents / 100)}</div>`).join('') || '<div class="empty">None yet</div>'}
+    <div style="margin-top:10px;font-weight:700">Refund mix</div>
+    ${r.refund_mix.map(m => `<div>${esc(m.method)}: ${fmt(m.cents / 100)}</div>`).join('') || '<div class="empty">None</div>'}
     <div style="margin-top:10px;font-weight:700">Cash reconciliation</div>
     <div>Float ${fmt(r.cash.float_cents / 100)} · Cash sales ${fmt(r.cash.cash_sales_cents / 100)} · Pay in ${fmt(r.cash.payins_cents / 100)} · Pay out ${fmt(r.cash.payouts_cents / 100)} · Expected ${fmt(r.cash.expected_cents / 100)}${r.cash.counted_cents != null ? ' · Counted ' + fmt(r.cash.counted_cents / 100) + ' · Variance ' + fmt(r.cash.variance_cents / 100) : ''}</div>
     <div style="margin-top:10px;font-weight:700">Voids &amp; discounts by staff</div>
     ${r.staff_voids.map(v => `<div>${esc(v.staff)}: ${v.count} void(s) / ${fmt(v.cents / 100)}</div>`).join('') || '<div class="empty">None</div>'}
+    <div style="margin-top:10px;font-weight:700">Refunds by staff</div>
+    ${r.staff_refunds.map(v => `<div>${esc(v.staff)}: ${v.count} refund(s) / ${fmt(v.cents / 100)}</div>`).join('') || '<div class="empty">None</div>'}
     <div style="margin-top:10px;font-weight:700">Sales by category</div>
     ${r.categories.map(c => `<div>${esc(c.category)}: ${fmt(c.cents / 100)}</div>`).join('') || '<div class="empty">None</div>'}
     <div style="margin-top:10px;font-weight:700">Top items</div>
@@ -128,15 +134,19 @@ function exportCsv() {
     ['Shift', r.shift_id], ['Gross sales', (r.gross_cents / 100).toFixed(2)],
     ['Discounts', (r.discounts_cents / 100).toFixed(2)], ['Comps', (r.comps_cents / 100).toFixed(2)],
     ['Voids count', r.voids_count], ['Voids value', (r.voids_cents / 100).toFixed(2)],
+    ['Refunds', (r.refunds_cents / 100).toFixed(2)],
     ['Net sales', (r.net_sales_cents / 100).toFixed(2)], ['Service charge', (r.service_charge_cents / 100).toFixed(2)],
     ['SST', (r.tax_cents / 100).toFixed(2)], ['Rounding', (r.rounding_cents / 100).toFixed(2)],
     ['Orders', r.order_count], ['Avg check', (r.avg_check_cents / 100).toFixed(2)],
+    ['Open orders carried fwd count', r.carried_forward.count], ['Open orders carried fwd value', (r.carried_forward.cents / 100).toFixed(2)],
     ['Float', (r.cash.float_cents / 100).toFixed(2)], ['Cash sales', (r.cash.cash_sales_cents / 100).toFixed(2)],
     ['Pay in', (r.cash.payins_cents / 100).toFixed(2)], ['Pay out', (r.cash.payouts_cents / 100).toFixed(2)],
     ['Expected', (r.cash.expected_cents / 100).toFixed(2)], ['Counted', ((r.cash.counted_cents || 0) / 100).toFixed(2)],
     ['Variance', ((r.cash.variance_cents || 0) / 100).toFixed(2)],
     ...r.payment_mix.map(m => [`Payment: ${m.method}`, (m.cents / 100).toFixed(2)]),
+    ...r.refund_mix.map(m => [`Refund: ${m.method}`, (m.cents / 100).toFixed(2)]),
     ...r.staff_voids.map(v => [`Voids: ${v.staff}`, `${v.count} / ${(v.cents / 100).toFixed(2)}`]),
+    ...r.staff_refunds.map(v => [`Refunds: ${v.staff}`, `${v.count} / ${(v.cents / 100).toFixed(2)}`]),
   ];
   const csv = rows.map(row => row.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
   const blob = new Blob([csv], { type: 'text/csv' });

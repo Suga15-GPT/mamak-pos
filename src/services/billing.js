@@ -59,10 +59,13 @@ async function paidCentsFor(orderId) {
 // paid against it (a partially-paid order's status stays 'sent', so the status
 // check that already protects a fully-paid order never fires) — refuse rather
 // than leave the shop owing the customer a negative balance it can't settle.
+// Phase 12: now that a refund is possible, name the exact amount that would
+// clear the guard instead of just pointing at "the payment".
 function guardAgainstShortfall(actionLabel, newTotalCents, paidCents) {
   if (newTotalCents < paidCents) {
+    const refundNeeded = paidCents - newTotalCents;
     throw AppError(
-      `${actionLabel} would leave ${formatRM(paidCents)} already paid against a ${formatRM(newTotalCents)} bill — refund the payment first`,
+      `${actionLabel} would leave ${formatRM(paidCents)} already paid against a ${formatRM(newTotalCents)} bill — refund ${formatRM(refundNeeded)} first`,
       409);
   }
 }
@@ -73,9 +76,15 @@ function guardAgainstShortfall(actionLabel, newTotalCents, paidCents) {
 // which a paid amount > 0 can never do on its own).
 async function settleIfMatchesPaid(orderId, totalCents, paidCents, userId, trigger) {
   if (totalCents !== paidCents) return false;
+  // Phase 12: closed_shift_id is the shift the order actually settled in —
+  // whichever shift is open right now, if any (a comp can close an order with
+  // no shift open at all, in which case its sales simply carry no shift until
+  // a future phase needs one).
+  const openShift = await pool.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
+  const shiftId = openShift.rows[0]?.id || null;
   await pool.query(
-    "UPDATE orders SET status = 'paid', paid_at = now(), closed_by = $1, updated_at = now() WHERE id = $2",
-    [userId || null, orderId]);
+    "UPDATE orders SET status = 'paid', paid_at = now(), closed_by = $1, closed_shift_id = $2, updated_at = now() WHERE id = $3",
+    [userId || null, shiftId, orderId]);
   await writeAudit(pool, {
     userId, action: 'order.settle', entityType: 'order', entityId: orderId,
     detail: { trigger, total_cents: totalCents, paid_cents: paidCents },
@@ -118,7 +127,7 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
 
   const o = await pool.query('SELECT status FROM orders WHERE id = $1', [orderId]);
   if (!o.rows[0]) throw AppError('order not found', 404);
-  if (['paid', 'cancelled'].includes(o.rows[0].status)) throw AppError('order already closed', 400);
+  if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order already closed', 400);
 
   const due = await amountDue(orderId);
   if (due <= 0) throw AppError('order already settled', 400);
@@ -161,9 +170,12 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
   const remainingCents = Math.max(0, due - apply + roundingAdj);
   const settled = remainingCents === 0;
   if (settled) {
+    // Phase 12: closed_shift_id is the shift that collected this settling
+    // payment — the same shiftId this leg was just recorded against — so the
+    // sales side of a Z report agrees with the cash side by construction.
     await pool.query(
-      "UPDATE orders SET status = 'paid', paid_at = now(), paid_by = $1, updated_at = now() WHERE id = $2",
-      [userId || null, orderId]);
+      "UPDATE orders SET status = 'paid', paid_at = now(), paid_by = $1, closed_shift_id = $2, updated_at = now() WHERE id = $3",
+      [userId || null, shiftId, orderId]);
   }
 
   const changeCents = tendered != null ? tendered - apply : 0;
@@ -185,7 +197,7 @@ async function addDiscount(orderId, { kind, value, reason, userId }) {
 
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [orderId]);
   if (!o.rows[0]) throw AppError('order not found', 404);
-  if (['paid', 'cancelled'].includes(o.rows[0].status)) throw AppError('order closed', 400);
+  if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order closed', 400);
 
   const subtotalCents = o.rows[0].subtotal_cents || 0;
   const grossBeforeThisDiscount =
@@ -237,7 +249,7 @@ async function listDiscounts(orderId) {
 async function removeDiscount(orderId, discountId, { userId }) {
   const o = await pool.query('SELECT status FROM orders WHERE id = $1', [orderId]);
   if (!o.rows[0]) throw AppError('order not found', 404);
-  if (['paid', 'cancelled'].includes(o.rows[0].status)) throw AppError('order closed', 400);
+  if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order closed', 400);
   if (await hasPayments(orderId)) throw AppError('order has a payment recorded; cannot remove discount', 409);
 
   const d = await pool.query('DELETE FROM discounts WHERE id = $1 AND order_id = $2 RETURNING *', [discountId, orderId]);
@@ -251,6 +263,73 @@ async function removeDiscount(orderId, discountId, { userId }) {
   });
 
   return { bill };
+}
+
+// Phase 12: the first way to move money back out of the till. Always against
+// one specific payment (never free-floating), so it refunds by the method the
+// money came in on and the drawer maths stays honest. The over-refund guard is
+// enforced inside the same transaction that inserts the row — a
+// SELECT ... FOR UPDATE on the payment row serializes any concurrent refund
+// attempt against the *same* payment, so two simultaneous requests can't both
+// read "not yet over" and both insert.
+async function addRefund(orderId, { paymentId, amountCents, reason, approvedBy, userId }) {
+  if (!(Number.isInteger(amountCents) && amountCents > 0)) throw AppError('amount must be a positive amount', 400);
+  const cleanReason = String(reason || '').trim();
+  if (cleanReason.length < 3 || cleanReason.length > 200) throw AppError('reason must be 3-200 chars', 400);
+
+  // Same control as taking a payment: the shift a cash refund draws down (or a
+  // card/eWallet refund is attributed to) must be the open one.
+  const openShift = await pool.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
+  const shiftId = openShift.rows[0]?.id;
+  if (!shiftId) throw AppError('no shift is open — open a shift before issuing a refund', 400);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const pay = await client.query('SELECT * FROM payments WHERE id = $1 AND order_id = $2 FOR UPDATE', [paymentId, orderId]);
+    if (!pay.rows[0]) throw AppError('payment not found', 404);
+
+    const priorRefunds = await client.query('SELECT COALESCE(SUM(amount_cents), 0) AS s FROM refunds WHERE payment_id = $1', [paymentId]);
+    const already = Number(priorRefunds.rows[0].s);
+    const refundableCents = pay.rows[0].amount_cents - already;
+    if (amountCents > refundableCents) throw AppError(`refund exceeds payment — only ${formatRM(refundableCents)} left to refund`, 400);
+
+    const r = await client.query(
+      'INSERT INTO refunds (payment_id, order_id, amount_cents, reason, approved_by, shift_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+      [paymentId, orderId, amountCents, cleanReason, approvedBy, shiftId]);
+
+    await writeAudit(client, {
+      userId, action: 'order.refund', entityType: 'order', entityId: orderId,
+      detail: { refund_id: r.rows[0].id, payment_id: paymentId, method: pay.rows[0].method, amount_cents: amountCents, reason: cleanReason, approved_by: approvedBy },
+    });
+
+    // Once every payment on the order has been refunded back to zero, the sale
+    // is undone — that's a different terminal state than 'paid'.
+    const totals = await client.query(
+      `SELECT COALESCE(SUM(p.amount_cents), 0)::int paid, COALESCE((SELECT SUM(amount_cents) FROM refunds WHERE order_id = $1), 0)::int refunded
+       FROM payments p WHERE p.order_id = $1`, [orderId]);
+    const { paid: totalPaid, refunded: totalRefunded } = totals.rows[0];
+    const refundedToZero = totalPaid > 0 && totalRefunded >= totalPaid;
+    if (refundedToZero) {
+      await client.query("UPDATE orders SET status = 'refunded', updated_at = now() WHERE id = $1", [orderId]);
+    }
+
+    await client.query('COMMIT');
+    return { id: r.rows[0].id, amount_cents: amountCents, refunded_to_zero: refundedToZero };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function listRefunds(orderId) {
+  const r = await pool.query(
+    `SELECT r.id, r.payment_id, r.amount_cents, r.reason, r.approved_by, r.at, p.method
+     FROM refunds r JOIN payments p ON p.id = r.payment_id
+     WHERE r.order_id = $1 ORDER BY r.at`, [orderId]);
+  return r.rows;
 }
 
 // Divide, floor, then hand the leftover sen one at a time to the first shares —
@@ -281,5 +360,6 @@ async function splitBySeat(orderId) {
 
 module.exports = {
   recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
+  addRefund, listRefunds,
   splitEvenly, splitBySeat, paidCentsFor, guardAgainstShortfall, settleIfMatchesPaid, previewBillExcludingLine,
 };

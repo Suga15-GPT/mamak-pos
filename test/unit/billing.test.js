@@ -424,6 +424,121 @@ test('a discount that leaves the total above what is already paid -> allowed, co
   });
 });
 
+/* ===== refunds (phase 12, audit #39) ===== */
+
+test('refund exceeding its payment -> 400', async () => {
+  await withDb(async () => {
+    const base = await startApp();
+    const s = await setup(base);
+    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    const payR = await fetch(`${base}/api/orders/${orderId}/pay`, {
+      method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Cash' }),
+    });
+    assert.equal(payR.status, 200);
+    const order = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth }))).find(o => o.id === orderId);
+    const paymentId = order.payments[0].id;
+
+    const over = await fetch(`${base}/api/orders/${orderId}/refunds`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ payment_id: paymentId, amount: 999, reason: 'too much' }),
+    });
+    assert.equal(over.status, 400);
+  });
+});
+
+test('a cash refund reduces expected cash by exactly its amount; a card refund does not', async () => {
+  await withDb(async () => {
+    const base = await startApp();
+    const s = await setup(base);
+    const shift = await json(await fetch(`${base}/api/shift/current`, { headers: s.adminAuth }));
+
+    const { body: { id: cashOrder } } = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    await fetch(`${base}/api/orders/${cashOrder}/pay`, { method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Cash' }) });
+    const cashPaymentId = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth })))
+      .find(o => o.id === cashOrder).payments[0].id;
+
+    const repBeforeCash = await json(await fetch(`${base}/api/shift/${shift.id}/report`, { headers: s.adminAuth }));
+    const cashRefund = await fetch(`${base}/api/orders/${cashOrder}/refunds`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ payment_id: cashPaymentId, amount: 1, reason: 'goodwill refund' }),
+    });
+    assert.equal(cashRefund.status, 200);
+    const repAfterCash = await json(await fetch(`${base}/api/shift/${shift.id}/report`, { headers: s.adminAuth }));
+    assert.equal(repBeforeCash.cash.expected_cents - repAfterCash.cash.expected_cents, 100);
+
+    const { body: { id: cardOrder } } = await createOrder(base, s, s.tableId2, s.itemA.id, 1);
+    await fetch(`${base}/api/orders/${cardOrder}/pay`, { method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card' }) });
+    const cardPaymentId = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth })))
+      .find(o => o.id === cardOrder).payments[0].id;
+
+    const repBeforeCard = await json(await fetch(`${base}/api/shift/${shift.id}/report`, { headers: s.adminAuth }));
+    const cardRefund = await fetch(`${base}/api/orders/${cardOrder}/refunds`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ payment_id: cardPaymentId, amount: 1, reason: 'card refund' }),
+    });
+    assert.equal(cardRefund.status, 200);
+    const repAfterCard = await json(await fetch(`${base}/api/shift/${shift.id}/report`, { headers: s.adminAuth }));
+    assert.equal(repBeforeCard.cash.expected_cents, repAfterCard.cash.expected_cents);
+  });
+});
+
+test('two partial refunds summing to the payment -> allowed; a third cent -> 400', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    await fetch(`${base}/api/orders/${orderId}/pay`, { method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card' }) });
+    const order = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth }))).find(o => o.id === orderId);
+    const paymentId = order.payments[0].id;
+    const totalCents = Math.round(order.payments[0].amount * 100);
+    const half1 = Math.floor(totalCents / 2), half2 = totalCents - half1;
+
+    const r1 = await fetch(`${base}/api/orders/${orderId}/refunds`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ payment_id: paymentId, amount: half1 / 100, reason: 'partial refund 1' }),
+    });
+    assert.equal(r1.status, 200);
+
+    const r2 = await fetch(`${base}/api/orders/${orderId}/refunds`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ payment_id: paymentId, amount: half2 / 100, reason: 'partial refund 2' }),
+    });
+    assert.equal(r2.status, 200);
+    assert.equal((await json(r2)).refunded_to_zero, true);
+
+    const row = (await db.query('SELECT status FROM orders WHERE id = $1', [orderId])).rows[0];
+    assert.equal(row.status, 'refunded');
+
+    const r3 = await fetch(`${base}/api/orders/${orderId}/refunds`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ payment_id: paymentId, amount: 0.01, reason: 'one more cent' }),
+    });
+    assert.equal(r3.status, 400);
+  });
+});
+
+test('concurrent double-refund of the same payment does not over-refund', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    await fetch(`${base}/api/orders/${orderId}/pay`, { method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card' }) });
+    const order = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth }))).find(o => o.id === orderId);
+    const paymentId = order.payments[0].id;
+    const totalCents = Math.round(order.payments[0].amount * 100);
+
+    // Two concurrent requests both trying to refund the full amount against
+    // the same payment — exactly one may succeed; a read-then-write guard
+    // would let both through.
+    const [a, b] = await Promise.all([
+      fetch(`${base}/api/orders/${orderId}/refunds`, {
+        method: 'POST', headers: s.adminAuth, body: JSON.stringify({ payment_id: paymentId, amount: totalCents / 100, reason: 'race A' }),
+      }),
+      fetch(`${base}/api/orders/${orderId}/refunds`, {
+        method: 'POST', headers: s.adminAuth, body: JSON.stringify({ payment_id: paymentId, amount: totalCents / 100, reason: 'race B' }),
+      }),
+    ]);
+    assert.deepEqual([a.status, b.status].sort(), [200, 400]);
+
+    const refunded = await db.query('SELECT COALESCE(SUM(amount_cents), 0)::int s FROM refunds WHERE payment_id = $1', [paymentId]);
+    assert.equal(refunded.rows[0].s, totalCents);
+  });
+});
+
 test('admin removes a discount before any payment -> total reverts, audit row written', async () => {
   await withDb(async db => {
     const base = await startApp();

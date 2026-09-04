@@ -48,8 +48,9 @@ async function addMovement({ kind, amountCents, reason, userId }) {
   return r.rows[0];
 }
 
-// float + cash sales taken during this shift + payins - payouts. Card/eWallet
-// sales never touch the physical drawer, so they're excluded.
+// float + cash sales taken during this shift + payins - payouts - cash refunds
+// given during this shift. Card/eWallet sales and refunds never touch the
+// physical drawer, so they're excluded.
 async function expectedCashCents(shiftId, floatCents) {
   const cash = await pool.query(
     "SELECT COALESCE(SUM(amount_cents), 0) s FROM payments WHERE shift_id = $1 AND method = 'Cash'", [shiftId]);
@@ -57,7 +58,10 @@ async function expectedCashCents(shiftId, floatCents) {
     'SELECT kind, COALESCE(SUM(amount_cents), 0) s FROM cash_movements WHERE shift_id = $1 GROUP BY kind', [shiftId]);
   let payins = 0, payouts = 0;
   movements.rows.forEach(m => { if (m.kind === 'payin') payins = Number(m.s); else payouts = Number(m.s); });
-  return floatCents + Number(cash.rows[0].s) + payins - payouts;
+  const cashRefunds = await pool.query(
+    `SELECT COALESCE(SUM(r.amount_cents), 0) s FROM refunds r JOIN payments p ON p.id = r.payment_id
+     WHERE r.shift_id = $1 AND p.method = 'Cash'`, [shiftId]);
+  return floatCents + Number(cash.rows[0].s) + payins - payouts - Number(cashRefunds.rows[0].s);
 }
 
 // Closes the open shift, freezing counted/expected/variance onto the row —
@@ -70,10 +74,17 @@ async function close({ userId, countedCents, note }) {
   const cleanNote = String(note || '').trim();
   if (variance !== 0 && !cleanNote) throw AppError('a note is required when variance is non-zero', 400);
 
+  // Snapshot "open orders carried forward" right now, same reasoning as
+  // expected/counted/variance above — one of those orders settling in a later
+  // shift must never change what this shift's own Z report already said.
+  const carried = await pool.query(
+    `SELECT COUNT(*)::int n, COALESCE(SUM(total_cents), 0)::int cents
+     FROM orders WHERE shift_id = $1 AND status NOT IN ('paid', 'cancelled', 'refunded')`, [shift.id]);
+
   const r = await pool.query(
     `UPDATE shifts SET closed_at = now(), closed_by = $1, counted_cents = $2, expected_cents = $3,
-       variance_cents = $4, note = $5 WHERE id = $6 RETURNING *`,
-    [userId, countedCents, expected, variance, cleanNote || null, shift.id]);
+       variance_cents = $4, note = $5, carried_forward_count = $6, carried_forward_cents = $7 WHERE id = $8 RETURNING *`,
+    [userId, countedCents, expected, variance, cleanNote || null, carried.rows[0].n, carried.rows[0].cents, shift.id]);
   await writeAudit(pool, {
     userId, action: 'shift.close', entityType: 'shift', entityId: shift.id,
     detail: { counted_cents: countedCents, expected_cents: expected, variance_cents: variance },
@@ -82,21 +93,39 @@ async function close({ userId, countedCents, note }) {
 }
 
 // X (interim, final=false) or Z (final=true, written once at close) report.
-// Sales-side figures (gross/net/voids/categories/...) are scoped by
-// orders.shift_id — the shift the order was *opened* in. Cash reconciliation
-// and payment mix are scoped by payments.shift_id — the shift that actually
-// took the cash, which for a long-lived order can differ from the one it was
-// opened in. A closed shift's cash figures are read back from the frozen row
-// (see close()) rather than recomputed.
+// Sales-side figures (gross/net/voids/categories/top items/average check) are
+// scoped by orders.closed_shift_id — the shift the order *settled* in (phase
+// 12) — matching cash reconciliation and payment mix, which were already
+// scoped by payments.shift_id, the shift that actually took the money. Before
+// phase 12 the sales side read orders.shift_id (opened-in) instead, which for
+// an order spanning a shift change put its sales in one Z report and its cash
+// in the next — this is what made the two sides agree by construction.
+// orders.shift_id (opened-in) still drives "open orders carried forward"
+// below — the one place this report still needs to know where an order
+// started rather than where it ended. A closed shift's cash figures are read
+// back from the frozen row (see close()) rather than recomputed.
 async function report(shiftId, { final = false } = {}) {
   const shiftRow = await pool.query('SELECT * FROM shifts WHERE id = $1', [shiftId]);
   const shift = shiftRow.rows[0];
   if (!shift) throw AppError('shift not found', 404);
 
+  // 'refunded' counts here too — the sale happened and belongs in gross/net;
+  // the money given back is its own line below, not a silent exclusion.
   const orders = await pool.query(
     `SELECT id, subtotal_cents, service_charge_cents, tax_cents, rounding_cents, total_cents
-     FROM orders WHERE shift_id = $1 AND status = 'paid'`, [shiftId]);
+     FROM orders WHERE closed_shift_id = $1 AND status IN ('paid', 'refunded')`, [shiftId]);
   const orderIds = orders.rows.map(o => o.id);
+
+  // An order opened in this shift but not yet settled by anyone belongs to no
+  // shift's sales yet — visible here rather than mysteriously absent. Once the
+  // shift is closed this is read back from the frozen snapshot (see close()),
+  // not recomputed — one of those orders settling later must never change
+  // this shift's own report.
+  const carried = shift.closed_at
+    ? { rows: [{ n: shift.carried_forward_count || 0, cents: shift.carried_forward_cents || 0 }] }
+    : await pool.query(
+        `SELECT COUNT(*)::int n, COALESCE(SUM(total_cents), 0)::int cents
+         FROM orders WHERE shift_id = $1 AND status NOT IN ('paid', 'cancelled', 'refunded')`, [shiftId]);
 
   const gross_cents = orders.rows.reduce((s, o) => s + (o.subtotal_cents || 0), 0);
   const service_charge_cents = orders.rows.reduce((s, o) => s + (o.service_charge_cents || 0), 0);
@@ -152,6 +181,19 @@ async function report(shiftId, { final = false } = {}) {
          GROUP BY u.name ORDER BY cents DESC`, [orderIds])
     : { rows: [] };
 
+  // Refunds are scoped by refunds.shift_id — the shift that actually gave the
+  // money back, same reasoning as payment_mix/cash above — not by the order's
+  // closed_shift_id, which can be an earlier shift than the one issuing the refund.
+  const refundMix = await pool.query(
+    `SELECT p.method, COALESCE(SUM(r.amount_cents), 0) s FROM refunds r JOIN payments p ON p.id = r.payment_id
+     WHERE r.shift_id = $1 GROUP BY p.method`, [shiftId]);
+  const refunds_cents = refundMix.rows.reduce((s, r) => s + Number(r.s), 0);
+
+  const staffRefunds = await pool.query(
+    `SELECT COALESCE(u.name, 'Unknown') staff, COUNT(*)::int n, COALESCE(SUM(r.amount_cents), 0)::int cents
+     FROM refunds r LEFT JOIN users u ON u.id = r.approved_by
+     WHERE r.shift_id = $1 GROUP BY u.name ORDER BY cents DESC`, [shiftId]);
+
   let cash;
   if (shift.closed_at) {
     cash = { float_cents: shift.float_cents, expected_cents: shift.expected_cents, counted_cents: shift.counted_cents, variance_cents: shift.variance_cents };
@@ -180,8 +222,12 @@ async function report(shiftId, { final = false } = {}) {
     categories: categoryRows.rows.map(r => ({ category: r.category, cents: Number(r.cents) })),
     top_items: topItems.rows,
     cash,
+    refunds_cents,
+    refund_mix: refundMix.rows.map(r => ({ method: r.method, cents: Number(r.s) })),
+    carried_forward: { count: carried.rows[0].n, cents: carried.rows[0].cents },
     staff_sales: staffSales.rows.map(r => ({ staff: r.staff, cents: Number(r.cents) })),
     staff_voids: staffVoids.rows.map(r => ({ staff: r.staff, count: r.n, cents: Number(r.cents) })),
+    staff_refunds: staffRefunds.rows.map(r => ({ staff: r.staff, count: r.n, cents: Number(r.cents) })),
   };
 }
 

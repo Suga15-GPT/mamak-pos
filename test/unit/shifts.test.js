@@ -189,6 +189,55 @@ test("a closed shift's stored figures do not change when later orders are added"
   });
 });
 
+test('revenue recognition at settlement: an order opened in shift A but paid in shift B is carried-forward/zero in A\'s report and the sale+cash in B\'s; gross minus discounts ties to payments received on both', async () => {
+  await withDb(async () => {
+    const base = await startApp();
+    const s = await setup(base);
+
+    // Zero tax/service charge so "gross sales minus discounts" is exactly the
+    // payment total with no other terms in the way — the invariant under test
+    // here is shift attribution, not the phase-02 tax formula.
+    await fetch(`${base}/api/settings`, {
+      method: 'PATCH', headers: s.adminAuth, body: JSON.stringify({ tax_rate_bp: 0, svc_rate_bp: 0 }),
+    });
+
+    const openedA = await openShift(base, s, 0);
+    const shiftA = openedA.body.id;
+    const order = await createOrder(base, s, s.tableId, s.itemA.id, 1); // Roti Canai, RM2.00
+
+    const closeA = await fetch(`${base}/api/shift/close`, {
+      method: 'POST', headers: s.adminAuth, body: JSON.stringify({ counted: 0 }),
+    });
+    assert.equal(closeA.status, 200);
+
+    const repA = await report(base, s, shiftA, true);
+    assert.equal(repA.carried_forward.count, 1);
+    assert.equal(repA.carried_forward.cents, 200);
+    assert.equal(repA.order_count, 0);
+    assert.equal(repA.gross_cents, 0);
+    assert.equal(repA.net_sales_cents, 0);
+    assert.equal(repA.gross_cents - repA.discounts_cents, 0);
+
+    const openedB = await openShift(base, s, 0);
+    const shiftB = openedB.body.id;
+    const payB = await pay(base, s, order.id, { method: 'Cash' });
+    assert.equal(payB.status, 200);
+    assert.equal(payB.body.settled, true);
+
+    // Shift A's own Z report must not move, even though "its" order has now
+    // settled in a later shift.
+    const repAafter = await report(base, s, shiftA, true);
+    assert.deepEqual(repAafter, repA);
+
+    const repB = await report(base, s, shiftB);
+    assert.equal(repB.order_count, 1);
+    assert.equal(repB.gross_cents, 200);
+    const paymentTotalB = repB.payment_mix.reduce((sum, m) => sum + m.cents, 0);
+    assert.equal(repB.gross_cents - repB.discounts_cents, paymentTotalB);
+    assert.equal(repB.cash.cash_sales_cents, paymentTotalB);
+  });
+});
+
 test('month-boundary: 23:30 KL on the last day of a month stays in that month; 00:30 KL on the first lands in the next', async () => {
   await withDb(async db => {
     // 2024-01-31 23:30 Asia/Kuala_Lumpur (UTC+8) == 2024-01-31 15:30 UTC.

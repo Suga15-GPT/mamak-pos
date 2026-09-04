@@ -404,6 +404,23 @@
       </div>
     </div>
 
+    <div id="refund-section" style="display:none;margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--light-gray)">
+      <button class="btn small outline" style="width:100%;color:var(--red)" data-action="open-refund-form">Refund</button>
+      <div id="refund-form" style="display:none;margin-top:12px">
+        <select id="refund-payment" style="color:var(--charcoal);width:100%;margin-bottom:8px"></select>
+        <input type="number" id="refund-amount" min="0" step="0.01" class="remark-input" placeholder="Amount to refund (RM)" style="color:var(--charcoal);margin-bottom:8px">
+        <input type="text" id="refund-reason" class="remark-input" placeholder="Reason (required)" style="color:var(--charcoal);margin-bottom:8px">
+        <div id="refund-pin-row" style="display:none;margin-bottom:8px">
+          <input type="text" id="refund-admin-name" class="remark-input" placeholder="Admin name" style="color:var(--charcoal);margin-bottom:8px">
+          <input type="password" id="refund-admin-pin" inputmode="numeric" class="remark-input" placeholder="Admin PIN" style="color:var(--charcoal)">
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn small" style="color:var(--red)" data-action="apply-refund">Issue refund</button>
+          <button class="btn small outline" data-action="close-refund-form">Cancel</button>
+        </div>
+      </div>
+    </div>
+
     <div id="pay-cash-row" style="display:none;margin-bottom:16px">
       <label for="cash-received-input" style="font-size:12px;color:var(--warm-gray);text-transform:uppercase;letter-spacing:.08em;font-weight:700;display:block;margin-bottom:6px">Cash received (RM) — for the full remaining balance</label>
       <input type="number" id="cash-received-input" min="0" step="0.05" class="remark-input" style="color:var(--charcoal)">

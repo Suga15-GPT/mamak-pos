@@ -185,12 +185,16 @@ async function buildZReport(shiftId, width, data) {
   p.row('Discounts', formatRM(data.discounts_cents));
   p.row('Comps', formatRM(data.comps_cents));
   p.row('Voids', `${data.voids_count} / ${formatRM(data.voids_cents)}`);
+  p.row('Refunds', formatRM(data.refunds_cents));
   p.row('Net sales', formatRM(data.net_sales_cents));
   p.row('Service charge', formatRM(data.service_charge_cents));
   p.row('SST', formatRM(data.tax_cents));
   p.row('Rounding', formatRM(data.rounding_cents));
+  p.row('Carried fwd', `${data.carried_forward.count} / ${formatRM(data.carried_forward.cents)}`);
   p.line('-');
   data.payment_mix.forEach(m => p.row(m.method, formatRM(m.cents)));
+  p.line('-');
+  data.refund_mix.forEach(m => p.row(`Refund: ${m.method}`, formatRM(m.cents)));
   p.line('-');
   p.row('Orders', String(data.order_count));
   p.row('Avg check', formatRM(data.avg_check_cents));
@@ -206,6 +210,8 @@ async function buildZReport(shiftId, width, data) {
   p.line('-');
   p.bold(true).text('Voids & discounts by staff\n').bold(false);
   data.staff_voids.forEach(v => p.row(v.staff, `${v.count} / ${formatRM(v.cents)}`));
+  p.bold(true).text('Refunds by staff\n').bold(false);
+  data.staff_refunds.forEach(v => p.row(v.staff, `${v.count} / ${formatRM(v.cents)}`));
   p.line('=');
   p.text('\n\n');
   p.cut();

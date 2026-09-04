@@ -1,8 +1,8 @@
 const { test, expect } = require('@playwright/test');
 
-// Six journeys, per docs/prompts/_CONVENTIONS.md's Testing section. Five are
-// implemented; "void a line" is still marked pending (a pre-existing gap from
-// phase 03, not touched by phase 09).
+// Six journeys, per docs/prompts/_CONVENTIONS.md's Testing section. All six are
+// implemented — "void a line" (phase 12) was the last holdout, skipped since
+// phase 03 despite the functionality existing for six phases.
 
 // Phase 11: sessions are an httpOnly cookie, not a bearer token — Playwright's
 // `request` fixture keeps its own cookie jar across calls made through it (like
@@ -118,8 +118,42 @@ test('split bill', async ({ page, request }) => {
   await expect(page.getByRole('button', { name: 'Mark Paid' })).toBeHidden();
 });
 
-test('void a line', async () => {
-  test.skip(true, 'Per-line void with reason lands in phase 03 — see docs/prompts/phase-03-order-integrity.md');
+test('void a line', async ({ page }) => {
+  // Void doesn't need an open shift, and — unlike the other journeys — every
+  // assertion here can be made through the UI alone, so this journey makes no
+  // `request`-fixture calls at all: each one is its own `POST /api/login`
+  // against the shared 10-per-10-minute-per-IP rate limit the whole suite
+  // spends from (`src/routes/auth.js`), and this file is already close to it.
+
+  // voidLine() prompts for a reason (pos.js) — accept it once, up front.
+  page.on('dialog', dialog => dialog.accept('customer changed their mind'));
+
+  await page.goto('/');
+  await page.locator('#lname').fill('Admin');
+  await page.locator('#lpin').fill('1234');
+  await page.getByRole('button', { name: 'Log In' }).click();
+  await expect(page.locator('#uname')).toHaveText(/Admin/);
+
+  // Two lines, not one — voiding the *only* line on an unpaid order drops its
+  // total to zero, which happens to equal what's "already paid" (nothing) and
+  // auto-settles it (phase 05b's settleIfMatchesPaid) — at that point it drops
+  // out of GET /api/orders' open-orders list entirely, which is a real
+  // behaviour but not what this journey is testing. A second line keeps the
+  // order open through the void.
+  await page.getByRole('button', { name: 'T4', exact: true }).click();
+  await page.getByRole('button', { name: 'Roti', exact: true }).click();
+  await page.getByRole('button', { name: /Roti Canai/ }).click();
+  await page.getByRole('button', { name: 'Skip' }).click();
+  await page.getByRole('button', { name: /Roti Telur/ }).click();
+  await page.getByRole('button', { name: 'Skip' }).click();
+  await page.getByRole('button', { name: 'Send to Kitchen' }).click();
+  await expect(page.locator('#cart-lines')).toContainText('sent');
+
+  const canaiLine = page.locator('.cart-line', { hasText: 'Roti Canai' });
+  await canaiLine.getByRole('button', { name: 'Void' }).click();
+  await expect(canaiLine).toContainText('VOID');
+  await expect(canaiLine).toContainText('customer changed their mind');
+  await expect(page.locator('.cart-line', { hasText: 'Roti Telur' })).not.toContainText('VOID');
 });
 
 test('offline order reconciles', async ({ page, context, request }) => {
