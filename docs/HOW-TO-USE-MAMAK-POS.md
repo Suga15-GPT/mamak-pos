@@ -6,7 +6,15 @@ about computers. Every step tells you exactly what to tap.
 Words you will see on the screen are written **like this**.
 
 > **The one rule to remember:** the screen never sends food to the kitchen by
-> itself. Food is only cooked after somebody taps **Send to kitchen**.
+> itself. Food is only cooked after somebody taps **Send to kitchen** — and
+> when a customer orders from their own phone, only after *they* tap
+> **Confirm order**.
+
+> **There is also a Help button inside the POS.** Tap **🛟 Help** in the menu
+> down the side (or along the bottom on a phone). It has short versions of
+> everything below, a search box, and little animations for the things people
+> get stuck on. This document is the long version — print it and leave it by
+> the till.
 
 ---
 
@@ -27,6 +35,7 @@ Words you will see on the screen are written **like this**.
 13. [Takeaway](#13-takeaway)
 14. [Moving a table](#14-moving-a-table)
 15. [Customers ordering with the QR code](#15-customers-ordering-with-the-qr-code)
+15b. [Customers ordering by speaking](#15b-customers-ordering-by-speaking)
 16. [Pausing QR ordering](#16-pausing-qr-ordering)
 17. [Adding and editing the menu](#17-adding-and-editing-the-menu)
 18. [Food options](#18-food-options)
@@ -37,7 +46,8 @@ Words you will see on the screen are written **like this**.
 23. [Closing the shift](#23-closing-the-shift)
 24. [The Sales screen](#24-the-sales-screen)
 25. [When something goes wrong](#25-when-something-goes-wrong)
-26. [Quick start — staff](#quick-start--staff)
+26. [Help inside the POS](#26-help-inside-the-pos)
+27. [Quick start — staff](#quick-start--staff)
 
 ---
 
@@ -333,6 +343,53 @@ say why — the customer sees it, and the item is taken off their bill.
 
 ---
 
+## 15b. Customers ordering by speaking
+
+Where the owner has switched it on, the page a customer sees after scanning
+leads with a big microphone: **🎙 Speak to Order**.
+
+They tap it and talk the way they would talk to you:
+
+> *"Roti canai dua, teh tarik satu kurang manis."*
+
+English, Bahasa Malaysia, or both mixed together — it does not need proper
+grammar.
+
+**What the customer sees next**
+
+The POS shows them what it understood:
+
+```
+HERE'S WHAT I GOT
+
+2× Roti Canai                          RM 4.00
+1× Teh Tarik                           RM 2.80
+   kurang manis
+
+Total                                  RM 6.80
+```
+
+They can change the numbers, remove a line, add more from the menu, or say a
+correction out loud — *"make the teh tarik two"*, *"cancel the roti"*. Nothing
+reaches you until they tap **Confirm order**.
+
+**What you need to know**
+
+- It arrives as an ordinary **QR** round on the kitchen screen. Same tickets,
+  same rounds, same bill. There is nothing new to learn.
+- **The prices are always this restaurant's prices.** The computer is never
+  allowed to invent one — it can only say *which dish*, and the till looks up
+  what that dish costs.
+- If something is sold out, it is refused and the customer is told, exactly as
+  if they had tapped it.
+- If a dish needs an answer — *Kuah?* — the customer is asked before they can
+  confirm.
+- If it mishears, they will see it on that preview and fix it. If it keeps
+  mishearing, just take the order yourself. It is an extra way to order, never
+  the only one.
+
+---
+
 ## 16. Pausing QR ordering
 
 Boss only. If the kitchen is overwhelmed:
@@ -562,6 +619,26 @@ Meanwhile, just take the order for them.
 
 ---
 
+## 26. Help inside the POS
+
+Tap **🛟 Help**. It is the last item in the menu down the left (or along the
+bottom on a phone), and everyone can see it.
+
+- **Search** — type any word. "sold out", "add more", "printer", "split".
+- **Topics** — short cards, each one about a thing that goes wrong rather than
+  a screen that exists. Each says roughly how long it takes to read.
+- **Little animations** — six of the topics show you the taps: taking an
+  order, adding more food later, the kitchen screen, taking payment, marking
+  something sold out, and how Speak to Order works. They play by themselves,
+  and you can pause or step through them.
+- **Common questions** — the nine things people actually ask, in plain
+  language, each linking to the full topic.
+
+Some screens also have a small **?** link — on Kitchen, on the menu editor, on
+the QR settings — that opens the matching topic directly.
+
+---
+
 # QUICK START — STAFF
 
 *Print this page and stick it by the till.*
@@ -614,6 +691,16 @@ today** → it comes back by itself tomorrow
 
 Pay off every table → 🕐 Shift → **Close Shift** → count the drawer →
 **Confirm Close**
+
+### Customer speaks their order
+
+They tap 🎙 Speak to Order on their phone, talk, check what came back, tap
+**Confirm order**. It lands on your kitchen screen as a QR round. Nothing
+reaches you before they confirm.
+
+### Stuck
+
+Tap **🛟 Help** and type what you are trying to do.
 
 ### Internet down
 
