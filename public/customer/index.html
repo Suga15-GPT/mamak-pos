@@ -11,24 +11,29 @@
 <style>
   body { padding-bottom:96px; }
 
-  /* Sticky, one-row, horizontally scrolling category tabs — same rules as the
-     staff till (master spec §37): no wrapping, ≥44px targets, active tab
-     scrolled into view. */
+  /* Sticky, one-row, horizontally scrolling category chips — same rules as the
+     staff till: no wrapping, >=44px targets, active chip scrolled into view. */
   #menu-cats {
-    position:sticky; top:0; z-index:30; background:var(--cream);
-    padding:12px 0; margin:0 -16px 4px; padding-left:16px; padding-right:16px;
+    position:sticky; top:0; z-index:30; background:var(--bg);
+    padding:12px 16px; margin:0 -16px 4px;
   }
 
-  .menu-items { display:flex; flex-direction:column; gap:10px; margin-top:6px; }
+  /* A phone reads a menu as a list, not a grid: one row per dish, price and
+     add button always in the same place down the right. */
+  .menu-items { display:flex; flex-direction:column; gap:8px; margin-top:6px; }
   .item-btn {
     flex-direction:row; align-items:center; justify-content:space-between;
-    padding:16px; min-height:64px; gap:12px;
+    padding:14px 16px; min-height:66px; gap:12px;
   }
   .item-btn .info { flex:1; min-width:0; }
-  .item-btn .nm { font-weight:700; font-size:16px; line-height:1.3; }
-  .item-btn .customisable { font-size:12px; color:var(--terra-deep); font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
-  .item-btn .pr { font-family:'Playfair Display',serif; font-size:19px; font-weight:700; color:var(--terra-deep); margin:0; flex-shrink:0; }
-  .item-btn .add { font-size:22px; font-weight:800; color:var(--terra-deep); flex-shrink:0; }
+  .item-btn .nm { font-weight:700; font-size:15.5px; line-height:1.3; }
+  .item-btn .customisable { font-size:11px; color:var(--brand-ink); font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
+  .item-btn .pr { font-size:17px; font-weight:800; color:var(--text); margin:0; flex-shrink:0; letter-spacing:-.02em; }
+  .item-btn .add {
+    width:34px; height:34px; border-radius:11px; background:var(--brand); color:#fff;
+    display:flex; align-items:center; justify-content:center;
+    font-size:19px; font-weight:700; flex-shrink:0; line-height:1;
+  }
 </style>
 </head>
 <body>
@@ -53,6 +58,20 @@
   </div>
   <div class="c-wrap">
     <div id="my-orders"></div>
+
+    <!-- Speak to Order leads; the menu is right underneath, never hidden. -->
+    <div id="voice-hero" class="voice-hero" hidden>
+      <button class="voice-mic" data-action="voice-start" aria-label="Speak your order">
+        <span class="ico" aria-hidden="true">🎙</span>
+      </button>
+      <div class="voice-hero-words">
+        <h2 data-i18n="voice.title">Speak to Order</h2>
+        <p id="voice-hero-hint"><span data-i18n="voice.hint">Tap and say what you want, like you would to a waiter.</span>
+          <span class="eg">&ldquo;Roti canai dua, teh tarik satu kurang manis.&rdquo;</span></p>
+      </div>
+      <button class="btn outline" data-action="browse-menu" data-i18n="voice.browse">Browse the menu instead</button>
+    </div>
+
     <div id="menu-cats" class="cat-tabs" aria-label="Menu categories"></div>
     <div id="menu-items" class="menu-items"></div>
   </div>
@@ -91,7 +110,10 @@
     <div id="success-steps" class="c-steps"></div>
     <div id="success-status" class="meta" style="margin:8px 0 16px"></div>
     <div id="success-items" class="c-order-summary"></div>
-    <button class="btn primary-lg" style="max-width:320px" data-action="order-more" data-i18n="customer.orderMore">Order More</button>
+    <div class="success-actions">
+      <button class="btn primary-lg" id="success-voice-btn" data-action="voice-start" data-i18n="voice.orderMoreVoice" hidden>🎙 Order more by voice</button>
+      <button class="btn primary-lg outline" data-action="order-more" data-i18n="customer.orderMore">Browse the menu</button>
+    </div>
   </div>
 </div>
 
@@ -120,6 +142,62 @@
       <button class="btn" data-action="skip-remark">Add</button>
       <button class="btn outline" data-action="confirm-remark">Add with remark</button>
     </div>
+  </div>
+</div>
+
+<!-- LISTENING / REVIEW SHEET
+     One dialog, four states. Nothing here reaches the kitchen: the confirm
+     button posts to the same public endpoint the Browse-menu basket uses. -->
+<div id="voice-modal" class="modal-bg">
+  <div class="modal">
+
+    <div class="voice-state" id="vs-listening" hidden>
+      <h3 data-i18n="voice.listening">Listening…</h3>
+      <p class="meta" data-i18n="voice.listeningHint">Say your whole order. Tap Done when you finish.</p>
+      <div class="voice-meter" id="voice-meter" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <div class="meta" id="voice-timer" aria-live="polite"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" data-action="voice-cancel" data-i18n="voice.cancel">Cancel</button>
+        <button class="btn" data-action="voice-stop" data-i18n="voice.done">Done</button>
+      </div>
+    </div>
+
+    <div class="voice-state" id="vs-working" hidden>
+      <h3 data-i18n="voice.working">Getting that down…</h3>
+      <p class="meta">One moment.</p>
+      <div class="voice-working" aria-hidden="true"><span class="spin"></span></div>
+    </div>
+
+    <div class="voice-state" id="vs-error" hidden>
+      <h3 id="vs-error-title">Sorry, I could not hear that</h3>
+      <p class="meta" id="vs-error-msg"></p>
+      <div class="modal-actions">
+        <button class="btn ghost" data-action="voice-browse">Browse menu</button>
+        <button class="btn" data-action="voice-start">🎙 Try again</button>
+      </div>
+    </div>
+
+    <div class="voice-state" id="vs-review" hidden>
+      <h3 data-i18n="voice.review">Here&rsquo;s what I got</h3>
+      <p class="meta" id="vs-heard"></p>
+      <div class="banner warn" id="vs-clarify" hidden></div>
+      <div class="banner danger" id="vs-rejected" hidden></div>
+      <div id="vs-lines"></div>
+      <div class="totals">
+        <div class="row grand"><span>Total</span><span id="vs-total"></span></div>
+      </div>
+      <p class="meta" style="margin-top:6px" data-i18n="voice.taxNote">Service charge and SST, if the restaurant charges them, are added to your bill.</p>
+      <div class="voice-actions">
+        <button class="btn outline" data-action="voice-again" data-i18n="voice.again">🎙 Change with voice</button>
+        <button class="btn outline" data-action="voice-add-more" data-i18n="voice.addMore">＋ Add more from the menu</button>
+      </div>
+      <button class="btn primary-lg" id="vs-confirm" data-action="voice-confirm" data-i18n="voice.confirm" style="margin-top:10px">Confirm order</button>
+      <button class="btn ghost block" style="margin-top:8px" data-action="voice-close" data-i18n="voice.cancel">Cancel</button>
+    </div>
+
   </div>
 </div>
 

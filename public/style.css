@@ -176,6 +176,10 @@ input, select, textarea {
   max-width:100%;
 }
 img, svg, canvas { max-width:100%; }
+/* A component that sets its own display would otherwise out-specify the user
+   agent's [hidden] rule and render an empty box — which is exactly what an
+   empty warning banner did on the voice preview. */
+[hidden] { display:none !important; }
 a { color:var(--brand-ink); }
 
 :focus-visible { outline:2px solid var(--brand); outline-offset:2px; border-radius:4px; }
@@ -1146,7 +1150,6 @@ body.dark .c-step.now { color:#17120e; }
 #pos-mobile-bar .mb-count { font-size:12px; color:var(--text-2); font-weight:600; }
 #pos-mobile-bar .mb-total { font-size:19px; font-weight:800; letter-spacing:-.03em; font-variant-numeric:tabular-nums; }
 #pos-mobile-bar .btn { flex:0 0 auto; min-height:48px; padding:0 20px; }
-#pos-mobile-bar[hidden] { display:none !important; }
 @media (min-width:981px) { #pos-mobile-bar { display:none !important; } }
 /* Give the bar its own room rather than letting it sit on top of the bill. */
 @media (max-width:980px) {
@@ -1154,3 +1157,61 @@ body.dark .c-step.now { color:#17120e; }
     padding-bottom:calc(var(--bottomnav-h) + 96px + env(safe-area-inset-bottom));
   }
 }
+
+/* ========================= SPEAK TO ORDER ================================
+   The customer's first choice, not a feature hidden behind a menu. */
+.voice-hero {
+  display:flex; flex-direction:column; align-items:center; text-align:center; gap:14px;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg);
+  padding:26px 20px 20px; margin-bottom:18px; box-shadow:var(--shadow-sm);
+}
+.voice-hero-words h2 { font-size:22px; font-weight:800; letter-spacing:-.03em; margin-bottom:6px; }
+.voice-hero-words p { font-size:14px; color:var(--text-2); line-height:1.55; }
+.voice-hero-words .eg { display:block; margin-top:6px; color:var(--brand-ink); font-weight:600; }
+.voice-hero .btn { width:100%; max-width:280px; }
+
+.voice-mic {
+  width:88px; height:88px; min-width:88px; border-radius:50%;
+  background:var(--brand); color:#fff; border:none;
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:0 8px 24px rgba(184,81,26,.28);
+  transition:transform .1s var(--ease), box-shadow .2s var(--ease);
+  animation:pulseRing 2.6s var(--ease) infinite;
+}
+.voice-mic .ico { font-size:36px; line-height:1; }
+.voice-mic:active { transform:scale(.95); }
+body.dark .voice-mic { color:#17120e; }
+
+.voice-state h3 { text-align:center; }
+.voice-state > .meta { text-align:center; }
+
+/* A real level meter driven by the microphone, not a decorative loop: in a room
+   this loud, "is it hearing me?" is the only question worth answering. */
+.voice-meter {
+  display:flex; align-items:flex-end; justify-content:center; gap:5px;
+  height:76px; margin:20px 0 12px;
+}
+.voice-meter span {
+  width:7px; height:8px; border-radius:4px; background:var(--brand);
+  transition:height .09s linear; opacity:.85;
+}
+#voice-timer { text-align:center; min-height:20px; }
+.voice-working { display:flex; justify-content:center; padding:26px 0; color:var(--brand); }
+.voice-working .spin { width:30px; height:30px; border-width:3px; }
+
+.v-line { padding:12px 0; border-bottom:1px solid var(--border); }
+.v-line:last-of-type { border-bottom:none; }
+.v-top { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+.v-name { font-weight:700; font-size:15.5px; letter-spacing:-.015em; }
+.v-price { font-weight:700; flex-shrink:0; font-variant-numeric:tabular-nums; }
+.v-sub { font-size:12.5px; color:var(--text-2); margin-top:3px; }
+.v-actions { display:flex; align-items:center; gap:6px; margin-top:9px; }
+.v-actions .qty button { width:40px; height:40px; min-width:40px; min-height:40px; }
+.v-actions .v-del {
+  margin-left:auto; color:var(--danger); background:var(--danger-tint);
+  border-radius:10px; padding:0 14px; min-height:40px; font-weight:700; font-size:13.5px;
+}
+.v-needs { display:inline-flex; align-items:center; gap:6px; margin-top:8px; }
+.voice-actions { display:flex; gap:9px; margin-top:16px; flex-wrap:wrap; }
+.voice-actions .btn { flex:1 1 160px; }
+.success-actions { display:flex; flex-direction:column; gap:10px; width:100%; max-width:340px; margin-top:22px; }

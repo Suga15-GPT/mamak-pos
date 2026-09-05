@@ -8,6 +8,7 @@
     "test": "node --test --test-force-exit test/unit/*.test.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
     "express": "^4.19.2",
     "pg": "^8.12.0",
     "qrcode": "^1.5.3"
