@@ -16,6 +16,7 @@ const translations = {
   'nav.dashboard': { en: 'Sales', ms: 'Jualan' },
   'nav.shift': { en: 'Shift', ms: 'Syif' },
   'nav.admin': { en: 'Admin', ms: 'Admin' },
+  'nav.help': { en: 'Help', ms: 'Bantuan' },
 
   'login.subtitle': { en: 'Staff & Admin Login', ms: 'Log Masuk Staf & Admin' },
   'login.name': { en: 'Name', ms: 'Nama' },

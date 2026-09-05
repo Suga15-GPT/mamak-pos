@@ -146,7 +146,7 @@
           <h2>🍳 <span data-i18n="kitchen.heading">Kitchen</span></h2>
           <div class="sub" id="kitchen-summary"></div>
         </div>
-        <div class="actions"><button class="btn small ghost" data-action="help-topic" data-topic="kitchen">? How Kitchen works</button></div>
+        <div class="actions"><button class="btn small ghost" data-action="help-jump" data-topic="kitchen">? How Kitchen works</button></div>
       </div>
       <div id="station-tabs" class="station-tabs" aria-label="Preparation stations"></div>
       <div id="kitchen-pending"></div>
@@ -229,6 +229,62 @@
       </div>
     </section>
 
+    <!-- HELP & TRAINING -->
+    <section id="tab-help" class="tab">
+      <div id="help-home">
+        <div class="view-head">
+          <div>
+            <h2>🛟 Help &amp; Training</h2>
+            <div class="sub">Short answers, and a few little animations for the things people get stuck on.</div>
+          </div>
+        </div>
+
+        <div class="search-field help-search-field">
+          <input type="search" id="help-search" placeholder="Search help… try “sold out” or “add more”"
+                 aria-label="Search help topics">
+        </div>
+        <div class="eyebrow" id="help-count" style="margin:14px 0 10px"></div>
+        <div id="help-results" class="help-grid"></div>
+
+        <div id="help-faq-wrap">
+          <h3 class="section-title" style="margin:28px 0 12px">Common questions</h3>
+          <div class="card" id="help-faq"></div>
+        </div>
+
+        <div class="card quiet" style="margin-top:18px">
+          <h3>The full handbook</h3>
+          <p class="meta">Every screen, in order, with examples — written to be printed and left by the till.
+            It lives in the repository at <code>docs/HOW-TO-USE-MAMAK-POS.md</code>.</p>
+        </div>
+      </div>
+
+      <div id="help-article" hidden>
+        <div class="ws-head">
+          <button class="back-btn" data-action="help-back">← All help</button>
+        </div>
+        <div class="card">
+          <h2 class="help-title" id="help-article-title"></h2>
+          <p class="meta" id="help-article-sub" style="margin-bottom:16px"></p>
+
+          <div class="walkthrough" id="help-wt" hidden>
+            <div class="wt-head">
+              <span class="eyebrow" id="wt-title"></span>
+              <div class="wt-controls">
+                <button class="icon-btn" data-action="wt-prev" aria-label="Previous step">‹</button>
+                <button class="btn small ghost" id="wt-play" data-action="wt-play">⏸ Pause</button>
+                <button class="icon-btn" data-action="wt-next" aria-label="Next step">›</button>
+              </div>
+            </div>
+            <div class="wt-stage" id="wt-stage"></div>
+            <div class="wt-caption" id="wt-caption"></div>
+            <div class="wt-dots" id="wt-dots"></div>
+          </div>
+
+          <div id="help-article-body"></div>
+        </div>
+      </div>
+    </section>
+
     <!-- ADMIN -->
     <section id="tab-admin" class="tab">
       <div id="admin-tabs" class="admin-tabs" aria-label="Admin sections">
@@ -248,6 +304,7 @@
           <div class="card-head">
             <h3>Menu</h3>
             <div class="row-actions">
+              <button class="btn small ghost" data-action="help-jump" data-topic="menu-admin">? Adding menu items</button>
               <button class="btn small" data-action="new-item">➕ Add item</button>
               <button class="btn small outline" data-action="new-category">➕ Category</button>
             </div>
@@ -297,6 +354,7 @@
         <div class="card">
           <div class="card-head">
             <h3>Customer QR ordering</h3>
+            <button class="btn small ghost" data-action="help-jump" data-topic="qr">? How customers order</button>
           </div>
           <div id="qr-health"></div>
           <div class="admin-row">

@@ -4,6 +4,7 @@ import { refreshKitchen } from './kitchen.js';
 import { refreshDashboard } from './dashboard.js';
 import { refreshAdmin } from './admin.js';
 import { refreshShift } from './shift.js';
+import { refreshHelp } from './help.js';
 import { t } from './i18n.js';
 
 /* Navigation is simplified by role (master spec §40): a cook sees the kitchen
@@ -16,6 +17,9 @@ const TAB_DEFS = [
   { id: 'dashboard', key: 'nav.dashboard', icon: '💰', roles: ['admin', 'staff'] },
   { id: 'shift',     key: 'nav.shift',     icon: '🕐', roles: ['admin', 'staff'] },
   { id: 'admin',     key: 'nav.admin',     icon: '⚙',  roles: ['admin'] },
+  // Help is last on purpose — always in the same place, never in the way of the
+  // four things somebody taps a hundred times a night.
+  { id: 'help',      key: 'nav.help',      icon: '🛟', roles: ['admin', 'staff', 'kitchen'] },
 ];
 
 let activeTab = null;
@@ -79,6 +83,9 @@ export function switchTab(id) {
   if (id === 'dashboard') refreshDashboard();
   if (id === 'shift') refreshShift();
   if (id === 'admin') refreshAdmin();
+  if (id === 'help') refreshHelp();
+  // Help stops its walkthrough animation when you leave it.
+  document.dispatchEvent(new CustomEvent('tab-changed', { detail: id }));
 }
 
 /* ===== LIVE REFRESH ===== */
