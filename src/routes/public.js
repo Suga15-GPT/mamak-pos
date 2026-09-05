@@ -8,6 +8,7 @@ const { buildOrderItems, insertOrder, appendSend, ORDERABLE_SQL } = require('../
 const { recomputeOrderBill, hasPayments } = require('../services/billing');
 const { publish } = require('../lib/events');
 const printing = require('../services/printing');
+const voice = require('../services/voice');
 
 const router = express.Router();
 
@@ -65,6 +66,9 @@ router.get('/api/t/:token', publicH(async (req, res) => {
     ordering,
     paused_message: ordering.enabled ? null : PAUSED_MESSAGE,
     has_open_order: !!open.rows[0],
+    // A half-configured deployment shows the menu and no microphone, rather
+    // than a Speak to Order button that fails when somebody taps it.
+    voice: { enabled: voice.isEnabled() },
   });
 }));
 

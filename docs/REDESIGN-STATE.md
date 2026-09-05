@@ -1,122 +1,167 @@
 # Redesign state
 
-Short, living record of the master redesign programme. Read this plus your
-targeted files instead of rereading the repository.
+Short, living record of the redesign programme. Read this plus your targeted
+files instead of rereading the repository.
 
 ## Current phase
 
-Complete. All seven phases (A–G) are implemented, tested and integrated.
+Complete. Two programmes have now run on this codebase:
 
-## Completed phases
+- **A–G** (earlier): kitchen rounds, QR order-more, admin CRUD, the first design
+  pass, the dashboard, recovery paths, tests. See "Architecture decisions" below
+  — none of it was relitigated.
+- **V2** (this programme): the Warm Minimal design system and application shell,
+  the staff POS, kitchen/tables/admin polish, the dashboard, Speak to Order, and
+  the in-app Help centre.
+
+## V2 phases
 
 | Phase | What it delivered |
 |---|---|
-| A | Kitchen rounds, station tickets, derived order status, per-round printing |
-| B | QR order-more, QR pause/approval, QR URL health, preparation stations, takeaway |
-| C | Menu/category/food-option CRUD with safe deletes, table management, Admin sections |
-| D | Mamak Modern design system, POS/kitchen/mobile redesign, overflow fixes |
-| E | Dashboard aggregation endpoint, KPI cards, inline SVG charts |
-| F | System health, print retry, off-device backup, move order |
-| G | Regression/CRUD/print tests, responsive matrix, staff handbook |
+| 0 | Current-state audit; baseline 95/95 unit, 13/13 Playwright |
+| 1 | One semantic token layer, a rebuilt button system, left rail + bottom bar |
+| 2 | Staff POS: monogram menu cards, three-row bill lines, sent/new split, phone order bar |
+| 3 | KDS columns and tickets, modifier groups as question-and-answers, floor/kitchen summaries |
+| 4 | KPI hero, busiest-hour marking, tidier chart grid |
+| 5 | Speak to Order: transcription → interpretation → validation → preview → confirm |
+| 6 | Help centre: 18 topics, 6 mini walkthroughs, 9 FAQs, contextual links |
+| 7–8 | Responsive/dark sweep, 5 viewports × every screen, docs, final review |
 
-## Architecture decisions (do not relitigate)
+## Design system (do not relitigate)
 
-### Dining order vs kitchen round
-- A **dining order** (`orders`) is the customer's bill. One per table (dine-in),
-  or free-standing (takeaway).
-- A **kitchen round** (`order_sends`) is one batch sent to preparation.
-  `order_sends.seq_no` is 1-based per order. Every `order_items` row carries
-  `send_id`.
-- Preparation lifecycle lives on a **station ticket**
-  (`order_send_tickets`, one row per `(send_id, station_code)`):
-  `sent → preparing → ready → served`. Round 2 never inherits round 1's state.
-- `orders.status` is kept, but is a **derived rollup** of the order's station
-  tickets (operational priority: any `sent` → `sent`, else any `preparing` →
-  `preparing`, else any `ready` → `ready`, else `served`).
-  `paid`/`cancelled`/`refunded` stay terminal and are never overwritten by
-  derivation. Keeping the column preserved payments, reports, Z reports and the
-  one-open-order-per-table index unchanged — the reason the blast radius of this
-  change stayed small.
-- Void permission is decided by **the line's own ticket**, not the order: a
-  still-`sent` add-on is staff-voidable even when round 1 was served an hour ago.
+- **Two token layers.** Semantic (`--brand`, `--surface`, `--text`, `--ok`,
+  `--danger`, `--info`, `--warn`, `--on-accent`…) is what new code uses. The old
+  names (`--terra`, `--sand`, `--charcoal`, `--cream`…) are kept as **aliases**
+  of the semantic layer — several hundred call sites reference them, and
+  renaming them would be a large diff that changes nothing a user can see.
+  There is exactly one place a colour is decided.
+- **`--on-accent`** is text sitting on a filled brand or status colour: white in
+  light mode, near-black in dark, where every accent is deliberately lighter.
+  One token instead of a `body.dark` correction per component. Never write
+  `color:#fff` on a token-filled background.
+- **One typeface** (DM Sans), tabular numerals on every money figure. The
+  display serif is gone: it read as decoration on a screen people use at speed.
+- **Buttons** are one shape, six intents (default/outline/ghost/sage/info/
+  danger/charcoal), three sizes (`small`, default, `primary-lg`), one press
+  behaviour. `.btn` sets `--btn-bg`/`--btn-fg`/`--btn-bd`; variants re-point
+  those rather than restating the rule.
+- **Elevation** is a 1px border plus a barely-there shadow. Hover elevation is
+  for interactive surfaces only.
+- **`[hidden] { display:none !important; }`** is set globally. A component that
+  sets its own `display` otherwise out-specifies the user agent's rule and
+  renders an empty box.
+- **Never animate `transform` on a container of `position:fixed` children.** A
+  finished `fill-mode:both` animation leaves the identity matrix behind, which
+  makes the element a containing block. `.tab.active` animates opacity for
+  exactly this reason.
 
-### Preparation stations
-- `prep_stations` (code, name, sort, active, `printer_role`). Seeded: `kitchen`
-  → the `kitchen` printer role, `drinks` → the `bar` role, falling back to the
-  kitchen printer when no `bar` printer exists.
-- `items.station_code` assigns a menu item to a station; default `kitchen`.
-- `order_items.station_code` is a **snapshot** taken at order time (same rule as
-  name/price).
-- One round can span stations; each station gets its own ticket and its own
-  chit. The customer bill stays a single order.
+## Application shell
 
-### Order types
-- `orders.order_type` is `dine_in` | `takeaway`. `orders.table_id` is nullable;
-  a takeaway order has no table, and a CHECK ties the two together. NULLs are
-  distinct in the one-open-order-per-table index, so any number of takeaway
-  orders can be open at once.
+- **≥1180px**: left rail, 216px, icon + word.
+- **768–1179px**: same rail, 84px, icon over word.
+- **<768px**: bottom bar, same buttons, same handler.
+- `nav.js` paints both from one list; the rail additionally carries the wordmark
+  and who is logged in. The header is a page title, a connection dot and one
+  account disclosure — nothing else.
+- Nav order: POS, Kitchen, Sales, Shift, Admin, Help. Role-filtered. Help is
+  last on purpose: always in the same place, never in the way.
 
-### QR ordering
-- `POST /api/public/orders` appends a new round to the table's open order rather
-  than 409-ing. Table identity comes from `qr_token` only; no staff API is
-  exposed. Rate limits unchanged. Refused once the bill has a payment on it.
-- Settings: `qr_ordering_enabled` (default on), `qr_require_approval`
-  (default off). Pending rounds carry `approval_state='pending'` and produce no
-  station ticket, no display card and no print until accepted. Rejecting voids
-  the lines rather than deleting them.
-- A customer polls `GET /api/public/sends/:ref` with the opaque `public_ref`
-  returned at submit time — never an order id.
-- QR links are derived per request (`src/lib/baseurl.js`), and Admin is told
-  outright when they would resolve to localhost.
+## Voice architecture (do not relitigate)
 
-### UX decisions
-- Every state is words + icon, never colour alone.
-- One next action per kitchen ticket; no rows of disabled buttons.
-- Tapping an item adds it; remarks are a per-line button. Configured food
-  options still ask, because the kitchen depends on them.
-- Navigation is role-based and painted into two shells (top tabs on a tablet, a
-  bottom bar on a phone). Nothing frequent lives in a hamburger.
-- Mobile overflow is fixed at source (`min-width:0` on grid/flex children, 16px
-  inputs, scroll containers around wide content), not with zoom hacks.
-- `window.prompt()` is replaced by a styled `ask()` dialog — some embedded
-  browsers suppress prompts outright, which would have made "void a line"
-  impossible on those devices.
+```
+audio -> transcription -> menu-aware interpretation -> structured proposal
+      -> deterministic validation -> priced preview -> customer confirms
+      -> POST /api/public/orders (the existing path)
+```
 
-### Money / integrity
-Unchanged and preserved: integer cents, parameterised SQL, `esc()` on render,
-snapshot rule, forward-only migrations, idempotency keys, payment guards,
-shortfall guards, audit log, KL-midnight sold-out reset, role permissions.
+- **The model can only name IDs.** `PROPOSAL_SCHEMA` in `src/services/voice.js`
+  has no price, total, tax or discount field. There is nowhere for it to put
+  money. Every figure comes from `items.price_cents` /
+  `modifier_options.price_cents`.
+- **Interpretation is not a mutation.** `POST /api/public/voice/interpret`
+  writes nothing. A customer who abandons the preview leaves no order, no round,
+  no ticket, no chit — asserted by both a unit test and a Playwright journey.
+- **Confirmation reuses the tap path**, so a tampered draft is no more powerful
+  than a tampered basket. Voice add-ons open a new kitchen round through the
+  same `appendSend` every other path uses; there is no voice order data model.
+- **Validation is per line, not all-or-nothing**: an unknown id is dropped and
+  named, a sold-out dish comes back as `{reason:'sold_out', name}` (which is why
+  sold-out items stay in the snapshot the model sees), an option the dish does
+  not offer is dropped and becomes a `needs_choice` question answered in the
+  existing food-options dialog. A line with `needs_choice` blocks Confirm.
+- **Providers** are `providers.transcribe` / `providers.interpret`, swapped by
+  `setProviders()`. Tests inject stubs; `VOICE_MODE=mock` injects a word matcher.
+  Transcription is any OpenAI-compatible `/audio/transcriptions` endpoint;
+  interpretation is Anthropic's Messages API with `output_config.format`.
+- **Cost**: one transcription + one interpretation per utterance. The menu is the
+  cached system prefix and is rendered in a fixed order so it stays cached;
+  `effort: 'low'`; snapshot rebuilt once a minute, not once an order; the
+  snapshot carries no prices.
+- **Off by default** (`VOICE_ORDERING`). Unconfigured, `/api/t/:token` reports
+  `voice.enabled:false` and no microphone appears.
+- `Permissions-Policy` allows `microphone=(self)`. It was denied outright, which
+  would have made `getUserMedia` fail silently.
 
-One deliberate security change: the login limiter now only counts **failed**
-attempts. Counting successes locked out a whole restaurant behind one router IP
-at shift change; a brute-force attacker only ever produces failures.
+## Help centre
+
+- `public/js/help.js` holds the topics, the FAQs and the walkthroughs as data.
+  Topics are role-filtered; search matches any word in a topic's body.
+- A walkthrough is 3–5 captioned frames of a mock screen built from the same
+  tokens as the real UI. The cursor is positioned from the laid-out cell, not
+  from coordinates, so frames survive different text wrapping. Reduced-motion
+  gets the frames without the auto-advance.
+- The markdown handbook (`docs/HOW-TO-USE-MAMAK-POS.md`) stays the long
+  printable reference; the in-app copy is adapted, not duplicated.
+- Contextual `data-action="help-jump"` links exist on Kitchen, the menu editor
+  and the QR settings. Three, not one per screen.
+
+## Architecture decisions carried forward (do not relitigate)
+
+Dining order vs kitchen round, station tickets, derived `orders.status`,
+preparation stations, order types, QR ordering and approval, integer cents,
+parameterised SQL, `esc()` on render, the snapshot rule, forward-only
+migrations, idempotency keys, payment and shortfall guards, the audit log, the
+KL-midnight sold-out reset, role permissions. All unchanged by V2.
 
 ## Migrations added
 
-- `012_rounds_stations_order_types.sql` — stations, rounds, station tickets,
-  order types, print-job round/station/retry columns, QR settings, and a
-  backfill that puts every existing order into round 1 at its current state.
-- `013_admin_crud.sql` — `tables.active`/`sort`, `modifier_groups.sort`,
-  backup-reporting settings rows.
+None in V2. Speak to Order needed no schema change — it produces the same rows
+the tap flow produces.
 
-Both are forward-only, additive, and safe to run while the restaurant is open.
+## Files materially changed in V2
 
-## Known temporary issues
+- `public/style.css` — rewritten as one token system (~1350 lines).
+- `public/index.html` — shell, POS, kitchen, dashboard heads, Help section.
+- `public/js/` — `nav.js` (two shells), `pos.js` (cards, bill lines, phone bar),
+  `kitchen.js`, `dashboard.js`, `admin.js`, `i18n.js`, `main.js`, new `help.js`.
+- `public/customer/` — `index.html`, `customer.js` (one submit path), new
+  `voice.js`.
+- `src/` — new `services/voice.js`, new `routes/voice.js`; `server.js`
+  (microphone policy, scoped body limit), `routes/public.js` (voice flag).
+- `test/` — new `unit/voice.test.js` (17), three new Playwright journeys.
+- `package.json` — one new dependency, `@anthropic-ai/sdk`.
 
-- Off-device backup is **prepared, not configured**: `scripts/backup.sh` will
-  push each dump to `BACKUP_REMOTE_TARGET` (S3-compatible, rsync/SSH, or a
-  mounted path) and records the outcome, but no destination or credential
-  exists in this repository — by design. The owner must set it in `.env`.
-- Stations are `kitchen` and `drinks`, seeded and editable in the database.
-  There is no station-management UI; the schema takes more without surgery.
+## Known limitations
 
-## Next phase
-
-None. Future-ready but deliberately not built: limited quantity counts,
-scheduled menus, Call Staff / Request Bill from QR, table merge, extra stations
-with their own admin UI, loyalty, e-Invoice.
+- **No food photographs.** There is no image column and no upload pipeline;
+  menu cards carry a monogram tile built from the item's own name instead.
+  Adding real images would need a migration, an upload path and a CSP change.
+- **Voice UI chrome is bilingual; voice *errors* are English only.** The
+  transcription and interpretation handle Manglish; the "sorry, I could not hear
+  that" strings do not have BM translations yet.
+- **The menu snapshot is cached for 60s.** A dish marked sold out is refused
+  immediately (validation reads the database), but the model may still propose
+  it for up to a minute — which surfaces as "finished for today", not as a
+  wrong order.
+- **`VOICE_MODE=mock` is a word matcher**, not a model. It cannot do
+  corrections properly and replaces the draft outright.
+- Off-device backup is still prepared, not configured (`BACKUP_REMOTE_TARGET`).
+- Stations are still `kitchen` and `drinks` with no management UI.
+- `npm audit` reports three moderate advisories in express/qs. They predate this
+  programme and were not touched by it.
 
 ## Latest test state
 
-`npm test` 95/95 pass, three consecutive runs. Playwright 13/13 pass
-(8 journeys + 5 responsive viewports). See the final report for pasted output.
+`npm test` 112/112. Playwright 16/16 (11 journeys + 5 responsive viewports).
+A separate scripted sweep checked 5 viewports × every screen × light and dark
+for horizontal overflow, console errors and page errors: clean.

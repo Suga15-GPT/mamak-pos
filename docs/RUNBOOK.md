@@ -181,3 +181,79 @@ green immediately.
 
 After changing `BASE_URL`, reprint the stickers: **Admin → Tables & QR → Print**
 on each table.
+
+---
+
+## Speak to Order: switching it on, and what it costs
+
+Voice ordering is **off** unless `VOICE_ORDERING=1`. While it is off, the QR page
+is exactly what it has always been — a menu you tap — and no microphone button
+appears anywhere. Nothing else in the POS changes.
+
+### What you need
+
+Two vendors, both configured on the server. No key is ever sent to a browser.
+
+```
+VOICE_ORDERING=1
+
+# Speech to text — anything speaking the OpenAI /audio/transcriptions shape:
+# OpenAI, Groq, or a whisper server you run yourself.
+VOICE_STT_URL=https://api.openai.com/v1/audio/transcriptions
+VOICE_STT_MODEL=whisper-1
+VOICE_STT_API_KEY=...
+
+# Interpretation — Anthropic's Messages API.
+ANTHROPIC_API_KEY=...
+VOICE_LLM_MODEL=claude-opus-5
+```
+
+If any of those is missing, `GET /api/t/:token` reports `voice.enabled: false`
+and the page hides the microphone rather than showing a button that fails.
+
+### Trying it without an account
+
+```
+VOICE_ORDERING=1
+VOICE_MODE=mock
+VOICE_MOCK_TRANSCRIPT=roti canai dua, teh tarik satu
+```
+
+Both vendors are replaced by a local word matcher, so the whole flow — the
+permission prompt, the level meter, the preview, the confirmation, the kitchen
+round — can be walked through and demonstrated. It does not listen to the
+microphone; it "hears" `VOICE_MOCK_TRANSCRIPT` and nothing else. **Never set
+this in production.**
+
+### What each spoken order costs
+
+One transcription and one interpretation per utterance. There is no
+conversation, no streaming session, no second opinion.
+
+The interpretation prompt is the restaurant's menu followed by the sentence
+that was just said. The menu is rendered in a fixed order and marked as a cache
+prefix, so after the first order of a busy period it is served from cache
+rather than billed again; the per-order cost is then roughly the sentence plus
+a short JSON answer. The menu snapshot itself is rebuilt from the database once
+a minute, not once an order, and carries no prices — the model has no business
+knowing what things cost.
+
+If the bill still matters more than the accuracy, `VOICE_LLM_MODEL` takes any
+Anthropic model id. A smaller model costs less per order and mishears Manglish
+more often — "teh o ais" for "teh o limau" is the kind of mistake it makes, and
+the customer will see it on the preview and have to correct it. Change it,
+watch a service, and change it back if the corrections get annoying.
+
+### Limits already in place
+
+- Audio is capped at 700 KB and the page stops recording at 25 seconds.
+- Only real audio MIME types are accepted; anything else is a 400.
+- 15 utterances per IP and 25 per table, per ten minutes.
+- Vendor errors never reach the customer — they see "we could not hear that
+  clearly" and the detail goes to the server log.
+
+### Turning it off in a hurry
+
+Unset `VOICE_ORDERING` and restart. To stop **all** customer ordering
+(voice and tapping) without a restart, use Admin → Tables & QR → Accept QR
+orders instead.

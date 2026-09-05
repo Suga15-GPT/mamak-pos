@@ -80,6 +80,19 @@ function ticketHtml(t) {
   </div>`;
 }
 
+/* One sentence above the board: how much is actually outstanding, and whether
+   anything has been waiting too long. The columns carry the detail. */
+function renderKitchenSummary(tickets) {
+  const el = $('kitchen-summary');
+  if (!el) return;
+  const live = tickets.filter(t => t.status !== 'served');
+  if (!live.length) { el.textContent = 'Nothing waiting — the board is clear.'; return; }
+  const oldest = Math.max(...live.map(t => minsSince(t.sent_at)));
+  const late = live.filter(t => minsSince(t.sent_at) >= 10).length;
+  el.textContent = `${live.length} ticket${live.length === 1 ? '' : 's'} on · oldest ${oldest} min`
+    + (late ? ` · ${late} over 10 min` : '');
+}
+
 function fill(colId, countId, tickets) {
   $(colId).innerHTML = tickets.map(ticketHtml).join('') || '<div class="empty" style="padding:16px">Nothing here</div>';
   $(countId).textContent = tickets.length;
@@ -105,6 +118,7 @@ export async function refreshKitchen() {
     fill('k-col-preparing', 'k-count-preparing', sorted.filter(t => t.status === 'preparing'));
     fill('k-col-ready', 'k-count-ready', sorted.filter(t => t.status === 'ready'));
     fill('k-col-served', 'k-count-served', sorted.filter(t => t.status === 'served').reverse());
+    renderKitchenSummary(sorted);
   } catch (e) { console.error(e); }
 
   await refreshPending();
@@ -119,6 +133,7 @@ async function refreshPending() {
   if (!pending.length) { $('kitchen-pending').innerHTML = ''; return; }
   $('kitchen-pending').innerHTML = `<div class="card" style="border-color:var(--info);margin-bottom:16px">
     <h3>⏳ Customer orders waiting for you</h3>
+    <p class="meta" style="margin:-8px 0 12px">Nothing here has reached the kitchen or a printer yet.</p>
     ${pending.map(p => `
       <div class="admin-row">
         <div>

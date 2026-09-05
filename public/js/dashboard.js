@@ -33,36 +33,40 @@ function comparison(today, yesterday) {
    bar carries its value so the chart is readable without a tooltip (there is
    no hover on the tablet this is read on). */
 function hourlyChart(hourly) {
-  if (!hourly.length) return '<div class="empty">No sales yet today</div>';
+  if (!hourly.length) return '<div class="empty"><span class="big" aria-hidden="true">📈</span>No sales yet today</div>';
   const max = Math.max(...hourly.map(h => h.sales));
+  const busiest = hourly.reduce((a, b) => (b.sales > a.sales ? b : a));
   // A wide, flat viewBox: the SVG scales to the card's width and keeps its
   // aspect ratio, so a tall box would render as a tall chart on a wide screen.
-  const W = 600, H = 180, pad = 24;
+  const W = 600, H = 190, padL = 8, padB = 26, padT = 18;
   // Bars are capped and left-aligned: one busy hour early in the day should not
   // draw a single rectangle across the whole card.
-  const slot = (W - pad) / Math.max(hourly.length, 8);
-  const bw = Math.min(38, Math.max(6, slot - 6));
-  const bars = hourly.map((h, i) => {
-    const barH = max ? Math.max(2, ((H - pad - 16) * h.sales) / max) : 2;
-    const x = pad + i * slot;
-    const y = H - pad - barH;
-    return `<rect class="bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}"
-              height="${barH.toFixed(1)}" rx="3"><title>${h.hour}:00 — ${fmt(h.sales)} (${h.orders} orders)</title></rect>
-            <text class="axis" x="${(x + bw / 2).toFixed(1)}" y="${H - pad + 14}" text-anchor="middle">${h.hour}</text>`;
+  const slot = (W - padL * 2) / Math.max(hourly.length, 8);
+  const bw = Math.min(34, Math.max(6, slot - 8));
+  const plotH = H - padB - padT;
+  const bars = hourly.map(h => {
+    const i = hourly.indexOf(h);
+    const barH = max ? Math.max(3, (plotH * h.sales) / max) : 3;
+    const x = padL + i * slot + (slot - bw) / 2;
+    const y = H - padB - barH;
+    const peak = h.hour === busiest.hour;
+    return `<rect class="bar${peak ? '' : ' dim'}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}"
+              height="${barH.toFixed(1)}" rx="4"><title>${h.hour}:00 — ${fmt(h.sales)} (${h.orders} orders)</title></rect>
+            ${peak ? `<text class="peak" x="${(x + bw / 2).toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle">${fmt(h.sales)}</text>` : ''}
+            <text class="axis" x="${(x + bw / 2).toFixed(1)}" y="${H - padB + 15}" text-anchor="middle">${h.hour}</text>`;
   }).join('');
-  const busiest = hourly.reduce((a, b) => (b.sales > a.sales ? b : a));
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img"
       aria-label="Sales by hour. Busiest hour ${busiest.hour}:00 with ${fmt(busiest.sales)}.">
-      <line class="grid-line" x1="${pad}" y1="${H - pad}" x2="${W - 4}" y2="${H - pad}"/>
+      <line class="grid-line" x1="${padL}" y1="${H - padB}" x2="${W - padL}" y2="${H - padB}"/>
       ${bars}
     </svg>
-    <div class="meta" style="margin-top:6px">Busiest hour: <b>${busiest.hour}:00</b> — ${fmt(busiest.sales)}</div>`;
+    <div class="meta" style="margin-top:8px">Busiest hour <b>${busiest.hour}:00</b> — ${fmt(busiest.sales)} across ${busiest.orders} order${busiest.orders === 1 ? '' : 's'}.</div>`;
 }
 
 /* Ranked rows with a proportional bar. Reads as a list first and a chart
    second, which is the right way round for "what sold today". */
 function barList(rows, { valueOf, labelOf, fill = '' }) {
-  if (!rows.length) return '<div class="empty">Nothing yet today</div>';
+  if (!rows.length) return '<div class="empty"><span class="big" aria-hidden="true">🍽</span>Nothing yet today</div>';
   const max = Math.max(...rows.map(valueOf)) || 1;
   return `<div class="bar-list">${rows.map(r => `
     <div class="bar-row">
@@ -76,8 +80,11 @@ export async function refreshDashboard() {
   try {
     const d = await API.get('/api/dashboard');
 
+    const stamp = $('dash-updated');
+    if (stamp) stamp.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
     $('dash-kpis').innerHTML = [
-      kpi({ label: 'Today sales', value: fmt(d.today.sales), sub: comparison(d.today.sales, d.yesterday.sales) }),
+      kpi({ label: 'Today sales', value: fmt(d.today.sales), cls: 'hero', sub: comparison(d.today.sales, d.yesterday.sales) }),
       kpi({ label: 'Orders', value: String(d.today.orders), sub: { text: `${d.today.dine_in.orders} dine in · ${d.today.takeaway.orders} takeaway` } }),
       kpi({ label: 'Average order', value: fmt(d.today.average_order) }),
       kpi({ label: 'Open tables', value: String(d.floor.open_tables), sub: { text: `${fmt(d.floor.open_value)} on the floor` } }),

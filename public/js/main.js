@@ -3,6 +3,7 @@ import { loadAll } from './pos.js';
 import { buildNav, refreshLive } from './nav.js';
 import { startOutbox } from './outbox.js';
 import { openChangePinDialog } from './staff.js';
+import { showHelpTopic } from './help.js';
 import './i18n.js';
 
 /* ===== OFFLINE (phase 07) =====
@@ -56,6 +57,13 @@ function showApp() {
   loadApp();
 }
 document.addEventListener('pin-changed-mandatory', loadApp);
+
+/* A "? how this works" link anywhere in the app opens the matching Help topic.
+   One handler, so a new link is one attribute rather than one more listener. */
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-action="help-jump"]');
+  if (el) showHelpTopic(el.dataset.topic);
+});
 
 /* api.js calls this directly (as a plain global) when a session expires */
 window.showLogin = showLogin;

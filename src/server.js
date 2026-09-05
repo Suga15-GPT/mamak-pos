@@ -10,6 +10,7 @@ const adminRoutes = require('./routes/admin');
 const reportRoutes = require('./routes/reports');
 const streamRoutes = require('./routes/stream');
 const kitchenRoutes = require('./routes/kitchen');
+const voiceRoutes = require('./routes/voice');
 
 const app = express();
 
@@ -29,10 +30,16 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  // The microphone is allowed for this origin only, and only because "Speak to
+  // Order" needs it; geolocation and camera stay switched off entirely.
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(self), camera=()');
   next();
 });
 
+// Voice posts one short recording as base64, which does not fit in the limit
+// the rest of the API wants. Mounted first and path-scoped: body-parser marks
+// the request parsed, so the 256kb limit below still governs every other route.
+app.use('/api/public/voice', express.json({ limit: '1500kb' }));
 app.use(express.json({ limit: '256kb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
@@ -43,6 +50,7 @@ app.use(adminRoutes);
 app.use(reportRoutes);
 app.use(streamRoutes);
 app.use(kitchenRoutes);
+app.use(voiceRoutes);
 
 /* customer page route */
 app.get('/t/:token', (req, res) => {

@@ -1,5 +1,6 @@
 import { $, fmt, esc, toast, stateWords } from '../js/state.js';
 import '../js/i18n.js';
+import { initVoice, applyChoice, reopenReview } from './voice.js';
 
 /* ===== CUSTOMER QR PAGE =====
    Deliberately tiny: a menu, a basket, and honest progress on what the kitchen
@@ -13,6 +14,9 @@ let ordering = { enabled: true, approval_required: false };
 let cart = [];
 let activeCat = null;
 let modItem = null;
+// The food-options dialog serves two callers now: the basket, and a voice line
+// whose group question the customer still has to answer.
+let modMode = 'cart';
 let pendingItem = null;
 // Rounds this phone has sent, newest last. Kept in sessionStorage so a reload
 // (or the phone locking) doesn't lose track of food already on its way.
@@ -53,6 +57,21 @@ async function init() {
     $('app').style.display = '';
     renderCats(); renderItems(); updateBar(); renderMyOrders();
     startStatusPolling();
+
+    // Speak to Order appears only when the restaurant has configured it AND
+    // this browser can actually record. Otherwise the page is exactly what it
+    // was: a menu you tap.
+    if (info.voice && info.voice.enabled) {
+      initVoice({
+        tableToken,
+        menu,
+        onConfirm: items => postRound(items),
+        onAddMore: mergeVoiceDraftIntoBasket,
+        onBrowse: () => {
+          $('menu-cats').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        },
+      });
+    }
   } catch (e) {
     fail('Could not load the menu', 'Check your connection and try again.');
   }
@@ -120,8 +139,9 @@ function modifierGroupsFor(it) {
   return (it.modifier_group_ids || []).map(gid => menu.modifier_groups.find(g => g.id === gid)).filter(Boolean);
 }
 
-function openModifiers(it) {
+function openModifiers(it, mode = 'cart') {
   modItem = it;
+  modMode = mode;
   $('km-title').textContent = `${it.name} — ${fmt(it.price)}`;
   $('km-body').innerHTML = modifierGroupsFor(it).map(g => {
     const opts = menu.modifier_options.filter(o => o.group_id === g.id);
@@ -150,7 +170,14 @@ function updateModifierValidity() {
   });
 }
 
-function closeKandar() { $('kandar-modal').classList.remove('show'); modItem = null; }
+function closeKandar() {
+  $('kandar-modal').classList.remove('show');
+  const wasVoice = modMode === 'voice';
+  modItem = null; modMode = 'cart';
+  // Cancelling out of a voice line's question puts the customer back in front
+  // of their proposal rather than dropping them on the menu with nothing.
+  if (wasVoice) reopenReview();
+}
 
 function confirmModifiers() {
   if (!modItem) return;
@@ -158,12 +185,15 @@ function confirmModifiers() {
   modifierGroupsFor(modItem).forEach(g => {
     document.querySelectorAll(`input[data-group="${g.id}"]:checked`).forEach(inp => {
       const o = menu.modifier_options.find(x => x.id == inp.value);
-      if (o) mods.push({ name: o.name, price: o.price });
+      if (o) mods.push({ id: o.id, name: o.name, price: o.price });
     });
   });
   const it = modItem;
+  const wasVoice = modMode === 'voice';
   const note = $('km-remark').value.trim();
-  closeKandar();
+  $('kandar-modal').classList.remove('show');
+  modItem = null; modMode = 'cart';
+  if (wasVoice) return applyChoice(mods);
   pushLine(it, mods, note);
   updateBar();
 }
@@ -205,40 +235,68 @@ function closeCartModal() { $('cart-modal').classList.remove('show'); }
 function cq(i, d) { cart[i].qty = Math.max(1, cart[i].qty + d); updateBar(); showCart(); }
 function cd(i) { cart.splice(i, 1); updateBar(); if (cart.length) showCart(); else closeCartModal(); }
 
-/* ===== SUBMIT ===== */
+/* ===== SUBMIT =====
+   One path out of this page, whichever way the order was built. Voice and the
+   basket both end up here, and here posts to the same public endpoint it always
+   did — which re-validates every line, applies the restaurant's own prices, and
+   appends a kitchen round to whatever bill the table already has. */
+async function postRound(items) {
+  const r = await fetch('/api/public/orders', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ table_token: tableToken, items }),
+  });
+  const body = await r.json().catch(() => ({}));
+
+  if (r.status === 503) { $('paused-message').textContent = body.message; showPaused(); return null; }
+  if (r.status === 409) { showBlocked(body.message); return null; }
+  if (r.status === 429) { showBlocked('Too many orders from this table just now. Please ask our staff.'); return null; }
+  if (!r.ok) throw new Error(body.error === 'invalid items' ? 'Something on that order is no longer available.' : (body.message || body.error || 'failed'));
+
+  myRounds.push({
+    ref: body.ref, round: body.round, status: body.status,
+    items: items.map(l => ({ name: nameOf(l.item_id), qty: l.qty })),
+  });
+  saveRounds();
+  cart = [];
+  closeCartModal();
+  updateBar();
+  showSuccess();
+  startStatusPolling();
+  return body;
+}
+
+const nameOf = id => menu.items.find(i => i.id === id)?.name || 'Item';
+
 async function submitOrder() {
   if (!cart.length) return;
   const btn = $('submit-btn');
   btn.disabled = true; btn.textContent = 'Sending…';
   try {
-    const items = cart.map(l => ({
+    await postRound(cart.map(l => ({
       item_id: l.item_id, qty: l.qty, note: l.note,
-      modifier_option_ids: l.mods.map(m => menu.modifier_options.find(o => o.name === m.name)?.id).filter(Boolean),
-    }));
-    const r = await fetch('/api/public/orders', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ table_token: tableToken, items }),
-    });
-    const body = await r.json().catch(() => ({}));
-
-    if (r.status === 503) { $('paused-message').textContent = body.message; showPaused(); return; }
-    if (r.status === 409) { showBlocked(body.message); return; }
-    if (r.status === 429) { showBlocked('Too many orders from this table just now. Please ask our staff.'); return; }
-    if (!r.ok) throw new Error(body.error || 'failed');
-
-    myRounds.push({ ref: body.ref, round: body.round, status: body.status,
-      items: cart.map(l => ({ name: l.name, qty: l.qty })) });
-    saveRounds();
-    cart = [];
-    closeCartModal();
-    updateBar();
-    showSuccess();
-    startStatusPolling();
+      modifier_option_ids: l.mods.map(m => m.id != null ? m.id
+        : menu.modifier_options.find(o => o.name === m.name)?.id).filter(Boolean),
+    })));
   } catch (e) {
-    toast('Could not send your order. Please try again or ask our staff.');
+    toast(e.message || 'Could not send your order. Please try again or ask our staff.');
   } finally {
     btn.disabled = false; btn.textContent = 'Place Order';
   }
+}
+
+/* "Add more from the menu" on the voice preview: the spoken order becomes the
+   basket, so there is never a second cart to reconcile. */
+function mergeVoiceDraftIntoBasket(lines) {
+  lines.forEach(l => {
+    cart.push({
+      item_id: l.item_id, name: l.name, price: l.unit_price, qty: l.qty,
+      mods: l.mods.map(m => ({ id: m.id, name: m.name, price: m.price })),
+      note: l.note || '',
+    });
+  });
+  updateBar();
+  $('menu-cats').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  toast('Added to your order — keep going.');
 }
 
 function showPaused() {
@@ -360,5 +418,9 @@ $('cart-modal').addEventListener('click', e => { if (e.target === $('cart-modal'
 $('kandar-modal').addEventListener('click', e => { if (e.target === $('kandar-modal')) closeKandar(); });
 $('kandar-modal').addEventListener('change', e => { if (e.target.matches('input[data-group]')) updateModifierValidity(); });
 $('remark-modal').addEventListener('click', e => { if (e.target === $('remark-modal')) closeRemarkModal(); });
+
+// A spoken line whose option group is still unanswered borrows the same dialog
+// the menu uses, rather than a second one that would drift out of step with it.
+document.addEventListener('voice-needs-options', e => openModifiers(e.detail.item, 'voice'));
 
 init();

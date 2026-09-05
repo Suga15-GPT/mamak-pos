@@ -173,19 +173,23 @@ function renderGroups() {
   $('admin-groups').innerHTML = menuData.modifier_groups.map(g => {
     const opts = menuData.modifier_options.filter(o => o.group_id === g.id);
     const used = attachedNames[g.id] || [];
-    return `<div class="card" style="margin-bottom:12px;box-shadow:none;background:var(--cream)">
-      <div class="card-head">
+    return `<div class="opt-group">
+      <div class="opt-group-head">
         <div>
-          <b style="font-size:16px">${esc(g.name)}</b>
+          <div class="n">${esc(g.name)}</div>
           <div class="meta">Choose ${g.mode === 'radio' ? 'one' : 'several'} · minimum ${g.min_select} · maximum ${g.max_select}</div>
         </div>
-        <button class="btn small outline" data-action="edit-group" data-id="${g.id}">✏️ Edit</button>
+        <div class="row-actions">
+          <button class="btn small outline" data-action="edit-group" data-id="${g.id}">✏️ Edit group</button>
+          <button class="btn small ghost" data-action="duplicate-group-card" data-id="${g.id}">⧉ Duplicate</button>
+        </div>
       </div>
-      <div class="chip-row">
-        ${opts.map(o => `<span class="chip ${o.available ? 'sage' : 'danger'}">${esc(o.name)}${o.price_cents ? ` +${fmt(o.price_cents / 100)}` : ''}${o.available ? '' : ' · sold out'}</span>`).join('')
+      <div class="opt-list">
+        ${opts.map(o => `<span class="opt-pill${o.available ? '' : ' chip danger'}">${esc(o.name)}${o.price_cents ? ` <span class="p">+${fmt(o.price_cents / 100)}</span>` : ''}${o.available ? '' : ' · sold out'}</span>`).join('')
           || '<span class="chip warn">No options yet</span>'}
+        <button class="chip" data-action="edit-group" data-id="${g.id}">＋ Add option</button>
       </div>
-      <div class="meta" style="margin-top:8px">Used by: ${used.length ? esc(used.slice(0, 6).join(', ')) + (used.length > 6 ? ` and ${used.length - 6} more` : '') : 'nothing yet'}</div>
+      <div class="meta" style="margin-top:10px">Asked on: ${used.length ? esc(used.slice(0, 6).join(', ')) + (used.length > 6 ? ` and ${used.length - 6} more` : '') : 'nothing yet'}</div>
     </div>`;
   }).join('') || '<div class="empty">No food option groups yet.</div>';
 }
@@ -728,6 +732,10 @@ $('tab-admin').addEventListener('click', e => {
     'cat-move': () => moveCategory(id, Number(el.dataset.dir)),
     'new-group': () => openGroupModal(null),
     'edit-group': () => openGroupModal(id),
+    'duplicate-group-card': async () => {
+      try { await API.post(`/api/admin/modifier_groups/${id}/duplicate`, {}); toast('Duplicated'); refreshAdmin(); }
+      catch (e) { toast('Could not duplicate: ' + e.message); }
+    },
     'new-table': newTable,
     'rename-table': () => renameTable(id),
     'retire-table': () => setTableActive(id, false),

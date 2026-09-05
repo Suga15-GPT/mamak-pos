@@ -22,12 +22,12 @@ async function login(page) {
   if (collapsed) await page.locator('#account-toggle').click(); // put it away again
 }
 
-// The nav renders twice (top tabs on a tablet, a bottom bar on a phone); at the
-// desktop viewport the top one is the visible copy.
+// The nav renders twice (a left rail from 768px up, a bottom bar below it); at
+// the desktop viewport the rail is the visible copy.
 const navTab = (page, name) => page.locator('#nav').getByRole('button', { name });
 
-/* The header's account controls collapse behind one button below 600px, so a
-   phone-sized check has to open them before it can see the user's name. */
+/* The header's account controls live behind one disclosure button at every
+   width, so a check has to open them before it can see the user's name. */
 async function openAccountMenu(page) {
   const toggle = page.locator('#account-toggle');
   if (!(await toggle.isVisible())) return false;
@@ -59,7 +59,7 @@ test('staff login → order → kitchen → pay', async ({ page, request }) => {
   await addItem(page, 'Roti', 'Roti Canai');
   await expect(page.locator('#cart-body')).toContainText('Roti Canai');
 
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#cart-body')).toContainText('Already sent');
   await expect(page.locator('#cart-body')).toContainText('Round 1');
 
@@ -77,7 +77,7 @@ test('staff login → order → kitchen → pay', async ({ page, request }) => {
   // Returning to the floor tab comes back to the bill that was open, refreshed.
   await navTab(page, 'Tables').click();
   await expect(page.locator('#ws-title')).toHaveText('T1');
-  await page.getByRole('button', { name: /^💵 Pay$/ }).click();
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
   await expect(page.getByRole('heading', { name: 'Payment' })).toBeVisible();
   await page.locator('#pay-modal').getByRole('button', { name: '💵 Cash', exact: true }).click();
   // Settling returns to the floor.
@@ -93,7 +93,7 @@ test('add-on opens a new round: round 1 stays served, round 2 is new', async ({ 
   await login(page);
   await openTable(page, 'T8');
   await addItem(page, 'Mee & Goreng', 'Mee Goreng Mamak');
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#cart-body')).toContainText('Round 1');
 
   // Take round 1 all the way through the kitchen.
@@ -108,7 +108,7 @@ test('add-on opens a new round: round 1 stays served, round 2 is new', async ({ 
   await navTab(page, 'Tables').click();
   await expect(page.locator('#ws-title')).toHaveText('T8');
   await addItem(page, 'Roti', 'Roti Canai');
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
 
   // Same bill, two rounds, and the add-on is NOT served.
   await expect(page.locator('#cart-body')).toContainText('Round 1');
@@ -116,9 +116,9 @@ test('add-on opens a new round: round 1 stays served, round 2 is new', async ({ 
   await expect(page.locator('#cart-body')).toContainText('Mee Goreng Mamak');
   await expect(page.locator('#cart-body')).toContainText('Roti Canai');
 
-  const round2 = page.locator('.bill-group-head', { hasText: 'Round 2' });
+  const round2 = page.locator('.bill-round-head', { hasText: 'Round 2' });
   await expect(round2).toContainText('New order');
-  const round1 = page.locator('.bill-group-head', { hasText: 'Round 1' });
+  const round1 = page.locator('.bill-round-head', { hasText: 'Round 1' });
   await expect(round1).toContainText('Served');
 
   // The kitchen sees the add-on as its own fresh ticket.
@@ -149,8 +149,8 @@ test('QR customer orders, then orders more on the same bill', async ({ page, req
   await expect(page.getByRole('heading', { name: 'Order sent' })).toBeVisible();
   await expect(page.locator('#success-steps')).toContainText('Sent');
 
-  // "Order More" is the whole point: a second scan used to be refused.
-  await page.getByRole('button', { name: 'Order More' }).click();
+  // Ordering more is the whole point: a second scan used to be refused.
+  await page.locator('#success-view').getByRole('button', { name: 'Browse the menu' }).click();
   await expect(page.locator('#my-orders')).toContainText('Roti Telur');
   await page.locator('#menu-cats').getByRole('button', { name: 'Minuman Panas', exact: true }).click();
   await page.locator('#menu-items').getByRole('button', { name: /Teh Tarik/ }).click();
@@ -175,7 +175,7 @@ test('takeaway order needs no table', async ({ page, request }) => {
   await page.getByRole('button', { name: /New Takeaway/ }).click();
   await expect(page.locator('#ws-title')).toHaveText('New takeaway');
   await addItem(page, 'Roti', 'Roti Canai');
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#ws-title')).toContainText('Takeaway #');
 
   await page.getByRole('button', { name: /Back to Tables/ }).click();
@@ -197,10 +197,10 @@ test('split bill', async ({ page, request }) => {
   await addItem(page, 'Roti', 'Roti Canai');
   await expect(page.locator('#cart-body')).toContainText('2×');
 
-  await page.getByRole('button', { name: /Send 2 new items to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 2 new items/ }).click();
   await expect(page.locator('#cart-body')).toContainText('Already sent');
 
-  await page.getByRole('button', { name: /^💵 Pay$/ }).click();
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
   await expect(page.getByRole('heading', { name: 'Payment' })).toBeVisible();
   await page.getByRole('button', { name: 'Split evenly' }).click();
   // The styled ask() dialog replaced window.prompt() — it is part of the page.
@@ -226,17 +226,17 @@ test('void a line', async ({ page }) => {
   await openTable(page, 'T4');
   await addItem(page, 'Roti', 'Roti Canai');
   await addItem(page, 'Roti', 'Roti Telur');
-  await page.getByRole('button', { name: /Send 2 new items to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 2 new items/ }).click();
   await expect(page.locator('#cart-body')).toContainText('Already sent');
 
-  const canaiLine = page.locator('.cart-line', { hasText: 'Roti Canai' });
+  const canaiLine = page.locator('.bill-line', { hasText: 'Roti Canai' });
   await canaiLine.getByRole('button', { name: /Void/ }).click();
   await expect(page.getByRole('heading', { name: /Void Roti Canai/ })).toBeVisible();
   await page.locator('#ask-input').fill('customer changed their mind');
   await page.getByRole('button', { name: 'Void it' }).click();
 
-  await expect(page.locator('.cart-line', { hasText: 'Roti Canai' })).toContainText('Voided');
-  await expect(page.locator('.cart-line', { hasText: 'Roti Telur' })).not.toContainText('Voided');
+  await expect(page.locator('.bill-line', { hasText: 'Roti Canai' })).toContainText('Voided');
+  await expect(page.locator('.bill-line', { hasText: 'Roti Telur' })).not.toContainText('Voided');
 });
 
 test('offline order reconciles', async ({ page, context, request }) => {
@@ -245,15 +245,15 @@ test('offline order reconciles', async ({ page, context, request }) => {
 
   await openTable(page, 'T6');
   await addItem(page, 'Roti', 'Roti Canai');
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
-  await expect(page.locator('#cart-body')).toContainText('sending');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#cart-body')).toContainText('Sending');
   await expect(page.locator('#offline-banner')).toBeVisible();
   await expect(page.locator('#offline-banner')).toContainText('1 order');
 
   await page.getByRole('button', { name: /Back to Tables/ }).click();
   await openTable(page, 'T7');
   await addItem(page, 'Roti', 'Roti Telur');
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#offline-banner')).toContainText('2 orders');
 
   await context.setOffline(false);
@@ -301,6 +301,109 @@ test('shift open → close', async ({ page, request }) => {
   await expect(page.locator('#shift-variance-badge')).toContainText('RM 0.00');
 });
 
+/* Speak to Order, end to end, with the vendors replaced by a local word matcher
+   (VOICE_MODE=mock in playwright.config.js) and a synthetic microphone. The
+   point of the journey is the ordering of events: a preview exists, nothing is
+   in the kitchen, and only the customer's confirmation changes that. */
+test('QR customer speaks an order, reviews it, and only then does the kitchen get it', async ({ page, request }) => {
+  await apiLogin(request);
+  const tables = await request.get('/api/admin/tables').then(r => r.json());
+  const t5 = tables.find(t => t.name === 'T5');
+
+  await page.goto(t5.url);
+  await expect(page.locator('#voice-hero')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Speak your order' }).click();
+  await expect(page.locator('#vs-listening')).toBeVisible();
+  // Long enough for the fake device to produce more than the "that was a tap"
+  // floor the page applies.
+  await page.waitForTimeout(1800);
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+
+  await expect(page.getByRole('heading', { name: /Here.s what I got/ })).toBeVisible({ timeout: 20000 });
+  await expect(page.locator('#vs-lines')).toContainText('Roti Canai');
+  await expect(page.locator('#vs-lines')).toContainText('Teh Tarik');
+  // Two roti: the matcher read "dua" the way a Malaysian customer says it.
+  await expect(page.locator('#vs-lines')).toContainText('2×');
+
+  // Prices on the preview are the restaurant's, and the total is their sum.
+  const menu = await request.get('/api/menu').then(r => r.json());
+  const roti = menu.items.find(i => i.name === 'Roti Canai');
+  const teh = menu.items.find(i => i.name === 'Teh Tarik');
+  const expected = `RM ${(roti.price * 2 + teh.price).toFixed(2)}`;
+  await expect(page.locator('#vs-total')).toHaveText(expected);
+
+  // Nothing has been created yet — this is the property the whole design exists
+  // for. (Scoped to this table: the suite shares one database.)
+  const before = await request.get('/api/orders').then(r => r.json());
+  expect(before.find(o => o.table === 'T5')).toBeUndefined();
+
+  // The customer edits, then confirms.
+  await page.locator('#vs-lines .qty button').first().click();   // one fewer roti
+  await expect(page.locator('#vs-total')).toHaveText(`RM ${(roti.price + teh.price).toFixed(2)}`);
+  await page.getByRole('button', { name: 'Confirm order' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Order sent' })).toBeVisible({ timeout: 15000 });
+
+  const orders = await request.get('/api/orders').then(r => r.json());
+  const order = orders.find(o => o.table === 'T5');
+  expect(order.source).toBe('qr');
+  expect(order.sends.length).toBe(1);
+  expect(order.items.map(i => i.name).sort()).toEqual(['Roti Canai', 'Teh Tarik']);
+  expect(order.subtotal).toBeCloseTo(roti.price + teh.price, 2);
+});
+
+test('a spoken order the customer abandons leaves nothing behind', async ({ page, request }) => {
+  await apiLogin(request);
+  const tables = await request.get('/api/admin/tables').then(r => r.json());
+  const t6 = tables.find(t => t.name === 'T6');
+
+  // The suite shares one database and earlier journeys have left orders on the
+  // floor, so the assertion is "nothing changed", not "nothing exists".
+  const before = await request.get('/api/orders').then(r => r.json());
+
+  await page.goto(t6.url);
+  await page.getByRole('button', { name: 'Speak your order' }).click();
+  await page.waitForTimeout(1800);
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /Here.s what I got/ })).toBeVisible({ timeout: 20000 });
+  await expect(page.locator('#vs-lines')).toContainText('Roti Canai');
+
+  await page.locator('#vs-review').getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.locator('#voice-modal')).not.toHaveClass(/show/);
+
+  const after = await request.get('/api/orders').then(r => r.json());
+  expect(after).toEqual(before);
+});
+
+/* Help has to be usable by the person who needs it, which means findable by a
+   word they would actually type. */
+test('help centre: search, open a topic, step its walkthrough', async ({ page }) => {
+  await login(page);
+  await navTab(page, 'Help').click();
+  await expect(page.locator('.help-card').first()).toBeVisible();
+
+  await page.locator('#help-search').fill('sold out');
+  await expect(page.locator('.help-card')).toHaveCount(1);
+  await page.locator('.help-card').click();
+  await expect(page.getByRole('heading', { name: /Sold out/ })).toBeVisible();
+
+  // The walkthrough is real: stepping it changes the caption and the frame.
+  const caption = page.locator('#wt-caption');
+  await expect(caption).toContainText('1.');
+  await page.getByRole('button', { name: 'Next step' }).click();
+  await expect(caption).toContainText('2.');
+  await expect(page.locator('#wt-stage .wt-cell.hit')).toBeVisible();
+
+  await page.getByRole('button', { name: 'All help' }).click();
+  await expect(page.locator('#help-search')).toBeVisible();
+
+  // A contextual "?" link elsewhere in the app lands on the right topic.
+  await navTab(page, 'Kitchen').click();
+  await page.getByRole('button', { name: /How Kitchen works/ }).click();
+  await expect(page.getByRole('heading', { name: /The kitchen screen/ })).toBeVisible();
+});
+
 /* Master spec §39 / §60: the mobile "shrink" complaint is horizontal overflow.
    Check the real thing — the document is never wider than the viewport. */
 const VIEWPORTS = [
@@ -328,7 +431,7 @@ for (const vp of VIEWPORTS) {
 
     // Every destination this role can reach, including the Admin sections that
     // were the worst offenders (printers, the QR grid, modifier controls).
-    const tabs = vp.width <= 768 ? page.locator('#bottom-nav button') : page.locator('#nav button');
+    const tabs = vp.width < 768 ? page.locator('#bottom-nav button') : page.locator('#nav button');
     const count = await tabs.count();
     for (let i = 0; i < count; i++) {
       await tabs.nth(i).click();
@@ -336,6 +439,9 @@ for (const vp of VIEWPORTS) {
       await overflowOn(`tab ${i}`);
     }
 
+    // The loop above ends on whichever tab is last (Help); come back to Admin
+    // before walking its sections.
+    await tabs.filter({ hasText: 'Admin' }).click();
     await page.locator('#admin-tabs').scrollIntoViewIfNeeded();
     const sections = page.locator('#admin-tabs button');
     for (let i = 0; i < await sections.count(); i++) {
