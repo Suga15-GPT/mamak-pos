@@ -33,7 +33,7 @@ const translations = {
   'pos.total': { en: 'Total', ms: 'Jumlah' },
   'pos.sendToKitchen': { en: 'Send to Kitchen', ms: 'Hantar ke Dapur' },
   'pos.markPaid': { en: 'Mark Paid', ms: 'Tandakan Dibayar' },
-  'pos.pay': { en: 'Pay', ms: 'Bayar' },
+  'pos.pay': { en: 'Take Payment', ms: 'Ambil Bayaran' },
   'pos.tables': { en: 'Tables', ms: 'Meja' },
   'pos.takeaway': { en: 'Takeaway', ms: 'Bungkus' },
   'pos.newTakeaway': { en: 'New Takeaway', ms: 'Bungkus Baru' },

@@ -16,6 +16,7 @@
 <div id="login-view" class="view">
   <div class="login-wrap">
     <div class="login-card">
+      <div class="login-mark" aria-hidden="true">🍜</div>
       <h1>Mamak POS</h1>
       <p data-i18n="login.subtitle">Staff &amp; Admin Login</p>
       <div class="field"><label for="lname" data-i18n="login.name">Name</label><input id="lname" value="Admin"></div>
@@ -30,18 +31,21 @@
 <div id="app-view" class="view" style="display:none">
   <div id="offline-banner" role="status"></div>
   <header>
-    <span class="brand">Mamak POS</span>
+    <span class="brand">Mamak<span class="dot">.</span></span>
+    <span class="page-title" id="page-title"></span>
     <span id="conn-dot" class="conn-dot offline" title="Live connection status"></span>
-    <span style="flex:1"></span>
+    <span class="spacer"></span>
     <!-- On a phone these collapse behind one button. They are the least
          frequent controls in the app — the ones staff reach for constantly are
          in the bottom bar — so a disclosure here costs nothing and stops the
          header wrapping into three cramped lines. -->
     <button class="icon-btn" id="account-toggle" data-action="toggle-account" aria-expanded="false" aria-controls="account-menu" aria-label="Account and settings">👤</button>
     <div class="user" id="account-menu">
-      <button class="icon-btn" id="locale-toggle" data-action="toggle-locale" title="Switch language / Tukar bahasa" aria-label="Switch language">EN</button>
-      <button class="icon-btn" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
       <span id="uname"></span>
+      <div class="user-row">
+        <button class="icon-btn" id="locale-toggle" data-action="toggle-locale" title="Switch language / Tukar bahasa" aria-label="Switch language">EN</button>
+        <button class="icon-btn" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
+      </div>
       <button class="logout" data-action="change-pin" data-i18n="common.changePin">Change my PIN</button>
       <button class="logout" data-action="logout" data-i18n="common.logout">Log Out</button>
     </div>
@@ -55,17 +59,22 @@
     <!-- ORDERS (POS) -->
     <section id="tab-pos" class="tab">
       <div id="pos-tables">
-        <div class="floor-section">
-          <div class="floor-section-head">
-            <h2 class="section-title" style="margin:0">🍽 <span data-i18n="pos.tables">Tables</span></h2>
-            <button class="btn small ghost" data-action="refresh-tables">↻ <span data-i18n="common.refresh">Refresh</span></button>
+        <div class="view-head">
+          <div>
+            <h2>🍽 <span data-i18n="pos.tables">Tables</span></h2>
+            <div class="sub" id="floor-summary"></div>
           </div>
+          <div class="actions">
+            <button class="btn small ghost" data-action="refresh-tables">↻ <span data-i18n="common.refresh">Refresh</span></button>
+            <button class="btn small" data-action="new-takeaway">➕ <span data-i18n="pos.newTakeaway">New Takeaway</span></button>
+          </div>
+        </div>
+        <div class="floor-section">
           <div id="tables-grid" class="tables-grid"></div>
         </div>
         <div class="floor-section">
           <div class="floor-section-head">
-            <h2 class="section-title" style="margin:0">🥡 <span data-i18n="pos.takeaway">Takeaway</span></h2>
-            <button class="btn small" data-action="new-takeaway">➕ <span data-i18n="pos.newTakeaway">New Takeaway</span></button>
+            <h3 class="eyebrow">🥡 <span data-i18n="pos.takeaway">Takeaway</span></h3>
           </div>
           <div id="takeaway-grid" class="tables-grid"></div>
         </div>
@@ -75,33 +84,42 @@
         <div class="ws-head">
           <button class="back-btn" data-action="back-to-tables">← <span data-i18n="pos.backToTables">Back to Tables</span></button>
           <span class="ws-title" id="ws-title"></span>
-          <span id="ws-state"></span>
-          <span style="flex:1"></span>
+          <span class="spacer"></span>
           <button class="btn small ghost" id="move-order-btn" data-action="open-move" style="display:none">↔ <span data-i18n="pos.moveOrder">Move</span></button>
         </div>
 
         <div class="pos-grid">
-          <div>
-            <div class="card">
+          <div class="card menu-panel">
+            <div class="search-field">
               <input type="search" id="item-search" data-i18n-placeholder="pos.search" placeholder="Search items…" aria-label="Search menu items">
-              <div id="menu-cats" class="cat-tabs" aria-label="Menu categories"></div>
-              <div id="menu-favs" class="menu-favs"></div>
-              <div id="menu-items" class="menu-items"></div>
             </div>
+            <div id="menu-cats" class="cat-tabs" aria-label="Menu categories"></div>
+            <div id="menu-favs" class="menu-favs"></div>
+            <div id="menu-items" class="menu-items"></div>
           </div>
 
           <div class="card" id="bill-card">
-            <h3 data-i18n="pos.currentOrder">Order</h3>
-            <div id="cart-body"></div>
-            <div id="cart-empty" class="empty" data-i18n="pos.noItems">No items yet</div>
+            <div class="bill-head">
+              <div>
+                <div class="where" id="bill-where"></div>
+                <div class="kind" id="bill-kind"></div>
+              </div>
+              <span id="bill-badge"></span>
+            </div>
+            <div class="bill-scroll">
+              <div id="cart-body"></div>
+              <div id="cart-empty" class="empty"><span class="big" aria-hidden="true">🧾</span><span data-i18n="pos.noItems">No items yet</span></div>
+            </div>
             <div class="totals" id="cart-totals" style="display:none">
               <div class="row"><span data-i18n="pos.subtotal">Subtotal</span><span id="cart-subtotal-rm"></span></div>
               <div class="row" id="cart-svc-row" style="display:none"><span data-i18n="pos.serviceCharge">Service charge</span><span id="cart-svc-rm"></span></div>
               <div class="row"><span data-i18n="pos.sst">SST</span><span id="cart-tax-rm"></span></div>
               <div class="row grand"><span data-i18n="pos.total">Total</span><span id="cart-total-rm"></span></div>
             </div>
-            <button class="btn primary-lg" style="margin-top:14px" id="send-btn" data-action="send-order">🍳 <span data-i18n="pos.sendToKitchen">Send to Kitchen</span></button>
-            <button class="btn primary-lg sage" style="margin-top:10px;display:none" id="pay-btn" data-action="open-pay">💵 <span data-i18n="pos.pay">Pay</span></button>
+            <div class="bill-actions">
+              <button class="btn primary-lg" id="send-btn" data-action="send-order">🍳 <span data-i18n="pos.sendToKitchen">Send to Kitchen</span></button>
+              <button class="btn primary-lg sage" style="display:none" id="pay-btn" data-action="open-pay">💵 <span data-i18n="pos.pay">Take Payment</span></button>
+            </div>
             <details id="round-timeline" style="margin-top:14px;display:none">
               <summary class="label" style="cursor:pointer;min-height:44px;display:flex;align-items:center" data-i18n="pos.timeline">Order timeline</summary>
               <div id="round-timeline-body"></div>
@@ -109,12 +127,26 @@
           </div>
         </div>
       </div>
+
+      <!-- On a phone the bill sits below the menu, so the running total and the
+           one action that matters follow the thumb instead. -->
+      <div id="pos-mobile-bar" hidden>
+        <button class="mb-summary" data-action="scroll-to-bill">
+          <span class="mb-count" id="mb-count"></span>
+          <span class="mb-total" id="mb-total"></span>
+        </button>
+        <button class="btn" id="mb-send" data-action="send-order"></button>
+      </div>
     </section>
 
     <!-- KITCHEN -->
     <section id="tab-kitchen" class="tab">
-      <div class="card-head">
-        <h2 class="section-title" style="margin:0">🍳 <span data-i18n="kitchen.heading">Kitchen</span></h2>
+      <div class="view-head">
+        <div>
+          <h2>🍳 <span data-i18n="kitchen.heading">Kitchen</span></h2>
+          <div class="sub" id="kitchen-summary"></div>
+        </div>
+        <div class="actions"><button class="btn small ghost" data-action="help-topic" data-topic="kitchen">? How Kitchen works</button></div>
       </div>
       <div id="station-tabs" class="station-tabs" aria-label="Preparation stations"></div>
       <div id="kitchen-pending"></div>
@@ -128,9 +160,12 @@
 
     <!-- DASHBOARD -->
     <section id="tab-dashboard" class="tab">
-      <div class="card-head">
-        <h2 class="section-title" style="margin:0">💰 <span data-i18n="dashboard.heading">Sales</span></h2>
-        <button class="btn small ghost" data-action="refresh-dashboard">↻ <span data-i18n="common.refresh">Refresh</span></button>
+      <div class="view-head">
+        <div>
+          <h2>💰 <span data-i18n="dashboard.heading">Sales</span></h2>
+          <div class="sub" id="dash-updated"></div>
+        </div>
+        <div class="actions"><button class="btn small ghost" data-action="refresh-dashboard">↻ <span data-i18n="common.refresh">Refresh</span></button></div>
       </div>
       <div id="dash-kpis" class="kpi-grid"></div>
       <div class="chart-grid">
@@ -143,7 +178,7 @@
 
     <!-- SHIFT -->
     <section id="tab-shift" class="tab">
-      <h2 class="section-title">🕐 Shift</h2>
+      <div class="view-head"><div><h2>🕐 Shift</h2><div class="sub">Open the drawer, record cash in and out, close and print the Z report.</div></div></div>
 
       <div class="card" id="shift-closed-card">
         <h3>Open Shift</h3>

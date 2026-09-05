@@ -75,6 +75,17 @@ export async function renderTables() {
   $('takeaway-grid').innerHTML = takeaway
     .map(o => tileHtml({ key: `ta-${o.id}`, name: o.label, order: o, action: 'select-takeaway', id: o.id }))
     .join('') || '<div class="empty" style="grid-column:1/-1">No takeaway orders right now.</div>';
+
+  // A one-line read of the floor, above the grid: how many tables are running
+  // and how many are sitting there waiting to be collected from.
+  const open = Object.keys(byTable).length;
+  const toPay = Object.values(byTable).filter(o => o.status === 'served').length;
+  const summary = $('floor-summary');
+  if (summary) {
+    summary.textContent = open
+      ? `${open} table${open === 1 ? '' : 's'} open` + (toPay ? ` · ${toPay} ready to pay` : '')
+      : 'Every table is free.';
+  }
 }
 
 /* ===== WORKSPACE ===== */
@@ -96,7 +107,9 @@ function openWorkspace(sel) {
   $('pos-tables').style.display = 'none';
   $('pos-workspace').style.display = '';
   $('ws-title').textContent = sel.name;
-  $('ws-state').innerHTML = '';
+  $('bill-where').textContent = sel.name;
+  $('bill-kind').textContent = sel.type === 'takeaway' ? 'Takeaway' : 'Dine in';
+  $('bill-badge').innerHTML = '';
   $('move-order-btn').style.display = 'none';
   renderCart();
   renderMenu();
@@ -118,6 +131,7 @@ function newTakeaway() {
 }
 
 function backToTables() {
+  $('pos-mobile-bar').hidden = true;
   $('pos-workspace').style.display = 'none';
   $('pos-tables').style.display = '';
   state.selTable = null;
@@ -157,7 +171,11 @@ async function checkOpenOrder() {
     if (open) {
       liveOrder = open;
       state.selTable.orderId = open.id;
-      if (sel.type === 'takeaway') { state.selTable.name = open.label; $('ws-title').textContent = open.label; }
+      if (sel.type === 'takeaway') {
+        state.selTable.name = open.label;
+        $('ws-title').textContent = open.label;
+        $('bill-where').textContent = open.label;
+      }
       state.cart = open.items.map(l => ({
         id: l.id, item_id: l.item_id || 0, name: l.name, price: l.price, qty: l.qty, mods: l.mods,
         note: l.note || '', seat: l.seat, sent: true, voided: l.voided, void_reason: l.void_reason,
@@ -168,13 +186,13 @@ async function checkOpenOrder() {
       $('pay-btn').dataset.orderStatus = open.status;
       $('move-order-btn').style.display = '';
       const w = stateWords(open.status);
-      $('ws-state').innerHTML = `<span class="badge ${esc(open.status)}">${w.icon} ${esc(w.label)}</span>`;
+      $('bill-badge').innerHTML = `<span class="badge ${esc(open.status)}">${w.icon} ${esc(w.label)}</span>`;
     } else {
       liveOrder = null;
       state.cart = unsent;
       $('pay-btn').style.display = 'none';
       $('move-order-btn').style.display = 'none';
-      $('ws-state').innerHTML = '';
+      $('bill-badge').innerHTML = '';
     }
     renderCart();
   } catch (e) { /* offline — keep showing what we have */ }
@@ -187,11 +205,31 @@ async function checkOpenOrder() {
 let searchQuery = '';
 let favIds = new Set();
 
+/* No photograph exists for a menu item — this restaurant types its menu, it does
+   not shoot it — so the card carries a monogram tile built from the item's own
+   name instead. Four token tints, chosen deterministically, so the grid reads as
+   a grid and the same dish always looks the same. */
+function monogram(name) {
+  const words = String(name).trim().split(/\s+/).filter(Boolean);
+  const letters = (words.length > 1 ? words[0][0] + words[1][0] : (words[0] || '?').slice(0, 2)).toUpperCase();
+  let h = 0;
+  for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return { letters, tint: 't' + (h % 4) };
+}
+
 function itemButton(it, extraClass = '') {
   const station = state.menu.stations?.find(s => s.code === it.station_code);
-  return `<button class="item-btn ${extraClass}" data-action="add-item" data-id="${it.id}">
+  const m = monogram(it.name);
+  const asks = (it.modifier_group_ids || []).length;
+  return `<button class="item-btn ${extraClass}" data-action="add-item" data-id="${it.id}"
+      aria-label="Add ${esc(it.name)}, ${fmt(it.price)}">
+    <span class="top">
+      <span class="thumb ${m.tint}" aria-hidden="true">${esc(m.letters)}</span>
+      <span class="plus" aria-hidden="true">+</span>
+    </span>
     <span class="nm">${esc(it.name)}</span>
     ${station && station.code !== 'kitchen' ? `<span class="st">${esc(station.name)}</span>` : ''}
+    ${asks ? '<span class="mod-hint">Has choices</span>' : ''}
     <span class="pr">${fmt(it.price)}</span></button>`;
 }
 
@@ -292,32 +330,41 @@ function saveNote(note) {
   renderCart();
 }
 
+/* A bill line is three rows, not one: what it is and what it costs, then what
+   was asked for, then the controls. Squeezing a stepper, a note button and a
+   seat box onto the same row as the name turned every dish into three wrapped
+   lines on the panel width a tablet actually has. */
 function lineHtml(l, i) {
   const lt = (l.price + l.mods.reduce((s, m) => s + m.price, 0)) * l.qty;
   const modStr = l.mods.map(m => m.name + (m.price ? ` +${fmt(m.price)}` : '')).join(', ');
   const sub = [modStr, l.note ? `📝 ${l.note}` : '', l.seat != null ? `Seat ${l.seat}` : '']
     .filter(Boolean).map(esc).join(' · ');
 
-  let right;
-  if (l.voided) right = '';
-  else if (l.sent === 'pending') right = '<span class="round-tag pending">⏳ sending</span>';
-  else if (l.sent) right = `<button data-action="void-line" data-id="${i}">❌ Void</button>`;
-  else right = `<div class="qty">
+  let actions = '';
+  if (l.voided) actions = '';
+  else if (l.sent === 'pending') actions = '<span class="round-tag pending">⏳ Sending…</span>';
+  else if (l.sent) actions = `<button data-action="void-line" data-id="${i}">❌ Void</button>`;
+  else actions = `<div class="qty">
       <button data-action="cart-qty" data-id="${i}" data-delta="-1" aria-label="One fewer">−</button>
       <button data-action="cart-qty" data-id="${i}" data-delta="1" aria-label="One more">+</button>
-      <button data-action="open-note" data-id="${i}" aria-label="Add a remark">📝</button>
-      <button data-action="cart-del" data-id="${i}" aria-label="Remove">✕</button>
-    </div>`;
-
-  return `<div class="cart-line"${l.voided || l.sent === 'pending' ? ' style="opacity:.6"' : ''}>
-    <div>
-      <div class="line-name">${l.qty}× ${esc(l.name)}${l.voided ? ' <span class="round-tag voided">Voided</span>' : ''}</div>
-      ${sub ? `<div class="line-sub">${sub}</div>` : ''}
-      ${l.voided && l.void_reason ? `<div class="line-sub">${esc(l.void_reason)}</div>` : ''}
-      ${!l.sent && !l.voided ? `<input type="number" min="1" placeholder="Seat" value="${l.seat ?? ''}"
-          data-action="set-seat" data-id="${i}" style="width:76px;margin-top:6px;font-size:14px;padding:6px 8px;min-height:36px">` : ''}
     </div>
-    <div class="line-right"><span${l.voided ? ' style="text-decoration:line-through"' : ''}>${fmt(lt)}</span>${right}</div>
+    <button class="ln-btn" data-action="open-note" data-id="${i}" aria-label="Add a remark for ${esc(l.name)}">📝</button>
+    <button class="seat-btn${l.seat != null ? ' on' : ''}" data-action="set-seat" data-id="${i}"
+      aria-label="Set the seat for ${esc(l.name)}">${l.seat != null ? `Seat ${l.seat}` : 'Seat'}</button>
+    <button class="ln-btn del" data-action="cart-del" data-id="${i}" aria-label="Remove ${esc(l.name)}">✕</button>`;
+
+  const cls = ['bill-line'];
+  if (l.sent !== true) cls.push('is-new');
+  if (l.voided || l.sent === 'pending') cls.push('is-muted');
+
+  return `<div class="${cls.join(' ')}">
+    <div class="bl-top">
+      <span class="bl-name">${l.qty}× ${esc(l.name)}${l.voided ? ' <span class="round-tag voided">Voided</span>' : ''}</span>
+      <span class="bl-price"${l.voided ? ' style="text-decoration:line-through"' : ''}>${fmt(lt)}</span>
+    </div>
+    ${sub ? `<div class="bl-sub">${sub}</div>` : ''}
+    ${l.voided && l.void_reason ? `<div class="bl-sub">${esc(l.void_reason)}</div>` : ''}
+    ${actions ? `<div class="bl-actions">${actions}</div>` : ''}
   </div>`;
 }
 
@@ -345,19 +392,21 @@ function renderCart() {
         if (!rounds.has(key)) rounds.set(key, []);
         rounds.get(key).push([l, i]);
       });
-      html += `<div class="bill-group-head"><span>✅ Already sent</span></div>`;
+      const sentQty = sentLines.filter(([l]) => !l.voided).reduce((s2, [l]) => s2 + l.qty, 0);
+      html += `<div class="bill-group-head"><span>✅ Already sent</span><span>${sentQty} item${sentQty === 1 ? '' : 's'}</span></div>`;
       [...rounds.keys()].sort((a, b) => a - b).forEach(round => {
         const lines = rounds.get(round);
         const st = lines.find(([l]) => l.round_status)?.[0].round_status;
         const w = stateWords(st || 'sent');
-        html += `<div class="bill-group-head" style="margin-top:10px">
+        html += `<div class="bill-round-head">
             <span>Round ${round}</span><span class="round-tag ${esc(st || '')}">${w.icon} ${esc(w.label)}</span></div>`;
         html += lines.map(([l, i]) => lineHtml(l, i)).join('');
       });
     }
 
     if (newLines.length) {
-      html += `<div class="bill-group-head"><span>🆕 New items — not sent yet</span></div>`;
+      const newQty = newLines.reduce((s2, [l]) => s2 + l.qty, 0);
+      html += `<div class="bill-group-head new"><span>🆕 New — not sent yet</span><span>${newQty} item${newQty === 1 ? '' : 's'}</span></div>`;
       html += newLines.map(([l, i]) => lineHtml(l, i)).join('');
     }
     $('cart-body').innerHTML = html;
@@ -386,9 +435,28 @@ function renderCart() {
   btn.disabled = count === 0;
   btn.innerHTML = count === 0
     ? '🍳 <span>Send to Kitchen</span>'
-    : `🍳 <span>Send ${count} new item${count === 1 ? '' : 's'} to kitchen</span>`;
+    : `🍳 <span>Send ${count} new item${count === 1 ? '' : 's'}</span>`;
 
   renderTimeline();
+  renderMobileBar(count, bill ? bill.grand_total + unsentSubtotal : rawTotal);
+}
+
+/* The same two facts the bill panel shows, following the thumb on a phone: what
+   is going to the kitchen, and what the table owes. Hidden on a wide screen,
+   where the bill panel is already on the right of the menu. */
+function renderMobileBar(newCount, total) {
+  const bar = $('pos-mobile-bar');
+  if (!bar) return;
+  const visible = !!state.selTable && state.cart.length > 0;
+  bar.hidden = !visible;
+  if (!visible) return;
+  $('mb-count').textContent = newCount
+    ? `${newCount} new item${newCount === 1 ? '' : 's'} to send`
+    : 'Nothing new to send';
+  $('mb-total').textContent = fmt(total);
+  const send = $('mb-send');
+  send.disabled = newCount === 0;
+  send.textContent = newCount ? `🍳 Send ${newCount}` : '🍳 Send';
 }
 
 /* A compact history, deliberately secondary — collapsed until asked for. */
@@ -412,10 +480,20 @@ function renderTimeline() {
   }).join('');
 }
 
-function setSeat(idx, value) {
-  if (state.cart[idx]?.sent) return;
-  const n = parseInt(value);
-  state.cart[idx].seat = n > 0 ? n : null;
+/* Seat numbers only matter when a table wants to split by seat, so they are one
+   tap behind the line rather than a box on every one of them. */
+async function setSeat(idx) {
+  const line = state.cart[idx];
+  if (!line || line.sent) return;
+  const value = await ask({
+    title: `Seat for ${line.name}`,
+    hint: 'Used when the table wants to split the bill by seat. Leave empty to clear it.',
+    value: line.seat != null ? String(line.seat) : '', placeholder: 'e.g. 2', ok: 'Save',
+  });
+  if (value === null) return;
+  const n = parseInt(value, 10);
+  line.seat = n > 0 ? n : null;
+  renderCart();
 }
 
 async function voidLine(idx) {
@@ -845,10 +923,8 @@ $('tab-pos').addEventListener('click', e => {
   else if (a === 'send-order') sendOrder();
   else if (a === 'open-pay') openPayModal();
   else if (a === 'open-move') openMove();
-});
-
-$('tab-pos').addEventListener('change', e => {
-  if (e.target.matches('input[data-action="set-seat"]')) setSeat(Number(e.target.dataset.id), e.target.value);
+  else if (a === 'set-seat') setSeat(Number(el.dataset.id));
+  else if (a === 'scroll-to-bill') $('bill-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
 $('item-search').addEventListener('input', e => setSearch(e.target.value));

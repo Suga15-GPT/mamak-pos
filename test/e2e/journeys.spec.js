@@ -22,12 +22,12 @@ async function login(page) {
   if (collapsed) await page.locator('#account-toggle').click(); // put it away again
 }
 
-// The nav renders twice (top tabs on a tablet, a bottom bar on a phone); at the
-// desktop viewport the top one is the visible copy.
+// The nav renders twice (a left rail from 768px up, a bottom bar below it); at
+// the desktop viewport the rail is the visible copy.
 const navTab = (page, name) => page.locator('#nav').getByRole('button', { name });
 
-/* The header's account controls collapse behind one button below 600px, so a
-   phone-sized check has to open them before it can see the user's name. */
+/* The header's account controls live behind one disclosure button at every
+   width, so a check has to open them before it can see the user's name. */
 async function openAccountMenu(page) {
   const toggle = page.locator('#account-toggle');
   if (!(await toggle.isVisible())) return false;
@@ -59,7 +59,7 @@ test('staff login → order → kitchen → pay', async ({ page, request }) => {
   await addItem(page, 'Roti', 'Roti Canai');
   await expect(page.locator('#cart-body')).toContainText('Roti Canai');
 
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#cart-body')).toContainText('Already sent');
   await expect(page.locator('#cart-body')).toContainText('Round 1');
 
@@ -77,7 +77,7 @@ test('staff login → order → kitchen → pay', async ({ page, request }) => {
   // Returning to the floor tab comes back to the bill that was open, refreshed.
   await navTab(page, 'Tables').click();
   await expect(page.locator('#ws-title')).toHaveText('T1');
-  await page.getByRole('button', { name: /^💵 Pay$/ }).click();
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
   await expect(page.getByRole('heading', { name: 'Payment' })).toBeVisible();
   await page.locator('#pay-modal').getByRole('button', { name: '💵 Cash', exact: true }).click();
   // Settling returns to the floor.
@@ -93,7 +93,7 @@ test('add-on opens a new round: round 1 stays served, round 2 is new', async ({ 
   await login(page);
   await openTable(page, 'T8');
   await addItem(page, 'Mee & Goreng', 'Mee Goreng Mamak');
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#cart-body')).toContainText('Round 1');
 
   // Take round 1 all the way through the kitchen.
@@ -108,7 +108,7 @@ test('add-on opens a new round: round 1 stays served, round 2 is new', async ({ 
   await navTab(page, 'Tables').click();
   await expect(page.locator('#ws-title')).toHaveText('T8');
   await addItem(page, 'Roti', 'Roti Canai');
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
 
   // Same bill, two rounds, and the add-on is NOT served.
   await expect(page.locator('#cart-body')).toContainText('Round 1');
@@ -116,9 +116,9 @@ test('add-on opens a new round: round 1 stays served, round 2 is new', async ({ 
   await expect(page.locator('#cart-body')).toContainText('Mee Goreng Mamak');
   await expect(page.locator('#cart-body')).toContainText('Roti Canai');
 
-  const round2 = page.locator('.bill-group-head', { hasText: 'Round 2' });
+  const round2 = page.locator('.bill-round-head', { hasText: 'Round 2' });
   await expect(round2).toContainText('New order');
-  const round1 = page.locator('.bill-group-head', { hasText: 'Round 1' });
+  const round1 = page.locator('.bill-round-head', { hasText: 'Round 1' });
   await expect(round1).toContainText('Served');
 
   // The kitchen sees the add-on as its own fresh ticket.
@@ -175,7 +175,7 @@ test('takeaway order needs no table', async ({ page, request }) => {
   await page.getByRole('button', { name: /New Takeaway/ }).click();
   await expect(page.locator('#ws-title')).toHaveText('New takeaway');
   await addItem(page, 'Roti', 'Roti Canai');
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#ws-title')).toContainText('Takeaway #');
 
   await page.getByRole('button', { name: /Back to Tables/ }).click();
@@ -197,10 +197,10 @@ test('split bill', async ({ page, request }) => {
   await addItem(page, 'Roti', 'Roti Canai');
   await expect(page.locator('#cart-body')).toContainText('2×');
 
-  await page.getByRole('button', { name: /Send 2 new items to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 2 new items/ }).click();
   await expect(page.locator('#cart-body')).toContainText('Already sent');
 
-  await page.getByRole('button', { name: /^💵 Pay$/ }).click();
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
   await expect(page.getByRole('heading', { name: 'Payment' })).toBeVisible();
   await page.getByRole('button', { name: 'Split evenly' }).click();
   // The styled ask() dialog replaced window.prompt() — it is part of the page.
@@ -226,17 +226,17 @@ test('void a line', async ({ page }) => {
   await openTable(page, 'T4');
   await addItem(page, 'Roti', 'Roti Canai');
   await addItem(page, 'Roti', 'Roti Telur');
-  await page.getByRole('button', { name: /Send 2 new items to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 2 new items/ }).click();
   await expect(page.locator('#cart-body')).toContainText('Already sent');
 
-  const canaiLine = page.locator('.cart-line', { hasText: 'Roti Canai' });
+  const canaiLine = page.locator('.bill-line', { hasText: 'Roti Canai' });
   await canaiLine.getByRole('button', { name: /Void/ }).click();
   await expect(page.getByRole('heading', { name: /Void Roti Canai/ })).toBeVisible();
   await page.locator('#ask-input').fill('customer changed their mind');
   await page.getByRole('button', { name: 'Void it' }).click();
 
-  await expect(page.locator('.cart-line', { hasText: 'Roti Canai' })).toContainText('Voided');
-  await expect(page.locator('.cart-line', { hasText: 'Roti Telur' })).not.toContainText('Voided');
+  await expect(page.locator('.bill-line', { hasText: 'Roti Canai' })).toContainText('Voided');
+  await expect(page.locator('.bill-line', { hasText: 'Roti Telur' })).not.toContainText('Voided');
 });
 
 test('offline order reconciles', async ({ page, context, request }) => {
@@ -245,15 +245,15 @@ test('offline order reconciles', async ({ page, context, request }) => {
 
   await openTable(page, 'T6');
   await addItem(page, 'Roti', 'Roti Canai');
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
-  await expect(page.locator('#cart-body')).toContainText('sending');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#cart-body')).toContainText('Sending');
   await expect(page.locator('#offline-banner')).toBeVisible();
   await expect(page.locator('#offline-banner')).toContainText('1 order');
 
   await page.getByRole('button', { name: /Back to Tables/ }).click();
   await openTable(page, 'T7');
   await addItem(page, 'Roti', 'Roti Telur');
-  await page.getByRole('button', { name: /Send 1 new item to kitchen/ }).click();
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#offline-banner')).toContainText('2 orders');
 
   await context.setOffline(false);
@@ -328,7 +328,7 @@ for (const vp of VIEWPORTS) {
 
     // Every destination this role can reach, including the Admin sections that
     // were the worst offenders (printers, the QR grid, modifier controls).
-    const tabs = vp.width <= 768 ? page.locator('#bottom-nav button') : page.locator('#nav button');
+    const tabs = vp.width < 768 ? page.locator('#bottom-nav button') : page.locator('#nav button');
     const count = await tabs.count();
     for (let i = 0; i < count; i++) {
       await tabs.nth(i).click();

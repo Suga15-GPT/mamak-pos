@@ -1,4 +1,4 @@
-import { state, $ } from './state.js';
+import { $, esc } from './state.js';
 import { refreshPos } from './pos.js';
 import { refreshKitchen } from './kitchen.js';
 import { refreshDashboard } from './dashboard.js';
@@ -27,15 +27,26 @@ function allowed() { return TAB_DEFS.filter(def => def.roles.includes(API.user.r
 
 function buttonHtml(def) {
   const badge = def.id === 'kitchen' && pendingCount ? `<span class="nav-badge">${pendingCount}</span>` : '';
-  return `<button class="${def.id === activeTab ? 'active' : ''}" data-action="switch-tab" data-id="${def.id}"
-            aria-current="${def.id === activeTab ? 'page' : 'false'}">
-            <span class="nav-ico" aria-hidden="true">${def.icon}</span><span>${t(def.key)}</span>${badge}</button>`;
+  const on = def.id === activeTab;
+  return `<button class="${on ? 'active' : ''}" data-action="switch-tab" data-id="${def.id}"
+            aria-current="${on ? 'page' : 'false'}">
+            <span class="nav-ico" aria-hidden="true">${def.icon}</span><span class="nav-label">${t(def.key)}</span>${badge}</button>`;
 }
 
+/* Two shells, one set of destinations. The rail carries the wordmark and who is
+   logged in — a phone's bottom bar has room for neither, and putting them there
+   would cost a row of thumb space that belongs to the work. */
 function paint() {
-  const html = allowed().map(buttonHtml).join('');
-  $('nav').innerHTML = html;
-  $('bottom-nav').innerHTML = html;
+  const items = allowed().map(buttonHtml).join('');
+  $('nav').innerHTML = `
+    <div class="nav-brand">
+      <span class="mark" aria-hidden="true">🍜</span>
+      <span class="words"><span class="n">Mamak POS</span><span class="r">${esc(API.user?.name || '')}</span></span>
+    </div>
+    ${items}`;
+  $('bottom-nav').innerHTML = items;
+  const current = allowed().find(d => d.id === activeTab);
+  if ($('page-title')) $('page-title').textContent = current ? t(current.key) : '';
 }
 
 export function buildNav() {
