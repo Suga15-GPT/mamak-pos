@@ -200,7 +200,7 @@ async function checkOpenOrder() {
       state.cart = open.items.map(l => ({
         id: l.id, item_id: l.item_id || 0, name: l.name, price: l.price, qty: l.qty, mods: l.mods,
         note: l.note || '', seat: l.seat, sent: true, voided: l.voided, void_reason: l.void_reason,
-        round: l.round, round_status: l.round_status, station: l.station, send_id: l.send_id,
+        round: l.round, round_status: l.round_status, station: l.station, send_id: l.send_id, held: l.held,
       })).concat(unsent);
       $('pay-btn').style.display = '';
       $('pay-btn').dataset.orderId = open.id;
@@ -367,6 +367,9 @@ function lineHtml(l, i) {
 
   let actions = '';
   if (l.voided) actions = '';
+  // A customer's QR round waiting for staff approval: shown, but not on the
+  // bill — it counts in no total until someone accepts it.
+  else if (l.held) actions = '<span class="round-tag pending">⏳ Awaiting approval</span>';
   else if (l.sent === 'pending') actions = '<span class="round-tag pending">⏳ Sending…</span>';
   else if (l.sent) actions = `<button data-action="void-line" data-id="${i}">❌ Void</button>`;
   else actions = `<div class="qty">
@@ -380,12 +383,12 @@ function lineHtml(l, i) {
 
   const cls = ['bill-line'];
   if (l.sent !== true) cls.push('is-new');
-  if (l.voided || l.sent === 'pending') cls.push('is-muted');
+  if (l.voided || l.held || l.sent === 'pending') cls.push('is-muted');
 
   return `<div class="${cls.join(' ')}">
     <div class="bl-top">
       <span class="bl-name">${l.qty}× ${esc(l.name)}${l.voided ? ' <span class="round-tag voided">Voided</span>' : ''}</span>
-      <span class="bl-price"${l.voided ? ' style="text-decoration:line-through"' : ''}>${fmt(lt)}</span>
+      <span class="bl-price"${l.voided || l.held ? ' style="text-decoration:line-through"' : ''}>${fmt(lt)}</span>
     </div>
     ${sub ? `<div class="bl-sub">${sub}</div>` : ''}
     ${l.voided && l.void_reason ? `<div class="bl-sub">${esc(l.void_reason)}</div>` : ''}
@@ -443,7 +446,7 @@ function renderCart() {
   let rawTotal = 0, unsentSubtotal = 0;
   state.cart.forEach(l => {
     const lt = (l.price + l.mods.reduce((s, m) => s + m.price, 0)) * l.qty;
-    if (l.voided) return;
+    if (l.voided || l.held) return;
     rawTotal += lt;
     if (l.sent !== true) unsentSubtotal += lt;
   });
@@ -760,9 +763,13 @@ function renderGroupPayModal() {
   const rows = g.members.map(m => `<div class="bill-group-head">${esc(m.label)}</div>` +
     m.items.filter(i => !i.voided).map(i => {
       const unit = i.price + i.mods.reduce((t, x) => t + x.price, 0);
+      // A held line is shown, but is not on the bill and has no price yet.
       return `<div class="cart-line"><div class="line-sub">${i.qty}× ${esc(i.name)}</div>
-        <div class="line-right">${fmt(Math.round(unit * i.qty * 100) / 100)}</div></div>`;
+        <div class="line-right">${i.held ? '⏳ Awaiting approval' : fmt(Math.round(unit * i.qty * 100) / 100)}</div></div>`;
     }).join(''));
+  if (g.awaiting_approval) {
+    rows.unshift('<div class="banner warn" style="margin-bottom:8px">A customer order is waiting for approval — approve or reject it first.</div>');
+  }
   rows.push(`<div class="totals"><div class="row"><span>Subtotal</span><span>${fmt(g.subtotal)}</span></div>`);
   if (g.service_charge) rows.push(`<div class="row"><span>Service charge</span><span>${fmt(g.service_charge)}</span></div>`);
   rows.push(`<div class="row"><span>SST</span><span>${fmt(g.tax)}</span></div>`);
@@ -784,7 +791,12 @@ function renderPayModal() {
     $('cash-received-input').value = '';
     $('pay-change-due').textContent = '';
     $('pay-cash-row').style.display = '';
-    $('pay-amount-row').style.display = '';
+    // A combined bill is paid in full in one go: no part-payment row; the
+    // legs section takes a cash part plus the rest by card instead.
+    $('pay-amount-row').style.display = 'none';
+    $('pay-group-legs').style.display = '';
+    ['group-cash-part', 'group-cash-received'].forEach(id => { $(id).value = ''; });
+    updateGroupLegsSummary();
     closeDiscountForm();
     closeRefundForm();
     $('refund-section').style.display = 'none';
@@ -792,6 +804,7 @@ function renderPayModal() {
     renderSplitResult();
     return;
   }
+  $('pay-group-legs').style.display = 'none';
   const o = currentOrder;
   const rows = [`<div class="totals"><div class="row"><span>Subtotal</span><span>${fmt(o.subtotal)}</span></div>`];
   if (o.service_charge) rows.push(`<div class="row"><span>Service charge</span><span>${fmt(o.service_charge)}</span></div>`);
@@ -874,7 +887,7 @@ async function processPay(method, amount, tendered) {
     const body = { method };
     if (amount != null) body.amount = amount;
     if (method === 'Cash' && tendered != null) body.tendered = tendered;
-    const r = await API.post(currentGroupId ? `/api/bill-groups/${currentGroupId}/pay` : `/api/orders/${orderId}/pay`, body);
+    const r = await API.post(`/api/orders/${orderId}/pay`, body);
     if (r.settled) {
       closePayModal();
       toast(r.change > 0 ? `Paid — change ${fmt(r.change)}` : 'Paid in full');
@@ -886,8 +899,55 @@ async function processPay(method, amount, tendered) {
   } catch (e) { toast('Payment failed: ' + e.message); }
 }
 
+/* ===== COMBINED BILL: every leg at once =====
+   The server takes the legs together and refuses anything that would leave
+   the bill open, so the screen only ever submits a whole payment. */
+const roundCash = rm => Math.round(rm * 20) / 20;
+
+function groupLegsFromForm() {
+  const due = currentOrder.amount_due;
+  const cashPart = roundCash(Number($('group-cash-part').value || 0));
+  const received = Number($('group-cash-received').value || 0);
+  const rest = Math.round((due - cashPart) * 100) / 100;
+  return { due, cashPart, received, rest, method: $('group-rest-method').value };
+}
+
+function updateGroupLegsSummary() {
+  if (!currentGroupId || !currentOrder) return;
+  const f = groupLegsFromForm();
+  if (!(f.cashPart > 0)) { $('group-legs-summary').textContent = ''; return; }
+  if (f.rest < 0) { $('group-legs-summary').textContent = 'The cash part is more than the bill — use 💵 Cash instead.'; return; }
+  const change = f.received ? Math.round((f.received - f.cashPart) * 100) / 100 : 0;
+  $('group-legs-summary').textContent = `Cash ${fmt(f.cashPart)} + ${f.method === 'Card' ? 'card' : 'e-wallet'} ${fmt(f.rest)}`
+    + (f.received ? (change >= 0 ? ` · change ${fmt(change)}` : ' · not enough cash received') : '');
+}
+
+async function payGroup(legs) {
+  if (!navigator.onLine) return toast('Cannot take payment while offline');
+  try {
+    const r = await API.post(`/api/bill-groups/${currentGroupId}/pay`, { legs });
+    closePayModal();
+    toast(r.change > 0 ? `Paid — change ${fmt(r.change)}` : 'Paid in full');
+    backToTables();
+  } catch (e) { toast('Payment failed: ' + e.message); }
+}
+
+function payGroupLegs() {
+  const f = groupLegsFromForm();
+  if (!(f.cashPart > 0)) return toast('Enter the cash part');
+  if (f.rest <= 0) return toast('The cash part covers the whole bill — use 💵 Cash instead');
+  if (f.received && f.received < f.cashPart) return toast('Cash received is less than the cash part');
+  const cash = { method: 'Cash', amount: f.cashPart };
+  if (f.received) cash.tendered = f.received;
+  return payGroup([{ method: f.method, amount: f.rest }, cash]);
+}
+
 async function payFull(method) {
   const tenderedInput = $('cash-received-input').value;
+  if (currentGroupId) {
+    if (method !== 'Cash') return payGroup([{ method, amount: currentOrder.amount_due }]);
+    return payGroup([tenderedInput ? { method: 'Cash', tendered: Number(tenderedInput) } : { method: 'Cash' }]);
+  }
   if (method === 'Cash' && tenderedInput) {
     const tenderedCents = Math.round(Number(tenderedInput) * 100);
     if (tenderedCents < Math.round(currentOrder.amount_due * 100)) return toast('Cash received is less than the amount due');
@@ -1101,6 +1161,7 @@ $('pay-modal').addEventListener('click', e => {
     const a = el.dataset.action;
     if (a === 'pay') payFull(el.dataset.method);
     else if (a === 'pay-amount') payAmount(el.dataset.method || 'Cash');
+    else if (a === 'pay-group-legs') payGroupLegs();
     else if (a === 'pay-share') paySplitShare(Number(el.dataset.idx), el.dataset.method || 'Cash');
     else if (a === 'split-evenly') splitEvenlyUI();
     else if (a === 'split-by-seat') splitBySeatUI();
@@ -1121,6 +1182,8 @@ $('pay-modal').addEventListener('change', e => {
   if (e.target.id === 'discount-kind') updateDiscountValueUI();
 });
 $('cash-received-input').addEventListener('input', updateChangeDue);
+['group-cash-part', 'group-cash-received'].forEach(id => $(id).addEventListener('input', updateGroupLegsSummary));
+$('group-rest-method').addEventListener('change', updateGroupLegsSummary);
 
 /* Realtime: a change on any card's order updates the floor live, or — if this
    device is inside that order's workspace — its bill and pay button. */

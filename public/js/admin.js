@@ -411,7 +411,8 @@ function renderTablesSection() {
   if (settings.qr_mode === 'shop') {
     $('qr-print-title').textContent = 'Shop poster';
     $('qr-grid').innerHTML = `<div class="qr-card"><img id="qr-img-shop" alt="Shop QR code">
-      <div class="qr-name">Scan to order</div><div class="qr-url" id="qr-shop-url"></div></div>`;
+      <div class="qr-name">Scan to order</div><div class="qr-url" id="qr-shop-url"></div>
+      <div class="qr-actions"><button class="btn small outline" data-action="regenerate-shop-qr">New QR</button></div></div>`;
     API.get('/api/admin/qr-shop').then(r => { shopUrl = r.url; const u = $('qr-shop-url'); if (u) u.textContent = r.url || ''; }).catch(() => {});
     API.getBlobUrl('/api/admin/qr-shop.png')
       .then(url => { const img = $('qr-img-shop'); if (img) { img.src = url; img.dataset.blob = url; } })
@@ -424,6 +425,7 @@ function renderTablesSection() {
       <div class="qr-number">${c.number}</div>
       <img id="qr-img-${c.id}" alt="QR code for card ${c.number}">
       <div class="qr-url">${esc(c.url)}</div>
+      <div class="qr-actions"><button class="btn small outline" data-action="regenerate-card-qr" data-id="${c.id}">New QR</button></div>
     </div>`).join('') || '<div class="empty">No cards yet.</div>';
   cardsData.forEach(c => {
     API.getBlobUrl(`/api/admin/cards/${c.id}/qr.png`)
@@ -461,6 +463,21 @@ function printQrSheet() {
   const done = () => { document.body.classList.remove('printing'); area.innerHTML = ''; window.removeEventListener('afterprint', done); };
   window.addEventListener('afterprint', done);
   window.print();
+}
+
+// A new QR token for one card, or for the shop poster. Every printed copy of
+// the old one stops working — the point, when a QR was photographed and abused.
+async function regenerateCardQr(id) {
+  const c = cardsData.find(x => x.id === id);
+  if (!c || !confirm(`Make a new QR for Card ${c.number}? The printed Card ${c.number} QR will stop working — reprint it.`)) return;
+  try { await API.post(`/api/admin/cards/${id}/regenerate-qr`, {}); toast(`Card ${c.number} has a new QR`); refreshAdmin(); }
+  catch (e) { toast(e.message); }
+}
+
+async function regenerateShopQr() {
+  if (!confirm('Make a new shop QR? Every printed copy of the current poster will stop working — reprint it.')) return;
+  try { await API.post('/api/admin/qr-shop/regenerate', {}); toast('The shop poster has a new QR'); refreshAdmin(); }
+  catch (e) { toast(e.message); }
 }
 
 async function saveCardCount() {
@@ -643,6 +660,7 @@ const ACTION_WORDS = {
   'bill_group.combine': 'Combined bills', 'bill_group.remove': 'Took a card off a combined bill',
   'bill_group.dissolve': 'Split a combined bill apart', 'bill_group.pay': 'Took a payment on a combined bill',
   'cards.count': 'Changed how many cards are in use',
+  'card.qr_regenerate': 'Made a new QR for a card', 'qr_shop.regenerate': 'Made a new shop QR',
   'round.status': 'Moved a kitchen round along',
   'round.approve': 'Accepted a customer order',
   'round.reject': 'Rejected a customer order',
@@ -731,6 +749,8 @@ $('tab-admin').addEventListener('click', e => {
     },
     'save-card-count': saveCardCount,
     'print-qr-sheet': printQrSheet,
+    'regenerate-card-qr': () => regenerateCardQr(id),
+    'regenerate-shop-qr': regenerateShopQr,
     'save-rates': saveRates,
     'save-restaurant-identity': saveRestaurantIdentity,
     'create-printer': createPrinter,
