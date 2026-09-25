@@ -5,7 +5,7 @@ const { publicH } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
 const { rateLimit } = require('../lib/auth');
 const { buildOrderItems, insertOrder, appendSend, ORDERABLE_SQL } = require('../services/orders');
-const { recomputeOrderBill, hasPayments } = require('../services/billing');
+const { hasPayments } = require('../services/billing');
 const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const voice = require('../services/voice');
@@ -124,9 +124,6 @@ router.post('/api/public/orders', publicH(async (req, res) => {
         ({ sendId, seqNo } = await appendSend(orderId, parsed, 'qr', null, null, { approvalState, publicRef }));
       } else throw e;
     }
-    // appendSend recomputes inside its own transaction; a brand-new order
-    // still needs its first bill written.
-    if (seqNo === 1) await recomputeOrderBill(orderId);
   }
 
   publish(open.rows[0] ? 'order.updated' : 'order.created', { order_id: orderId, card_id: cardId });

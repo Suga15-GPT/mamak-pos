@@ -98,6 +98,9 @@ async function insertOrder(cardId, parsed, note, source, userId = null, idemKey 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Opening a bill writes an order, its lines and its first total: bill
+    // lock first, like every other bill write (lib/billlock).
+    await lockBills(client);
     // FOR SHARE: lowering the card count locks the cards it retires, so a card
     // can't be opened in the instant it is being taken out of use.
     if (cardId != null) {
@@ -120,6 +123,8 @@ async function insertOrder(cardId, parsed, note, source, userId = null, idemKey 
     if (approvalState === 'approved') {
       await rounds.openTickets(client, send.id, parsed.map(l => l.item.station_code || 'kitchen'));
     }
+    // The first total is written in the same transaction as the lines.
+    await require('./billing').recomputeOrderBill(orderId, client);
     await client.query('COMMIT');
     return { orderId, sendId: send.id, seqNo: send.seq_no };
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }

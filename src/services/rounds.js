@@ -1,5 +1,6 @@
 const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
+const { lockBills } = require('../lib/billlock');
 
 /* ===== kitchen rounds =====
    A "round" (order_sends) is one batch of items sent to preparation. Every
@@ -88,7 +89,11 @@ async function deriveOrderStatus(client, orderId) {
   const live = new Set(r.rows.map(x => x.status));
   const next = ROLLUP_ORDER.find(st => live.has(st)) || 'sent';
   if (next !== cur.rows[0].status) {
-    await client.query('UPDATE orders SET status = $1, updated_at = now() WHERE id = $2', [next, orderId]);
+    // Conditional: a cooking status can never overwrite a closed bill, whether
+    // or not the caller holds the bill lock (re-check 2, K).
+    await client.query(
+      "UPDATE orders SET status = $1, updated_at = now() WHERE id = $2 AND status NOT IN ('paid','cancelled','refunded')",
+      [next, orderId]);
   }
   return next;
 }
@@ -138,6 +143,9 @@ async function advanceTicket(ticketId, status, { userId, role }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // A tap writes a ticket and the order's status: bill lock first, so it is
+    // serialised with payment and cancel (re-check 2, K and X1).
+    await lockBills(client);
     const t = await client.query(
       `SELECT t.*, s.order_id FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id
         WHERE t.id = $1 FOR UPDATE OF t`, [ticketId]);

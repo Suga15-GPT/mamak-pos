@@ -94,7 +94,6 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
   try {
     const { orderId: id, sendId } = await insertOrder(
       cardId, parsed, String(note || '').slice(0, 300), 'staff', req.user.id, idemKey, { orderType });
-    await recomputeOrderBill(id);
     const cardNo = cardId ? (await pool.query('SELECT number FROM cards WHERE id = $1', [cardId])).rows[0]?.number : null;
     await writeAudit(pool, {
       userId: req.user.id, action: 'order.create', entityType: 'order', entityId: id,
@@ -277,6 +276,12 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Writes tickets and the order's status: bill lock first, then re-read
+      // the order. Read before the lock, a tap racing a payment waited on it
+      // and then wrote "served" over "paid" (re-check 2, K).
+      await lockBills(client);
+      const now = (await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [o.rows[0].id])).rows[0];
+      if (!(TRANSITIONS[now.status] || []).includes(status)) throw Object.assign(new Error(`cannot go ${now.status} -> ${status}`), { status: 409 });
       const tickets = (await client.query(
         `SELECT t.* FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id
           WHERE s.order_id = $1 AND s.approval_state = 'approved' AND t.status <> 'cancelled' FOR UPDATE OF t`,
