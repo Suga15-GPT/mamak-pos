@@ -160,9 +160,9 @@ async function uncombine(groupId, { orderId = null, userId }) {
     await client.query('BEGIN');
     const { group, members } = await lockGroup(client, groupId);
     if (orderId != null && !members.some(m => m.id === Number(orderId))) throw AppError('that card is not on this combined bill', 404);
-    const paid = (await client.query(
-      'SELECT DISTINCT order_id FROM payments WHERE order_id = ANY($1::int[])', [members.map(m => m.id)])).rows;
-    if (paid.length) throw AppError(UNCOMBINE_BLOCKED, 409);
+    // Net of refunds, as combine checks it.
+    const paid = await paidByOrder(client, members.map(m => m.id));
+    if (members.some(m => paid[m.id] > 0)) throw AppError(UNCOMBINE_BLOCKED, 409);
 
     const removed = orderId != null ? members.filter(m => m.id === Number(orderId)) : members;
     const r = await detach(client, group, members, removed, {
