@@ -118,6 +118,7 @@ async function deriveOrderStatus(client, orderId) {
    drop out of the approval queue the moment the bill closed and never be
    cooked. */
 const HELD_MESSAGE = 'A customer order is waiting for approval — approve or reject it first.';
+const TICKET_CLOSED_MESSAGE = 'This order is paid or closed, so its kitchen ticket can no longer be moved.';
 async function refuseWhileHeld(client, orderIds) {
   const r = await client.query(
     "SELECT 1 FROM order_sends WHERE order_id = ANY($1::int[]) AND approval_state = 'pending' LIMIT 1", [orderIds]);
@@ -163,6 +164,11 @@ async function advanceTicket(ticketId, status, { userId, role }) {
       `SELECT t.*, s.order_id FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id
         WHERE t.id = $1 FOR UPDATE OF t`, [ticketId]);
     if (!t.rows[0]) throw AppError('ticket not found', 404);
+    // A closed bill's tickets are off the board and stay as they are: read
+    // under the bill lock, so a tap that waited on a payment or a cancel is
+    // refused rather than moving food that has been paid for or written off.
+    const order = (await client.query('SELECT status FROM orders WHERE id = $1', [t.rows[0].order_id])).rows[0];
+    if (TERMINAL_ORDER_STATUSES.includes(order.status)) throw AppError(TICKET_CLOSED_MESSAGE, 409);
     const err = ticketTransitionError(t.rows[0].status, status, role);
     if (err) throw err;
 
@@ -261,7 +267,9 @@ async function listStationTickets(stationCode) {
       WHERE t.station_code = $1
         AND s.approval_state = 'approved'
         AND t.status <> 'cancelled'
-        AND o.status NOT IN ('cancelled','refunded')
+        -- Open bills only: a paid, cancelled or refunded order's tickets are
+        -- never kitchen work, and can't be tapped (advanceTicket).
+        AND o.status NOT IN ('paid','cancelled','refunded')
         AND (t.status <> 'served' OR t.served_at > now() - interval '2 hours')
         -- A ticket that went straight to served (the kitchen screen was off
         -- when it was sent) was never kitchen work, so it is not shown as such.
@@ -329,7 +337,7 @@ async function listPendingSends() {
 
 module.exports = {
   TICKET_STATUSES, TERMINAL_ORDER_STATUSES, TICKET_TRANSITIONS, BACKWARD_TICKET,
-  HELD_MESSAGE, refuseWhileHeld,
+  HELD_MESSAGE, TICKET_CLOSED_MESSAGE, refuseWhileHeld,
   listStations, createSend, openTickets, deriveOrderStatus, ticketStatusForLine,
   ticketTransitionError, advanceTicket, attachSends, listStationTickets, listPendingSends,
 };

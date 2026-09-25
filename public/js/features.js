@@ -18,12 +18,16 @@ export const PRESETS = {
 };
 
 // Everything on until told otherwise — the same default the server uses, so a
-// failed fetch hides nothing rather than hiding everything.
-const state = { flags: Object.fromEntries(MODULES.map(m => [m, true])), setupCompleted: true };
+// failed fetch hides nothing rather than hiding everything. shiftOpen likewise
+// assumes a shift is open until told, so no warning appears on a guess.
+const state = { flags: Object.fromEntries(MODULES.map(m => [m, true])), setupCompleted: true, shiftOpen: true };
 
 export const on = name => state.flags[name] !== false;
 export const setupCompleted = () => state.setupCompleted;
 export const flags = () => ({ ...state.flags });
+export const shiftOpen = () => state.shiftOpen;
+// From any /api/features or /api/setup answer, which all carry shift_open.
+export function setShiftOpen(open) { if (open !== undefined) state.shiftOpen = !!open; }
 
 export function applyFlags(next, setupDone = state.setupCompleted) {
   state.flags = { ...state.flags, ...next };
@@ -35,6 +39,7 @@ export async function loadFeatures() {
   try {
     const r = await API.get('/api/features');
     applyFlags(r.features, r.setup_completed);
+    setShiftOpen(r.shift_open);
   } catch (e) { console.error('features load failed', e); }
   return state;
 }

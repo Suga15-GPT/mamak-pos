@@ -11,13 +11,16 @@ const router = express.Router();
 
 // Every role reads the flags: the till, the kitchen screen and the nav all
 // hide what the shop has switched off. The server refuses it regardless.
+// shift_open lets the screens warn that, with shifts on and no shift open,
+// payments are refused until someone opens one.
 router.get('/api/features', requireRole(), awaitH(async (req, res) => {
   const s = await features.state();
-  res.json({ features: s.flags, setup_completed: s.setupCompleted });
+  res.json({ features: s.flags, setup_completed: s.setupCompleted, shift_open: await features.shiftOpen() });
 }));
 
-// features.save takes the bill lock first, so everything written here —
-// the flags, and the wizard's settings through `extra` — commits under it.
+// One transaction. features.save takes the bill lock first, so everything
+// written here — the flags, and the wizard's card count and settings through
+// `extra` — commits under it together, or not at all.
 async function saveFeatures(changes, userId, extra) {
   const client = await pool.connect();
   let result;
@@ -33,7 +36,7 @@ async function saveFeatures(changes, userId, extra) {
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   await features.reload();
   publish('features.updated', {});
-  return { features: result.features, switched_off: result.switched_off };
+  return { features: result.features, switched_off: result.switched_off, shift_open: await features.shiftOpen() };
 }
 
 function pickFlags(body) {
@@ -60,9 +63,11 @@ const pct = (v, key) => {
 /* The wizard's Finish. Everything it collected in one request:
    { restaurant_name, restaurant_address, sst_number, tax_rate_bp, svc_rate_bp,
      features: {...}, card_count, qr_mode: 'per_card' | 'shop' }.
-   Validated before anything is written. The card count has its own
-   transaction and in-use guard (a re-run can't retire a card with a bill on
-   it); every settings row, the flags and setup_completed then commit together. */
+   Every field is validated before anything is written. Then the card count
+   (with its in-use guard: a re-run can't retire a card with a bill on it),
+   every settings row, the flags (with the switch-off refusals) and
+   setup_completed are written in one transaction under the bill lock: a
+   refused Finish changes nothing. */
 router.post('/api/setup', requireRole('admin'), awaitH(async (req, res) => {
   const b = req.body || {};
   const rows = [];
@@ -75,19 +80,20 @@ router.post('/api/setup', requireRole('admin'), awaitH(async (req, res) => {
     if (!['per_card', 'shop'].includes(b.qr_mode)) throw AppError('bad qr_mode', 400);
     rows.push(['qr_mode', b.qr_mode]);
   }
-  if (b.card_count !== undefined) await cards.setCardCount(b.card_count, req.user.id);
+  const cardCount = b.card_count !== undefined ? cards.parseCardCount(b.card_count) : null;
 
   const result = await saveFeatures(pickFlags(b), req.user.id, async client => {
+    if (cardCount != null) await cards.setCardCountTx(client, cardCount, req.user.id);
     for (const [key, value] of [...rows, ['setup_completed', '1']]) {
       await client.query(
         'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value', [key, value]);
     }
     await writeAudit(client, {
       userId: req.user.id, action: 'setup.complete', entityType: 'settings', entityId: null,
-      detail: { settings: Object.fromEntries(rows), card_count: b.card_count ?? null },
+      detail: { settings: Object.fromEntries(rows), card_count: cardCount },
     });
   });
-  if (b.card_count !== undefined) publish('cards.updated', {});
+  if (cardCount != null) publish('cards.updated', {});
   res.json({ ok: true, ...result, setup_completed: true });
 }));
 

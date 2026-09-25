@@ -119,7 +119,7 @@ activity log, orders taken while the internet is down, and Help.
 | **Split and combine bills** | Split one bill, or let several cards pay together. | No split or **Combine bills** buttons. |
 | **Customer QR ordering** | Customers order from their own phone. | Scanning a card says *Please order at the counter*. |
 | **Speak to Order** | Customers say their order into their phone. Needs QR ordering. | Customers tap the menu instead. |
-| **Full sales dashboard** | Charts by hour, top items, payment mix. | **💰 Sales** shows one figure: today's sales. |
+| **Full sales dashboard** | Today's, this month's and this year's sales, charts by hour, top items, payment mix. | There is no **💰 Sales** button. |
 
 **Changing it later:** tap **⚙ Admin → 🧩 Features & setup**. Flip the switch
 next to what you want — it saves straight away, on every tablet. Or tap
@@ -133,10 +133,19 @@ next to what you want — it saves straight away, on every tablet. Or tap
 > that happens. Switching one back on does not switch the other back on; do
 > that yourself if you want it.
 
-Two switches wait for you to finish something first: **Split and combine
-bills** cannot be switched off while cards are on a combined bill (take payment
-on it, or take the cards apart), and **QR ordering** cannot be switched off
-while customer orders are waiting for you to accept them.
+Four switches wait for you to finish something first:
+
+- **Shifts and cash drawer** cannot be switched off while a shift is open.
+  Close the shift first, so its cash count includes every sale.
+- The **kitchen screen** cannot be switched off while the kitchen board still
+  has orders on it. Finish them, or clear them.
+- **Split and combine bills** cannot be switched off while cards are on a
+  combined bill. Take payment on it, or take the cards apart.
+- **QR ordering** cannot be switched off while customer orders are waiting for
+  you to accept them.
+
+If you switch **Shifts and cash drawer** on while no shift is open, the screen
+warns you: every payment is refused until someone opens a shift on **🕐 Shift**.
 
 ---
 

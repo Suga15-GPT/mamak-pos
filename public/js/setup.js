@@ -1,6 +1,6 @@
 import { $, esc, toast } from './state.js';
 import { t } from './i18n.js';
-import { MODULES, PARENT, PRESETS, flags, applyFlags, fill } from './features.js';
+import { MODULES, PARENT, PRESETS, flags, applyFlags, fill, loadFeatures, shiftOpen, setShiftOpen } from './features.js';
 
 /* ===== SETUP WIZARD + FEATURES SCREEN =====
    The wizard is shown to an admin at login until setup is finished, and can't
@@ -33,6 +33,8 @@ function childNotice(children) {
 // and can't be switched on while its parent is off. `note` ({module, text})
 // puts "X was switched off too" under the switch that did it, where the owner
 // is looking, rather than at the top of a list they have scrolled past.
+// Shifts on with no shift open gets its own warning under the switch: every
+// payment is refused until someone opens a shift.
 function moduleRows(f, note = null) {
   return MODULES.map(m => {
     const parent = PARENT[m];
@@ -43,6 +45,7 @@ function moduleRows(f, note = null) {
         <div class="meta">${esc(t(`module.${m}.desc`))}</div>
         ${parent ? `<div class="meta feature-needs">${esc(fill(t('features.needs'), { parent: name(parent) }))}</div>` : ''}
         ${note && note.module === m && note.text ? `<div class="banner info feature-note" role="status">${esc(note.text)}</div>` : ''}
+        ${m === 'shifts' && f.shifts && !shiftOpen() ? `<div class="banner warn feature-shift-note" role="status">${esc(t('features.noShiftOpen'))}</div>` : ''}
       </div>
       <label class="switch" title="${esc(name(m))}">
         <input type="checkbox" data-action="toggle-module" data-module="${m}" aria-label="${esc(name(m))}"
@@ -72,9 +75,11 @@ function presetMatching(f) {
 export async function openSetup(opts = {}) {
   mandatory = !!opts.mandatory;
   onDone = opts.onDone || null;
+  // The flags again too, so the modules step knows whether a shift is open now.
   const [settings, cards] = await Promise.all([
     API.get('/api/settings').catch(() => ({})),
     API.get('/api/admin/cards').catch(() => []),
+    loadFeatures(),
   ]);
   const current = flags();
   draft = {
@@ -219,6 +224,7 @@ async function finish() {
       ...(d.features.qr ? { qr_mode: d.qr_mode } : {}),
     });
     applyFlags(r.features, true);
+    setShiftOpen(r.shift_open);
     close();
     toast(t('setup.done'));
     document.dispatchEvent(new Event('features-changed'));
@@ -270,7 +276,10 @@ $('setup-modal').addEventListener('change', e => {
 
 /* ===== Admin -> Features & setup ===== */
 
-export function renderFeaturesSection(note = null) {
+// Opened (no note): the flags and whether a shift is open are read again, so
+// the no-shift warning reflects a shift opened or closed since login.
+export async function renderFeaturesSection(note = null) {
+  if (!note) await loadFeatures();
   $('features-list').innerHTML = moduleRows(flags(), note);
   if (note) $('features-list').querySelector(`input[data-module="${note.module}"]`)?.focus();
 }
@@ -279,6 +288,7 @@ async function saveModule(mod, value) {
   try {
     const r = await API.patch('/api/features', { features: { [mod]: value } });
     applyFlags(r.features);
+    setShiftOpen(r.shift_open);
     renderFeaturesSection({ module: mod, text: childNotice(r.switched_off) });
     toast(`${name(mod)} — ${t('features.saved')}`);
     document.dispatchEvent(new Event('features-changed'));

@@ -511,7 +511,7 @@ const TOPICS = [
         'Shifts and cash drawer — open and count the till, end-of-day reports. Off: you can take payment without opening a shift.',
         'Discounts, Refunds, Split and combine bills.',
         'Customer QR ordering, and Speak to Order — which needs QR.',
-        'Full sales dashboard — off shows one simple “Today’s sales” figure.',
+        'Full sales dashboard — the 💰 Sales screen. Off: there is no Sales screen.',
       ] },
       { h: 'Changing it later', steps: [
         '⚙ Admin → 🧩 Features & setup.',

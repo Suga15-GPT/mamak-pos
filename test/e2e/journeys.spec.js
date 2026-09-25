@@ -114,6 +114,11 @@ test(LITE_JOURNEY, async ({ page, request }) => {
   await flip('kitchen');
   await expect(wizard.locator('.feature-note')).toContainText('Separate drinks and food screens was switched off too');
   await expect(sw('stations')).not.toBeChecked();
+  // Shifts on with no shift open: the owner is told payments will be refused.
+  await flip('shifts');
+  await expect(wizard.locator('.feature-shift-note')).toContainText('every payment will be refused until someone opens one');
+  await flip('shifts');
+  await expect(wizard.locator('.feature-shift-note')).toHaveCount(0);
   await wizard.getByRole('button', { name: 'Next' }).click();
 
   // 4. Cards. QR is off, so there is no QR step: review is step 5 of 5.
@@ -125,10 +130,11 @@ test(LITE_JOURNEY, async ({ page, request }) => {
   await wizard.getByRole('button', { name: 'Finish setup' }).click();
   await expect(wizard).toBeHidden();
 
-  // The app is a simple order-and-pay till: no Shift, no Kitchen.
+  // The app is a simple order-and-pay till: no Shift, no Kitchen, no Sales.
   await expect(navTab(page, 'Cards')).toBeVisible();
   await expect(navTab(page, 'Shift')).toHaveCount(0);
   await expect(navTab(page, 'Kitchen')).toHaveCount(0);
+  await expect(navTab(page, 'Sales')).toHaveCount(0);
   await expect(page.locator('#tables-grid').getByRole('button', { name: /^Card 20\b/ })).toBeVisible();
   await expect(page.locator('#tables-grid').getByRole('button', { name: /^Card 21\b/ })).toHaveCount(0);
 
@@ -156,10 +162,8 @@ test(LITE_JOURNEY, async ({ page, request }) => {
   expect(features.setup_completed).toBe(true);
   expect(Object.values(features.features).every(v => v === false)).toBe(true);
 
-  // The Sales screen is one simple figure.
-  await navTab(page, 'Sales').click();
-  await expect(page.locator('#dash-kpis')).toContainText('Today’s sales');
-  await expect(page.locator('#dash-hourly')).toBeHidden();
+  // Sales figures are the dashboard's: switched off, they aren't served.
+  expect((await request.get('/api/summary')).status()).toBe(404);
 });
 
 test('staff login → order → kitchen → pay', async ({ page, request }) => {

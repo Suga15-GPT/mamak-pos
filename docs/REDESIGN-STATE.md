@@ -243,9 +243,13 @@ mamak; a table number never reliably named a bill.
   `WHERE status NOT IN ('paid','cancelled','refunded')`; and migration 015's
   trigger rejects any status change out of `paid`, `cancelled` or `refunded`
   except paid → refunded. A kitchen tap that read "ready" before a payment
-  once wrote "served" over "paid" (PR #16 re-check 2, K). A ticket can still
-  be advanced after its order is paid (food is often served after paying);
-  only the order's status is left alone.
+  once wrote "served" over "paid" (PR #16 re-check 2, K). **A closed bill's
+  tickets are off the kitchen board and can't be tapped** (409 "This order is
+  paid or closed, so its kitchen ticket can no longer be moved."): the board
+  lists open orders only, and a tap re-reads the order under the bill lock
+  (setup-and-features review, A2). This replaced an earlier rule that let a
+  ticket be advanced after its order was paid — so a bill paid before its food
+  is made (a takeaway paid at the counter) leaves the board when it is paid.
 - **Move re-checks under the lock** and refuses (409) a bill that closed while
   it waited; a refund reads the open shift under the lock. "Has a payment" for
   combine, un-combine and adding items always means paid net of refunds > 0.
@@ -269,9 +273,13 @@ everything on. Built on card mode.
   `refunds`, `split_combine`, `qr` (`qr_mode` still picks per_card/shop),
   `voice` (needs qr), `dashboard`.
 - **A missing row means on.** Every existing test and shop behaves exactly as
-  before; the wizard writes all ten explicitly. Migration 016 writes `'1'` for
-  all ten plus `setup_completed = '1'` only when the database already has
-  orders; a fresh database gets neither, and the missing `setup_completed`
+  before; the wizard writes all ten explicitly. An existing shop gets `'1'`
+  for all ten plus `setup_completed = '1'` on upgrade, so it never sees the
+  wizard: migration 016 did this only when the database already had orders,
+  and the forward-only 018 does it whenever it has users — migrations run
+  before seeding, so a fresh install has none and an installed shop always
+  has its admin (review A4: a shop set up but yet to take an order got the
+  wizard). A fresh database gets neither, and the missing `setup_completed`
   sends the first admin into the wizard.
 - **A child is only on while its parent is.** Parent off → child off (the
   response names it in `switched_off`, and the UI says so under the switch).
@@ -286,17 +294,37 @@ everything on. Built on card mode.
   check and payments, refunds, combined-bill legs, orders and
   `closed_shift_id` all record NULL; switching shifts back on affects only
   later rows, nothing is back-filled. Printing off: `enqueueForRole` queues
-  nothing, not even a failed job.
-- **Nothing is deleted or rewritten** when a module turns off. Two switches are
-  refused (409) while they would strand money: `split_combine` under an open
-  bill group, and `qr` under rounds still awaiting approval.
+  nothing, not even a failed job. Dashboard off: `GET /api/dashboard` and
+  `GET /api/summary` both 404 and the 💰 Sales tab is not shown (review A3;
+  the one-figure Sales view it used to show read `/api/summary`).
+- **Nothing is deleted or rewritten** when a module turns off. Four switches
+  are refused (409) while they would strand something in flight, in Admin and
+  in the wizard's Finish alike:
+  - `shifts` while a shift is open — "Close the open shift before switching
+    shifts off." Cash taken with shifts off carries no shift, so it would
+    never reach the cash-up of a shift left open across the switch (review
+    A1). Switched on with no shift open, the Features screen and the wizard
+    warn that every payment is refused until someone opens one
+    (`shift_open`, in every `/api/features` and `/api/setup` answer).
+  - `kitchen` while a ticket on an open bill is unfinished — "Finish or clear
+    the kitchen board before switching the kitchen screen off." Otherwise it
+    sat on a board nobody saw and came back as work when the kitchen did
+    (review A2).
+  - `split_combine` under an open bill group, and `qr` under rounds still
+    awaiting approval.
+- **The wizard's Finish is all or nothing** (review A5): every field is
+  validated first, then the card count, the settings, the flags and
+  `setup_completed` are written in one transaction under the bill lock, so a
+  refused Finish changes nothing — the card count included
+  (`cards.setCardCountTx`).
 - **Under card mode's bill lock** (see "Payments and locking"):
   - **A switch takes the bill lock first** (`features.save`, for
     `PATCH /api/features` and `POST /api/setup`), and reads the current
-    flags from the database under it. So the two refusals above are
-    serialised with what they guard: a combine or a customer round that
-    committed first is seen and the switch is refused; one that comes after
-    is refused itself.
+    flags from the database under it. So the refusals above are serialised
+    with what they guard — opening a shift (which now takes the bill lock
+    and re-reads the shifts switch under it), sending and tapping tickets, a
+    combine, a customer round: whichever committed first is seen, and the
+    other is refused.
   - **A bill write reads the flag it depends on under the bill lock**, from
     the database (`features.flagsTx`), not the cache: the shift a payment,
     refund, combined-bill leg, settle or new order lands in
@@ -346,9 +374,11 @@ the tap flow produces. Card mode added `014_card_mode.sql` and
 modules added `016_features.sql` (settings rows only). The follow-ups added
 `017_closed_orders_frozen.sql`: the same trigger now also freezes a closed
 order's `card_id`, `table_id`, `order_type` and money columns; paid →
-refunded still works. A fresh database runs 015, 016, 017 in that order; one
-already on main (015 and 017 applied) runs 016 on its own afterwards, which is
-safe because 016 only inserts settings rows.
+refunded still works. Feature modules then added
+`018_features_existing_shops.sql` (settings rows only, forward-only): an
+existing shop is one with users, not orders. A fresh database runs 015, 016,
+017, 018 in that order; one already on main (015 and 017 applied) runs 016 and
+018 afterwards, which is safe because both only insert missing settings rows.
 
 ## Files materially changed in V2
 
@@ -388,6 +418,16 @@ safe because 016 only inserts settings rows.
   were fixed by lockfile bumps within express 4 (express 4.22.3, qs 6.16.0).
 
 ## Latest test state
+
+After the setup-and-features review fixes (A1–A5, on `c78a20c`): `npm test`
+188/188 — 9 new in `test/unit/features.test.js`, each failing on `c78a20c`:
+A1 (the refusal in Admin and the wizard, the no-open-shift answer, and 40
+runs of the switch racing a shift opening), A2 (the kitchen refusal, 40 runs
+of the switch racing a send, closed orders off the board with their taps
+refused, and 40 runs of a tap racing a payment), A3, A4 and A5. Each race
+runs a third of its runs with each side leading by 15 ms and asserts both
+outcomes happened. Playwright 18/18: the first-run journey now also checks the
+wizard's no-open-shift warning and that a small stall has no Sales tab.
 
 After feature modules, merged onto main with card mode, its follow-ups and
 the npm audit fix (PRs #16, #17, #15): `npm test` 179/179 — card mode's 155,

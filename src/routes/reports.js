@@ -11,7 +11,9 @@ const router = express.Router();
 
 const KL = 'Asia/Kuala_Lumpur';
 
-router.get('/api/summary', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+// Sales figures belong to the dashboard module: with it off, 404 like every
+// other route of a switched-off module, and the 💰 Sales tab is not shown.
+router.get('/api/summary', requireRole('admin', 'staff'), requireFeature('dashboard'), awaitH(async (req, res) => {
   // `lt` is a local (tz-naive) timestamp. Bucket boundaries must stay plain
   // timestamps too — comparing against a `::timestamptz` cast re-introduces a
   // timezone (the session's, not KL) and can land a payment in the wrong

@@ -1,6 +1,5 @@
 import { $, fmt, esc } from './state.js';
-import { t } from './i18n.js';
-import { on, fill } from './features.js';
+import { on } from './features.js';
 
 /* ===== DASHBOARD =====
    The owner should understand the business in about five seconds: money first,
@@ -78,24 +77,9 @@ function barList(rows, { valueOf, labelOf, fill = '' }) {
     </div>`).join('')}</div>`;
 }
 
-/* With the full dashboard switched off: one figure, today's sales, from the
-   same summary the till already reads. */
-async function refreshSimple() {
-  try {
-    const s = await API.get('/api/summary');
-    $('dash-kpis').innerHTML = kpi({
-      label: t('dashboard.simpleToday'), value: fmt(s.today.sales), cls: 'hero',
-      sub: { text: fill(t('dashboard.simpleOrders'), { n: s.today.orders }) },
-    }) + (API.user?.role === 'admin' ? `<p class="meta" style="grid-column:1/-1">${esc(t('dashboard.simpleHint'))}</p>` : '');
-    const stamp = $('dash-updated');
-    if (stamp) stamp.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  } catch (e) {
-    $('dash-kpis').innerHTML = `<div class="empty">Could not load today's sales: ${esc(e.message)}</div>`;
-  }
-}
-
 export async function refreshDashboard() {
-  if (!on('dashboard')) return refreshSimple();
+  // Switched off, the 💰 Sales tab isn't shown and its figures 404 (nav.js).
+  if (!on('dashboard')) return;
   try {
     const d = await API.get('/api/dashboard');
 

@@ -2,6 +2,7 @@ const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { writeAudit } = require('./orders');
 const { lockBills } = require('../lib/billlock');
+const features = require('./features');
 
 // The single currently-open shift, or null. The `one_open_shift` partial
 // unique index (migration 008) is what actually enforces there's ever at
@@ -11,17 +12,27 @@ async function current() {
   return r.rows[0] || null;
 }
 
+/* Under the bill lock, with the shifts switch re-read under it: switching
+   shifts off takes the same lock and is refused while a shift is open, so a
+   shift can't open in the instant after that check and leave shifts off with
+   a drawer nobody's cash reaches (features.js guardTurnOff). */
 async function open({ userId, floatCents }) {
   if (!(Number.isInteger(floatCents) && floatCents >= 0)) throw AppError('float must be a non-negative amount', 400);
-  let row;
+  const client = await pool.connect();
+  let shift;
   try {
-    row = await pool.query('INSERT INTO shifts (opened_by, float_cents) VALUES ($1,$2) RETURNING *', [userId, floatCents]);
-  } catch (e) {
-    if (e.code === '23505') throw AppError('a shift is already open', 409);
-    throw e;
-  }
-  const shift = row.rows[0];
-  await writeAudit(pool, { userId, action: 'shift.open', entityType: 'shift', entityId: shift.id, detail: { float_cents: floatCents } });
+    await client.query('BEGIN');
+    await lockBills(client);
+    await features.requireOnTx(client, 'shifts');
+    try {
+      shift = (await client.query('INSERT INTO shifts (opened_by, float_cents) VALUES ($1,$2) RETURNING *', [userId, floatCents])).rows[0];
+    } catch (e) {
+      if (e.code === '23505') throw AppError('a shift is already open', 409);
+      throw e;
+    }
+    await writeAudit(client, { userId, action: 'shift.open', entityType: 'shift', entityId: shift.id, detail: { float_cents: floatCents } });
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   return shift;
 }
 

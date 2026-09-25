@@ -86,9 +86,6 @@ const translations = {
   // Setup wizard and Admin -> Features & setup. Written for a shop owner:
   // what the thing does in the shop, never what it is called in the code.
   'pos.sendOrder': { en: 'Send order', ms: 'Hantar Pesanan' },
-  'dashboard.simpleToday': { en: 'Today’s sales', ms: 'Jualan Hari Ini' },
-  'dashboard.simpleOrders': { en: '{n} paid orders today', ms: '{n} pesanan dibayar hari ini' },
-  'dashboard.simpleHint': { en: 'Turn on the full sales dashboard in Admin → Features & setup for charts.', ms: 'Hidupkan papan jualan penuh di Admin → Ciri & tetapan untuk carta.' },
 
   'features.adminTab': { en: '🧩 Features & setup', ms: '🧩 Ciri & tetapan' },
   'features.heading': { en: 'What your POS does', ms: 'Apa yang POS anda buat' },
@@ -100,6 +97,7 @@ const translations = {
   'features.saved': { en: 'Saved', ms: 'Disimpan' },
   'features.childOff': { en: '{child} was switched off too, because it needs {parent}.', ms: '{child} juga dimatikan, kerana ia memerlukan {parent}.' },
   'features.needs': { en: 'Needs {parent}', ms: 'Perlukan {parent}' },
+  'features.noShiftOpen': { en: 'No shift is open, so every payment will be refused until someone opens one on 🕐 Shift.', ms: 'Tiada syif dibuka, jadi setiap bayaran akan ditolak sehingga seseorang membukanya di 🕐 Syif.' },
 
   'module.kitchen': { en: 'Kitchen screen', ms: 'Skrin dapur' },
   'module.kitchen.desc': { en: 'Cooks see new orders on a screen and tap them ready. Off: an order is done the moment you send it.', ms: 'Tukang masak lihat pesanan baru di skrin dan tekan bila siap. Mati: pesanan selesai sebaik sahaja dihantar.' },
@@ -120,7 +118,7 @@ const translations = {
   'module.voice': { en: 'Speak to Order', ms: 'Pesan Dengan Suara' },
   'module.voice.desc': { en: 'Customers can say their order into their phone instead of tapping.', ms: 'Pelanggan boleh sebut pesanan ke telefon dan bukannya tekan.' },
   'module.dashboard': { en: 'Full sales dashboard', ms: 'Papan jualan penuh' },
-  'module.dashboard.desc': { en: 'Charts by hour, top items and payment mix. Off: one simple “Today’s sales” figure.', ms: 'Carta mengikut jam, item terlaris dan kaedah bayaran. Mati: satu angka ringkas “Jualan hari ini”.' },
+  'module.dashboard.desc': { en: 'Sales figures, charts by hour, top items and payment mix. Off: there is no 💰 Sales screen.', ms: 'Angka jualan, carta mengikut jam, item terlaris dan kaedah bayaran. Mati: tiada skrin 💰 Jualan.' },
 
   'setup.title': { en: 'Set up your POS', ms: 'Sediakan POS anda' },
   'setup.step': { en: 'Step {n} of {total}', ms: 'Langkah {n} daripada {total}' },

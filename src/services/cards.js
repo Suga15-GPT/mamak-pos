@@ -46,37 +46,50 @@ async function listCards({ includeInactive = false } = {}) {
 /* Raising the count activates (or creates) numbers up to it; lowering it
    deactivates the top numbers — refused while any of them still has a bill
    open, because that party is still holding the card. */
-async function setCardCount(count, userId) {
+function parseCardCount(count) {
   const n = Number(count);
   if (!Number.isInteger(n) || n < 1 || n > 999) throw AppError('count must be a whole number from 1 to 999', 400);
+  return n;
+}
+
+// Inside the caller's transaction, so the setup wizard's Finish can change
+// the card count together with everything else it saves, or not at all.
+async function setCardCountTx(client, count, userId) {
+  const n = parseCardCount(count);
+  // Locks the cards being retired, so a card cannot be opened between the
+  // in-use check and the deactivation (opening takes FOR SHARE on its card).
+  const retiring = (await client.query(
+    'SELECT id, number FROM cards WHERE number > $1 AND active ORDER BY number FOR UPDATE', [n])).rows;
+  if (retiring.length) {
+    const busy = (await client.query(
+      `SELECT c.number FROM orders o JOIN cards c ON c.id = o.card_id
+        WHERE o.card_id = ANY($1::int[]) AND o.${OPEN} ORDER BY c.number`, [retiring.map(c => c.id)])).rows;
+    if (busy.length) {
+      throw AppError(`Card ${busy.map(b => b.number).join(', ')} still has an open bill. Settle it before lowering the count.`, 409);
+    }
+    await client.query('UPDATE cards SET active = false WHERE number > $1 AND active', [n]);
+  }
+  await client.query('UPDATE cards SET active = true WHERE number <= $1 AND NOT active', [n]);
+  for (let num = 1; num <= n; num++) {
+    await client.query(
+      'INSERT INTO cards (number, qr_token) VALUES ($1, $2) ON CONFLICT (number) DO NOTHING',
+      [num, crypto.randomBytes(8).toString('hex')]);
+  }
+  await writeAudit(client, {
+    userId, action: 'cards.count', entityType: 'cards', entityId: null, detail: { count: n },
+  });
+  return { count: n };
+}
+
+async function setCardCount(count, userId) {
+  const n = parseCardCount(count);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // Locks the cards being retired, so a card cannot be opened between the
-    // in-use check and the deactivation (opening takes FOR SHARE on its card).
-    const retiring = (await client.query(
-      'SELECT id, number FROM cards WHERE number > $1 AND active ORDER BY number FOR UPDATE', [n])).rows;
-    if (retiring.length) {
-      const busy = (await client.query(
-        `SELECT c.number FROM orders o JOIN cards c ON c.id = o.card_id
-          WHERE o.card_id = ANY($1::int[]) AND o.${OPEN} ORDER BY c.number`, [retiring.map(c => c.id)])).rows;
-      if (busy.length) {
-        throw AppError(`Card ${busy.map(b => b.number).join(', ')} still has an open bill. Settle it before lowering the count.`, 409);
-      }
-      await client.query('UPDATE cards SET active = false WHERE number > $1 AND active', [n]);
-    }
-    await client.query('UPDATE cards SET active = true WHERE number <= $1 AND NOT active', [n]);
-    for (let num = 1; num <= n; num++) {
-      await client.query(
-        'INSERT INTO cards (number, qr_token) VALUES ($1, $2) ON CONFLICT (number) DO NOTHING',
-        [num, crypto.randomBytes(8).toString('hex')]);
-    }
-    await writeAudit(client, {
-      userId, action: 'cards.count', entityType: 'cards', entityId: null, detail: { count: n },
-    });
+    const r = await setCardCountTx(client, n, userId);
     await client.query('COMMIT');
+    return r;
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
-  return { count: n };
 }
 
 /* ===== QR self-ordering =====
@@ -125,4 +138,4 @@ async function resolveQr(token, cardNumber, { requireCard = true } = {}) {
   return { settings, card: c };
 }
 
-module.exports = { listCards, setCardCount, qrSettings, resolveQr, locationSql };
+module.exports = { listCards, parseCardCount, setCardCount, setCardCountTx, qrSettings, resolveQr, locationSql };

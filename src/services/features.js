@@ -90,10 +90,11 @@ async function requireOnTx(client, name) {
    touched: switching a module off hides it, it never deletes or rewrites its
    rows.
 
-   Bill lock first (lib/billlock): the two refusals below read what combine
-   and customer rounds write under that lock, and bill writes read their flags
-   under it (flagsTx), so neither can slip in between this check and its
-   commit. `before` is read under the lock as well, for the audit row. */
+   Bill lock first (lib/billlock): the refusals in guardTurnOff read what
+   opening a shift, sending and tapping tickets, combining and customer rounds
+   write under that lock, and bill writes read their flags under it (flagsTx),
+   so nothing can slip in between a check and its commit. `before` is read
+   under the lock as well, for the audit row. */
 async function save(client, changes) {
   await lockBills(client);
   const current = await flagsTx(client);
@@ -110,10 +111,30 @@ async function save(client, changes) {
   return { before: current, features: next, switched_off: switchedOff };
 }
 
-/* Two modules own a piece of in-flight money that nothing else can finish.
-   Switching them off mid-way would strand a bill, so it is refused until the
-   thing is finished — the data itself is still never touched. */
+/* Four modules own something in flight that nothing else can finish.
+   Switching one off mid-way would strand it, so the switch is refused until
+   the thing is finished — the data itself is still never touched. Each check
+   runs under the bill lock (save), which whatever it guards takes too: paying
+   and opening a shift, sending and tapping tickets, combining, and customer
+   rounds. */
 async function guardTurnOff(client, current, next) {
+  // Cash taken with shifts off carries no shift, so it would never reach the
+  // cash-up of a shift left open across the switch: a false over/short.
+  if (current.shifts && !next.shifts && await shiftOpen(client)) {
+    throw AppError('Close the open shift before switching shifts off.', 409);
+  }
+  // Tickets part-way through would sit on a board nobody can see, and be
+  // cooked again when the kitchen screen came back.
+  if (current.kitchen && !next.kitchen) {
+    const live = await client.query(
+      `SELECT 1 FROM order_send_tickets t
+         JOIN order_sends s ON s.id = t.send_id
+         JOIN orders o ON o.id = s.order_id
+        WHERE s.approval_state = 'approved' AND t.status NOT IN ('served', 'cancelled')
+          AND o.status NOT IN ('paid', 'cancelled', 'refunded')
+        LIMIT 1`);
+    if (live.rows[0]) throw AppError('Finish or clear the kitchen board before switching the kitchen screen off.', 409);
+  }
   if (current.split_combine && !next.split_combine) {
     const g = await client.query('SELECT count(*)::int n FROM bill_groups WHERE closed_at IS NULL');
     if (g.rows[0].n) throw AppError('Some cards are on a combined bill right now. Take payment on it, or take the cards apart, before switching off Split and combine.', 409);
@@ -137,6 +158,12 @@ function requireFeature(...names) {
   };
 }
 
+// Whether a shift is open. With shifts on and none open, payments are refused
+// until someone opens one — the Features screen and the wizard say so.
+async function shiftOpen(client = pool) {
+  return !!(await client.query('SELECT 1 FROM shifts WHERE closed_at IS NULL LIMIT 1')).rows[0];
+}
+
 /* The shift a payment, refund or order belongs to. Called inside the bill
    lock, never before it: closing a shift takes that lock, so a payment can't
    land in a shift whose cash has just been frozen without it, and the shifts
@@ -151,6 +178,6 @@ async function moneyShift(client, refusal) {
 }
 
 module.exports = {
-  MODULES, PARENT, PRESETS, state, all, isOn, reload, save, requireFeature, moneyShift,
+  MODULES, PARENT, PRESETS, state, all, isOn, reload, save, requireFeature, moneyShift, shiftOpen,
   flagsTx, isOnTx, requireOnTx,
 };

@@ -16,7 +16,7 @@ const TAB_DEFS = [
   { id: 'pos',       key: 'nav.pos',       icon: '🍽', roles: ['admin', 'staff'] },
   // Kitchen also holds the QR approval queue, so it stays while either is on.
   { id: 'kitchen',   key: 'nav.kitchen',   icon: '🍳', roles: ['admin', 'staff', 'kitchen'], feature: () => on('kitchen') || on('qr') },
-  { id: 'dashboard', key: 'nav.dashboard', icon: '💰', roles: ['admin', 'staff'] },
+  { id: 'dashboard', key: 'nav.dashboard', icon: '💰', roles: ['admin', 'staff'], feature: () => on('dashboard') },
   { id: 'shift',     key: 'nav.shift',     icon: '🕐', roles: ['admin', 'staff'], feature: () => on('shifts') },
   { id: 'admin',     key: 'nav.admin',     icon: '⚙',  roles: ['admin'] },
   // Help is last on purpose — always in the same place, never in the way of the
