@@ -117,9 +117,10 @@ async function combine(orderIds, userId) {
     }
     // Combined bills are paid all at once, so a card that has already taken
     // money of its own can't join one.
-    const paidAlready = (await client.query(
-      'SELECT 1 FROM payments WHERE order_id = ANY($1::int[]) LIMIT 1', [ids])).rows[0];
-    if (paidAlready) throw AppError('This card has a payment on it — pay or refund it before combining.', 409);
+    // Net of refunds: a card whose payment was refunded in full has nothing of
+    // its own to settle, so "pay or refund it" really does let it join.
+    const netPaid = await paidByOrder(client, ids);
+    if (ids.some(id => netPaid[id] > 0)) throw AppError('This card has a payment on it — pay or refund it before combining.', 409);
 
     const groups = [...new Set(orders.map(o => o.bill_group_id).filter(Boolean))].sort((a, b) => a - b);
     for (const g of groups) {
