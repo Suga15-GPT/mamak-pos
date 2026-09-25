@@ -43,10 +43,11 @@ router.get('/api/menu', publicH(async (req, res) => {
 /* What a scanned QR resolves to (card mode, migration 014). per_card: the
    token is one card's own, and the page says whether that card already has a
    bill running ("adding to your order" rather than "new order"). shop: the one
-   poster token; the page must ask for a card number first. off: 404, and the
-   page says "Please order at the counter". */
+   poster token; the page must ask for a card number first, and passes it back
+   as ?card=N to check it before showing the menu. off: 404, and the page says
+   "Please order at the counter". */
 router.get('/api/t/:token', publicH(async (req, res) => {
-  const { settings, card } = await resolveQr(req.params.token, null, { requireCard: false });
+  const { settings, card } = await resolveQr(req.params.token, req.query.card, { requireCard: false });
   const open = card ? await pool.query(
     "SELECT id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled','refunded') LIMIT 1", [card.id]) : { rows: [] };
   res.json({

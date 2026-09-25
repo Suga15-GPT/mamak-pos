@@ -124,7 +124,7 @@ function appVersion() {
 async function systemHealth(req) {
   const [database, printing, kitchen, backup, settingsRows] = await Promise.all([
     checkDatabase(), checkPrinters(), checkKitchen(), checkBackup(),
-    pool.query("SELECT key, value FROM settings WHERE key IN ('qr_ordering_enabled','qr_require_approval')"),
+    pool.query("SELECT key, value FROM settings WHERE key IN ('qr_mode','qr_require_approval')"),
   ]);
   const s = Object.fromEntries(settingsRows.rows.map(r => [r.key, r.value]));
 
@@ -138,8 +138,11 @@ async function systemHealth(req) {
     printing,
     qr_url: qrHealth(req),
     qr_ordering: {
-      enabled: s.qr_ordering_enabled !== '0',
-      approval_required: s.qr_require_approval === '1',
+      // Card mode: 'off' is the only mode with ordering switched off, and shop
+      // mode always holds orders for approval (anyone can type any card number).
+      enabled: s.qr_mode !== 'off',
+      mode: s.qr_mode || 'per_card',
+      approval_required: s.qr_mode === 'shop' || s.qr_require_approval === '1',
     },
     backup,
     disk: checkDisk(),
