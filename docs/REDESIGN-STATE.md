@@ -246,6 +246,9 @@ mamak; a table number never reliably named a bill.
   once wrote "served" over "paid" (PR #16 re-check 2, K). A ticket can still
   be advanced after its order is paid (food is often served after paying);
   only the order's status is left alone.
+- **Move re-checks under the lock** and refuses (409) a bill that closed while
+  it waited; a refund reads the open shift under the lock. "Has a payment" for
+  combine, un-combine and adding items always means paid net of refunds > 0.
 - **An order with any round awaiting approval is never auto-settled or
   auto-closed** (a void or discount that takes the accepted lines to zero
   leaves it open), and a grouped card with a held round never leaves its group
@@ -297,8 +300,9 @@ everything on. Built on card mode.
   - **A bill write reads the flag it depends on under the bill lock**, from
     the database (`features.flagsTx`), not the cache: the shift a payment,
     refund, combined-bill leg, settle or new order lands in
-    (`moneyShift` — inside the lock, never before it; `addRefund` used to read
-    the open shift before taking the lock), whether tickets are born served
+    (`moneyShift` — inside the lock, never before it; `addRefund` reads it
+    straight after taking the lock, where the follow-ups put their own fix
+    for the same race), whether tickets are born served
     (`openTickets`), which station a line goes to (`atStations`), and whether
     a combine (`bill_groups.combine`) or a customer round
     (`insertOrder`/`appendSend`, source `qr`) may still happen at all — the
@@ -311,6 +315,15 @@ everything on. Built on card mode.
     after knowing the order is open (new, or re-read and a closed one
     refused), and each re-deriving the status through the same conditional
     `deriveOrderStatus` a kitchen tap uses; migration 015's trigger backs it.
+  - **A closed bill stays frozen (017) on every module path.** No module
+    writes an order's location or money columns once it is closed: tickets
+    born served write tickets and a conditional status, and the bill is
+    recomputed only while the order is open; a NULL shift goes into
+    `payments`/`refunds` rows and `closed_shift_id`, which 017 leaves alone,
+    at the moment the bill closes; the settling payment's cash rounding is
+    written before the status flips to paid, in the same transaction, and a
+    comp settles through the same `settleIfMatchesPaid`. A refund to zero
+    changes only the status.
   - Payment and comp are still refused while a round awaits approval; with
     QR off none can exist, because the switch waits until none does.
 - **Flags are cached in memory** (`services/features.js`) for the route gates
@@ -330,7 +343,12 @@ everything on. Built on card mode.
 None in V2. Speak to Order needed no schema change — it produces the same rows
 the tap flow produces. Card mode added `014_card_mode.sql` and
 `015_closed_orders_stay_closed.sql` (the closed-status trigger). Feature
-modules added `016_features.sql` (settings rows only).
+modules added `016_features.sql` (settings rows only). The follow-ups added
+`017_closed_orders_frozen.sql`: the same trigger now also freezes a closed
+order's `card_id`, `table_id`, `order_type` and money columns; paid →
+refunded still works. A fresh database runs 015, 016, 017 in that order; one
+already on main (015 and 017 applied) runs 016 on its own afterwards, which is
+safe because 016 only inserts settings rows.
 
 ## Files materially changed in V2
 
@@ -366,15 +384,20 @@ modules added `016_features.sql` (settings rows only).
 - **Switching the kitchen off mid-service** leaves tickets already on the board
   where they are (nothing is altered); those orders read as sent/preparing
   until paid. Payment is not blocked by it.
-- `npm audit` reports three moderate advisories in express/qs. They predate this
-  programme and were not touched by it.
+- `npm audit` reports 0 vulnerabilities. The three moderate express/qs advisories
+  were fixed by lockfile bumps within express 4 (express 4.22.3, qs 6.16.0).
 
 ## Latest test state
 
-After feature modules, merged onto card mode as reviewed (PR #16 at
-`5d7b3ab`): `npm test` 171/171 (`test/unit/features.test.js` 16: the 11
-module tests, plus 5 that queue a request behind the bill lock while the
-payment, shift close, switch or cancel that got there first commits).
+After feature modules, merged onto main with card mode, its follow-ups and
+the npm audit fix (PRs #16, #17, #15): `npm test` 179/179 — card mode's 155,
+the follow-ups' 7 (`test/unit/card_followups.test.js`) and
+`test/unit/features.test.js`'s 17: 11 module tests; 5 that queue a request
+behind the bill lock while the payment, shift close, switch or cancel that
+got there first commits; and 1 that settles bills with the kitchen and shifts
+off (cash rounding, a comp) and refunds one to zero under 017's frozen-bill
+trigger. The fresh-database test checks that 015, 016 and 017 apply in that
+order; the upgrade test starts from main's migrations and applies 016 alone.
 Playwright 18/18: the first-run journey (wizard as a small stall, then order
 and pay with no shift and no kitchen) plus card mode's 17 (12 journeys, "two
 cards, combine, pay once" paying in legs among them, and 5 viewport checks),

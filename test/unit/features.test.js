@@ -530,10 +530,59 @@ test('kitchen off: an accepted customer round is born served; an add-on or an ac
   });
 });
 
+// What migration 017 freezes on a closed order (paid → refunded aside).
+const FROZEN = ['card_id', 'table_id', 'order_type', 'subtotal_cents', 'service_charge_cents', 'tax_cents',
+  'discount_cents', 'rounding_cents', 'total_cents', 'tax_rate_bp', 'svc_rate_bp'];
+const frozenCols = async (db, id) => { const o = await orderRow(db, id); return Object.fromEntries(FROZEN.map(k => [k, o[k]])); };
+
+test('kitchen and shifts off, a bill settled by cash rounding or by a comp is frozen (017); refunding it only changes its status', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    await setFeatures(base, s, { kitchen: false, shifts: false });
+
+    // 3 × RM2.00 + 6% SST = RM6.36, paid in cash as RM6.35: the rounding is
+    // written while the bill is open, by the payment that settles it.
+    const a = await openCard(base, s, 1, s.roti, 3);
+    assert.equal((await orderRow(db, a)).status, 'served', 'born served');
+    assert.equal((await post(base, s, `/api/orders/${a}/pay`, { method: 'Cash' })).status, 200);
+    const paid = await orderRow(db, a);
+    assert.equal(paid.status, 'paid');
+    assert.equal(paid.rounding_cents, -1);
+    assert.equal(paid.closed_shift_id, null);
+    const atClose = await frozenCols(db, a);
+
+    const payment = (await db.query('SELECT id, amount_cents, shift_id FROM payments WHERE order_id = $1', [a])).rows[0];
+    assert.equal(payment.shift_id, null);
+    const refund = await post(base, s, `/api/orders/${a}/refunds`, { payment_id: payment.id, amount: payment.amount_cents / 100, reason: 'wrong order' });
+    assert.equal(refund.status, 200);
+    assert.equal((await json(refund)).refunded_to_zero, true);
+    assert.equal((await orderRow(db, a)).status, 'refunded');
+    assert.deepEqual(await frozenCols(db, a), atClose, 'the refund changed only the status');
+
+    // An add-on onto the closed bill — the born-served path — is refused before it writes.
+    assert.equal((await post(base, s, `/api/orders/${a}/items`, { items: [{ item_id: s.milo.id, qty: 1 }] })).status, 400);
+    assert.deepEqual(await frozenCols(db, a), atClose);
+    assert.equal((await orderRow(db, a)).status, 'refunded');
+
+    // A comp settles through settleIfMatchesPaid, with no shift to close into.
+    const b = await openCard(base, s, 2);
+    assert.equal((await post(base, s, `/api/orders/${b}/discounts`, { kind: 'comp', reason: 'regular customer' })).status, 200);
+    const comped = await orderRow(db, b);
+    assert.equal(comped.status, 'paid');
+    assert.equal(comped.total_cents, 0);
+    assert.equal(comped.closed_shift_id, null);
+  });
+});
+
 test('a fresh database has no setup and every module reads on; the wizard finishes it', async () => {
   await withDb(async db => {
     const base = await startApp();
     const s = await setup(base);
+    // Card mode's 015, this module's 016 and the follow-ups' 017, in that order.
+    const applied = (await db.query('SELECT version FROM schema_migrations ORDER BY applied_at, version')).rows
+      .map(r => r.version).filter(v => /^01[5-7]_/.test(v));
+    assert.deepEqual(applied, ['015_closed_orders_stay_closed.sql', '016_features.sql', '017_closed_orders_frozen.sql']);
     const rows = (await db.query("SELECT key FROM settings WHERE key LIKE 'feature%' OR key = 'setup_completed'")).rows;
     assert.deepEqual(rows, [], 'the migration writes nothing on a fresh database');
     const f = await get(base, s, '/api/features');
@@ -561,8 +610,10 @@ test('a fresh database has no setup and every module reads on; the wizard finish
   });
 });
 
-/* Runs every migration before 016 against a fresh schema, lets the test put a
-   shop's history in place, then applies 016 — what an upgrade does. */
+/* A shop on main before this module: every migration but 016 (card mode's 015
+   and the follow-ups' 017 included) against a fresh schema. The test puts the
+   shop's history in place, then the upgrade runs — applying 016 on its own,
+   after 017, which is what upgrading a shop from main does. */
 async function withPreFeaturesDb(before, fn) {
   const schema = `test_${crypto.randomBytes(6).toString('hex')}`;
   const admin = new Pool({ connectionString: TEST_DATABASE_URL });
@@ -576,7 +627,7 @@ async function withPreFeaturesDb(before, fn) {
   try {
     await db.query('CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())');
     for (const file of fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort()) {
-      if (file >= '016') break;
+      if (file.startsWith('016_')) continue;
       await db.query(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
       await db.query('INSERT INTO schema_migrations (version) VALUES ($1)', [file]);
     }
@@ -599,6 +650,8 @@ test('upgrading a shop that already has orders switches every module on and skip
     await db.query(
       "INSERT INTO orders (card_id, status, source, order_type, total_cents) VALUES ($1, 'paid', 'staff', 'dine_in', 200)", [card.id]);
   }, async db => {
+    const last = (await db.query('SELECT version FROM schema_migrations ORDER BY applied_at DESC, version DESC LIMIT 1')).rows[0].version;
+    assert.equal(last, '016_features.sql', 'the upgrade ran 016 on its own, after 017');
     const rows = Object.fromEntries((await db.query(
       "SELECT key, value FROM settings WHERE key LIKE 'feature%' OR key = 'setup_completed'")).rows.map(r => [r.key, r.value]));
     for (const m of MODULES) assert.equal(rows[`feature_${m}`], '1', m);

@@ -342,22 +342,33 @@ router.post('/api/orders/:id/move', requireRole('admin', 'staff'), awaitH(async 
   try {
     await client.query('BEGIN');
     await lockBills(client);
+    // Re-read under the lock: checked only before it, a move racing a payment
+    // waited for the payment and then relabelled the bill it had just paid
+    // (a takeaway turned dine-in, a paid card moved). A bill closed by now is
+    // refused.
+    const now = (await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [o.rows[0].id])).rows[0];
+    if (['paid', 'cancelled', 'refunded'].includes(now.status)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This bill has just been closed, so it can no longer be moved.' });
+    }
     target = (await client.query('SELECT id, number, active FROM cards WHERE id = $1 FOR SHARE', [targetId])).rows[0];
     if (!target || !target.active) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'card not found' }); }
     await client.query(
       "UPDATE orders SET card_id = $1, order_type = 'dine_in', updated_at = now() WHERE id = $2", [targetId, o.rows[0].id]);
+    // In the same transaction as the move, so the audit trail's order matches
+    // the order things actually happened in.
+    await writeAudit(client, {
+      userId: req.user.id, action: 'order.move', entityType: 'order', entityId: o.rows[0].id,
+      detail: {
+        from_card_id: o.rows[0].card_id, from_table_id: o.rows[0].table_id, from, to_card_id: targetId, to: `Card ${target.number}`,
+      },
+    });
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');
     if (e.code === '23505') return res.status(409).json({ error: `Card ${target.number} already has an open order` });
     throw e;
   } finally { client.release(); }
-  await writeAudit(pool, {
-    userId: req.user.id, action: 'order.move', entityType: 'order', entityId: o.rows[0].id,
-    detail: {
-      from_card_id: o.rows[0].card_id, from_table_id: o.rows[0].table_id, from, to_card_id: targetId, to: `Card ${target.number}`,
-    },
-  });
   publish('order.updated', { order_id: o.rows[0].id, card_id: targetId });
   res.json({ ok: true, card_id: targetId, card_number: target.number, label: `Card ${target.number}` });
 }));

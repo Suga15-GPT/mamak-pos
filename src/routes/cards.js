@@ -82,6 +82,14 @@ router.get('/api/admin/qr-shop.png', requireRole('admin'), requireFeature('qr'),
 // Split and combine switched off: every combined-bill route 404s. The switch
 // is refused while a combined bill is open, so none is ever stranded here.
 const staff = [requireRole('admin', 'staff'), requireFeature('split_combine')];
+// A bill-group or order id that isn't a positive whole number names nothing:
+// 404, rather than letting it reach Postgres as NaN and come back a 500.
+const validIds = (req, res, next) => {
+  for (const k of ['id', 'orderId']) {
+    if (req.params[k] !== undefined && !/^[1-9][0-9]{0,9}$/.test(req.params[k])) return res.status(404).json({ error: 'combined bill not found' });
+  }
+  next();
+};
 const touched = ids => ids.forEach(id => publish('order.updated', { order_id: id }));
 
 router.post('/api/bill-groups', staff, awaitH(async (req, res) => {
@@ -91,17 +99,17 @@ router.post('/api/bill-groups', staff, awaitH(async (req, res) => {
   res.status(201).json(await groups.getGroup(g.id));
 }));
 
-router.get('/api/bill-groups/:id', staff, awaitH(async (req, res) => {
+router.get('/api/bill-groups/:id', staff, validIds, awaitH(async (req, res) => {
   res.json(await groups.getGroup(Number(req.params.id)));
 }));
 
-router.delete('/api/bill-groups/:id/orders/:orderId', staff, awaitH(async (req, res) => {
+router.delete('/api/bill-groups/:id/orders/:orderId', staff, validIds, awaitH(async (req, res) => {
   const r = await groups.uncombine(Number(req.params.id), { orderId: Number(req.params.orderId), userId: req.user.id });
   touched(r.order_ids);
   res.json({ ok: true, ...r });
 }));
 
-router.delete('/api/bill-groups/:id', staff, awaitH(async (req, res) => {
+router.delete('/api/bill-groups/:id', staff, validIds, awaitH(async (req, res) => {
   const r = await groups.uncombine(Number(req.params.id), { userId: req.user.id });
   touched(r.order_ids);
   res.json({ ok: true, ...r });
@@ -110,7 +118,7 @@ router.delete('/api/bill-groups/:id', staff, awaitH(async (req, res) => {
 /* Body: { legs: [{ method, amount?, tendered? }, ...] } — every way the
    customer is paying (RM), submitted together. The legs must settle the whole
    bill; nothing is written otherwise. */
-router.post('/api/bill-groups/:id/pay', staff, awaitH(async (req, res) => {
+router.post('/api/bill-groups/:id/pay', staff, validIds, awaitH(async (req, res) => {
   const raw = req.body?.legs;
   const legs = Array.isArray(raw) ? raw.map(l => ({
     method: l?.method,

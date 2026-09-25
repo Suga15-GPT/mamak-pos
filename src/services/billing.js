@@ -130,9 +130,11 @@ async function amountDue(orderId, client = pool) {
   return (o.rows[0].total_cents || 0) - await paidCentsFor(orderId, client);
 }
 
+// Has money been taken and not given back? Net of refunds, like combine: a
+// part-payment refunded in full leaves nothing being settled, so items can be
+// added again (staff and QR both ask this before appending).
 async function hasPayments(orderId) {
-  const r = await pool.query('SELECT 1 FROM payments WHERE order_id = $1 LIMIT 1', [orderId]);
-  return r.rows.length > 0;
+  return (await paidCentsFor(orderId)) > 0;
 }
 
 async function listPayments(orderId) {
@@ -339,13 +341,13 @@ async function addRefund(orderId, { paymentId, amountCents, reason, approvedBy, 
   try {
     await client.query('BEGIN');
     await lockBills(client);
-    await client.query('SELECT id FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
     // Same control as taking a payment: the shift a cash refund draws down (or a
-    // card/eWallet refund is attributed to) must be the open one — unless shifts
-    // are switched off, when shift_id is NULL. Read under the bill lock, which
-    // closing a shift takes too: read before it, a refund could land in a shift
-    // whose expected cash had just been frozen without it.
+    // card/eWallet refund is attributed to) must be the open one — read under
+    // the bill lock, which shift close also takes, so a refund can't land in a
+    // shift whose expected cash has just been frozen without it. With shifts
+    // switched off there is no drawer: no check, and shift_id is NULL.
     const shiftId = await features.moneyShift(client, 'no shift is open — open a shift before issuing a refund');
+    await client.query('SELECT id FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
     const pay = await client.query('SELECT * FROM payments WHERE id = $1 AND order_id = $2 FOR UPDATE', [paymentId, orderId]);
     if (!pay.rows[0]) throw AppError('payment not found', 404);
 
