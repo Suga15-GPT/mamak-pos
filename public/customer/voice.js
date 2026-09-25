@@ -23,6 +23,7 @@ const MIME_CANDIDATES = [
 ];
 
 let tableToken = null;
+let cardNumber = null;
 let onConfirm = null;      // (items) => Promise — the ordinary submit path
 let onAddMore = null;      // (lines) => void   — hand the draft to the basket
 let onBrowse = null;       // () => void
@@ -43,6 +44,7 @@ let menu = null;           // for the "choose an option" hand-off
 
 export function initVoice(opts) {
   tableToken = opts.tableToken;
+  cardNumber = opts.cardNumber || null;
   onConfirm = opts.onConfirm;
   onAddMore = opts.onAddMore;
   onBrowse = opts.onBrowse;
@@ -211,6 +213,7 @@ async function send(blob, mimeType) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         table_token: tableToken,
+        card_number: cardNumber,
         mime_type: mimeType,
         audio_base64: await blobToBase64(blob),
         // Sending the current proposal back is what makes "make the teh tarik

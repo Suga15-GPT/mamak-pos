@@ -753,6 +753,18 @@ button.chip { min-height:38px; }
   color:var(--text-2); margin:18px 0 4px;
 }
 .bill-group-head:first-child { margin-top:6px; }
+/* Card mode: the "Combined bill: Card 1, Card 4" line on a card's bill, and
+   the card picker in the Combine dialog. */
+.bill-group-note {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;
+  margin:8px 0; padding:8px 12px; border-radius:var(--radius-md);
+  background:var(--surface-3); color:var(--text); font-weight:700;
+}
+.combine-option {
+  display:flex; align-items:center; gap:12px; min-height:44px; padding:6px 4px;
+  border-bottom:1px solid var(--light-gray); color:var(--text); cursor:pointer;
+}
+.combine-option span:nth-child(2) { flex:1; }
 .bill-group-head.new {
   color:var(--brand-ink); background:var(--brand-tint);
   padding:7px 8px; border-radius:var(--radius-xs) var(--radius-xs) 0 0;
@@ -974,6 +986,7 @@ button.chip { min-height:38px; }
   padding:16px; text-align:center; box-shadow:var(--shadow-xs); min-width:0;
 }
 .qr-card img { width:100%; max-width:150px; height:auto; aspect-ratio:1; border-radius:var(--radius-sm); background:#fff; }
+.qr-card .qr-number { font-size:34px; font-weight:800; letter-spacing:-.02em; margin-bottom:6px; color:var(--text); }
 .qr-card .qr-name { font-weight:800; margin-top:10px; font-size:15.5px; letter-spacing:-.02em; }
 .qr-card .qr-url { font-size:11px; color:var(--text-2); margin-top:4px; word-break:break-all; max-height:32px; overflow:hidden; }
 .qr-actions { display:flex; flex-wrap:wrap; gap:6px; justify-content:center; margin-top:10px; }
@@ -1146,6 +1159,12 @@ button.chip { min-height:38px; }
   .print-qr img { width:70mm; height:70mm; }
   .print-qr p { font-size:14pt; margin-top:10pt; }
   .print-qr small { font-size:8pt; color:#555; display:block; margin-top:6pt; word-break:break-all; }
+  /* Card faces: a sheet of cut-out cards, each one big number and its QR. */
+  .print-cards { display:grid; grid-template-columns:repeat(3, 1fr); gap:6mm; }
+  .print-card-face { text-align:center; border:1px dashed #999; padding:4mm; break-inside:avoid; }
+  .print-card-number { font-size:40pt; font-weight:800; line-height:1; }
+  .print-card-face img { width:40mm; height:40mm; margin-top:3mm; }
+  .print-card-face p { font-size:10pt; margin-top:2mm; }
 }
 
 /* ---- the phone's running bill ---- */

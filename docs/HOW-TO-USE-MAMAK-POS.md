@@ -30,6 +30,7 @@ Words you will see on the screen are written **like this**.
 8. [Ready and served](#8-ready-and-served)
 9. [Taking payment](#9-taking-payment)
 10. [Splitting a bill](#10-splitting-a-bill)
+    - [Paying a combined bill](#10b-paying-a-combined-bill)
 11. [Voiding an item](#11-voiding-an-item-taking-it-off-the-bill)
 12. [Sold out](#12-sold-out)
 13. [Takeaway](#13-takeaway)
@@ -250,6 +251,34 @@ In the payment screen:
 
 ---
 
+## 10b. Paying a combined bill
+
+Two cards that want to pay together — friends who came in separately — can be
+combined. Open one card, tap **🔗 Combine bills**, tick the other card, tap
+**Combine**. Each card keeps its own food and its own kitchen tickets, and you
+can keep adding food to either card.
+
+**A combined bill is paid all at once.** You cannot take part of it now and
+the rest later.
+
+1. Open any card on the combined bill and tap **💵 Take Payment**. The bill
+   shows each card's food under its own **Card N** heading and one total.
+2. All in one way: tap **💵 Cash**, **💳 Card** or **📱 DuitNow / eWallet**.
+   For cash, type the cash received first to see the change.
+3. Part cash, part card (for example RM20 cash and the rest by card): type
+   **20** in **Part in cash**, choose **Rest by card**, type the cash received,
+   then tap **Take both payments**. Both are taken together, in one go.
+
+If the amounts would not pay the whole bill, the POS says *"A combined bill
+has to be paid in full in one go."* and takes nothing. When it is paid, every
+card on it is free again.
+
+If one card on a combined bill ends up owing nothing on its own (everything
+voided, comped, or its customer order rejected), it leaves the combined bill
+by itself. If only one card is left, that card goes back to a normal bill.
+
+---
+
 ## 11. Voiding an item (taking it off the bill)
 
 1. Open the table.
@@ -336,10 +365,19 @@ If the boss has turned on approval, QR orders wait for you first. A blue box
 appears at the top of the **🍳 Kitchen** screen:
 
 > ⏳ Customer orders waiting for you
-> **Table 4** · 1× Nasi Goreng · [✅ Accept & send] [❌ Reject]
+> **Card 4** · 1× Nasi Goreng · [✅ Accept & send] [❌ Reject]
 
 Tap **Accept & send** and it goes to the kitchen. Tap **Reject** and you have to
 say why — the customer sees it, and the item is taken off their bill.
+
+With the **one shop poster** QR, every customer order waits for you like this,
+always — anyone can type any card number.
+
+Until you accept it, the food shows on the card's bill marked **⏳ Awaiting
+approval**, and it is **not** in the total. The POS will not take payment on a
+card (or a combined bill) while one of its customer orders is waiting: it says
+*"A customer order is waiting for approval — approve or reject it first."*
+Accept or reject it on the Kitchen screen, then take payment.
 
 ---
 

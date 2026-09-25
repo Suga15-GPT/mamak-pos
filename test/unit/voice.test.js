@@ -76,11 +76,11 @@ const auth = s => ({ cookie: s.cookie, 'x-csrf-token': s.csrfToken, 'content-typ
 async function setup(base) {
   const adminAuth = auth(await login(base, 'Admin', '1234'));
   const menu = await json(await fetch(`${base}/api/menu`, { headers: adminAuth }));
-  const tables = await json(await fetch(`${base}/api/admin/tables`, { headers: adminAuth }));
+  const cards = await json(await fetch(`${base}/api/admin/cards`, { headers: adminAuth }));
   const byName = n => menu.items.find(i => i.name === n);
   return {
-    adminAuth, menu, tables,
-    token: tables[0].qr_token, tableId: tables[0].id, tableName: tables[0].name,
+    adminAuth, menu, cards,
+    token: cards[0].qr_token, cardId: cards[0].id, cardLabel: `Card ${cards[0].number}`,
     mee: byName('Mee Goreng Mamak'), teh: byName('Teh Tarik'), roti: byName('Roti Canai'),
     kandar: menu.items.find(i => (i.modifier_group_ids || []).length > 0),
   };
@@ -379,7 +379,7 @@ test('ordering more by voice opens a NEW kitchen round and leaves the served one
       assert.equal(r.status, 200);
     }
 
-    // Round 2, spoken at the same table.
+    // Round 2, spoken on the same card.
     wanted = [{ menu_item_id: s.teh.id, quantity: 2, modifier_option_ids: [], note: '' }];
     const second = await json(await speak(base, s.token));
     const sent = await json(await confirm(base, s.token, asSubmission(second.lines)));
@@ -391,7 +391,7 @@ test('ordering more by voice opens a NEW kitchen round and leaves the served one
     assert.equal(order.sends.length, 2);
     assert.equal(order.sends[0].tickets[0].status, 'served', 'round 1 is untouched');
     assert.equal(order.sends[1].tickets[0].status, 'sent', 'round 2 starts fresh');
-    assert.equal(order.status, 'sent', 'the table rolls back up to the most urgent round');
+    assert.equal(order.status, 'sent', 'the card rolls back up to the most urgent round');
     assert.equal(order.subtotal, Math.round((s.roti.price + s.teh.price * 2) * 100) / 100);
   });
 });
@@ -453,7 +453,7 @@ test('nothing intelligible means an honest no, not an empty order', async () => 
   });
 });
 
-test('the endpoint refuses bad audio, oversized audio and an unknown table', async () => {
+test('the endpoint refuses bad audio, oversized audio and an unknown card QR', async () => {
   await withDb(async () => {
     const { base, calls } = await startApp();
     const s = await setup(base);
@@ -468,7 +468,7 @@ test('the endpoint refuses bad audio, oversized audio and an unknown table', asy
 
     const unknownTable = await speak(base, 'not-a-real-token');
     assert.equal(unknownTable.status, 400);
-    assert.equal(calls.transcribe, 0, 'an unknown table never reaches the speech vendor');
+    assert.equal(calls.transcribe, 0, 'an unknown card QR never reaches the speech vendor');
   });
 });
 

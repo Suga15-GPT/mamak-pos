@@ -5,25 +5,14 @@ const { publicH } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
 const { rateLimit } = require('../lib/auth');
 const { buildOrderItems, insertOrder, appendSend, ORDERABLE_SQL } = require('../services/orders');
-const { recomputeOrderBill, hasPayments } = require('../services/billing');
+const { hasPayments } = require('../services/billing');
 const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const voice = require('../services/voice');
+const { qrSettings, resolveQr, locationSql } = require('../services/cards');
 
 const router = express.Router();
 
-const PAUSED_MESSAGE = 'Online ordering is temporarily paused. Please order with our staff.';
-
-async function qrSettings() {
-  const r = await pool.query("SELECT key, value FROM settings WHERE key IN ('qr_ordering_enabled','qr_require_approval')");
-  const v = Object.fromEntries(r.rows.map(row => [row.key, row.value]));
-  return {
-    // Absent means "not configured yet", and the shipped default is on — a QR
-    // that silently does nothing is worse than one that works.
-    enabled: v.qr_ordering_enabled !== '0',
-    approval_required: v.qr_require_approval === '1',
-  };
-}
 
 router.get('/api/menu', publicH(async (req, res) => {
   const cats = await pool.query('SELECT id, name FROM categories ORDER BY sort, id');
@@ -51,20 +40,21 @@ router.get('/api/menu', publicH(async (req, res) => {
   });
 }));
 
-/* What a scanned QR resolves to. Also carries the ordering switches so the
-   customer page can show the "paused" message instead of a menu it cannot
-   submit, and says whether this table already has a bill running so the page
-   can say "adding to your table" rather than "new order". */
+/* What a scanned QR resolves to (card mode, migration 014). per_card: the
+   token is one card's own, and the page says whether that card already has a
+   bill running ("adding to your order" rather than "new order"). shop: the one
+   poster token; the page must ask for a card number first, and passes it back
+   as ?card=N to check it before showing the menu. off: 404, and the page says
+   "Please order at the counter". */
 router.get('/api/t/:token', publicH(async (req, res) => {
-  const r = await pool.query('SELECT id, name FROM tables WHERE qr_token = $1 AND active', [req.params.token]);
-  if (!r.rows[0]) return res.status(404).json({ error: 'unknown table QR' });
-  const ordering = await qrSettings();
-  const open = await pool.query(
-    "SELECT id FROM orders WHERE table_id = $1 AND status NOT IN ('paid','cancelled','refunded') LIMIT 1", [r.rows[0].id]);
+  const { settings, card } = await resolveQr(req.params.token, req.query.card, { requireCard: false });
+  const open = card ? await pool.query(
+    "SELECT id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled','refunded') LIMIT 1", [card.id]) : { rows: [] };
   res.json({
-    table: r.rows[0],
-    ordering,
-    paused_message: ordering.enabled ? null : PAUSED_MESSAGE,
+    mode: settings.mode,
+    card: card ? { number: card.number } : null,
+    needs_card_number: !card,
+    ordering: { enabled: settings.enabled, approval_required: settings.approval_required },
     has_open_order: !!open.rows[0],
     // A half-configured deployment shows the menu and no microphone, rather
     // than a Speak to Order button that fails when somebody taps it.
@@ -74,33 +64,30 @@ router.get('/api/t/:token', publicH(async (req, res) => {
 
 /* Customer QR order (public, rate-limited).
 
-   A second scan at the same table appends a NEW kitchen round to the bill the
-   table already has — the old behaviour, 409 "ask a staff member", was the
-   single biggest reason QR ordering went unused. Nothing here touches an
-   authenticated route: the table's own qr_token is the entire identity, and the
+   A second scan on the same card appends a NEW kitchen round to the bill the
+   card already has; a free card opens one. Nothing here touches an
+   authenticated route: the card's own qr_token (or, in shop mode, the shop
+   token plus the card number typed in) is the entire identity, and the
    response never carries an order id, only an opaque round reference the
    customer can poll for their own food. */
 router.post('/api/public/orders', publicH(async (req, res) => {
-  const ordering = await qrSettings();
-  if (!ordering.enabled) return res.status(503).json({ error: 'ordering_paused', message: PAUSED_MESSAGE });
+  const { table_token, card_number, items, note } = req.body || {};
+  const { settings: ordering, card } = await resolveQr(table_token, card_number);
 
   if (!rateLimit(req.ip, 20, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many orders, please ask staff' });
-  const { table_token, items, note } = req.body || {};
-  // Per-IP alone under-protects a busy table: one phone hotspot is one IP for
-  // a whole group of diners, so also cap by the table itself.
-  if (!rateLimit('table:' + table_token, 20, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many orders, please ask staff' });
-
-  const t = await pool.query('SELECT id FROM tables WHERE qr_token = $1 AND active', [table_token]);
-  if (!t.rows[0]) return res.status(400).json({ error: 'invalid table' });
-  const tableId = t.rows[0].id;
+  // Per-IP alone under-protects a busy card: one phone hotspot is one IP for
+  // a whole group of diners, so also cap by the card itself (in shop mode the
+  // token is shared by every customer, so the card is the only fair key).
+  if (!rateLimit('card:' + card.id, 20, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many orders, please ask staff' });
+  const cardId = card.id;
 
   const parsed = await buildOrderItems(pool, items);
   const approvalState = ordering.approval_required ? 'pending' : 'approved';
   const publicRef = crypto.randomBytes(12).toString('hex');
 
   const open = await pool.query(
-    "SELECT id FROM orders WHERE table_id = $1 AND status NOT IN ('paid','cancelled','refunded') ORDER BY id DESC LIMIT 1",
-    [tableId]);
+    "SELECT id, bill_group_id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled','refunded') ORDER BY id DESC LIMIT 1",
+    [cardId]);
 
   let orderId, sendId, seqNo;
   if (open.rows[0]) {
@@ -110,19 +97,28 @@ router.post('/api/public/orders', publicH(async (req, res) => {
       return res.status(409).json({ error: 'bill_being_paid', message: 'Your bill is being settled. Please order with our staff.' });
     }
     orderId = open.rows[0].id;
-    ({ sendId, seqNo } = await appendSend(orderId, parsed, 'qr', null, null, { approvalState, publicRef }));
+    try {
+      ({ sendId, seqNo } = await appendSend(orderId, parsed, 'qr', null, null, { approvalState, publicRef }));
+    } catch (e) {
+      // Settled or closed in the instant between looking the bill up and
+      // locking it: the same answer as the check above.
+      if (e.code === 'has_payment' || e.code === 'order_closed') {
+        return res.status(409).json({ error: 'bill_being_paid', message: 'Your bill is being settled. Please order with our staff.' });
+      }
+      throw e;
+    }
   } else {
     try {
       ({ orderId, sendId, seqNo } = await insertOrder(
-        tableId, parsed, String(note || '').slice(0, 300), 'qr', null, null, { approvalState, publicRef }));
+        cardId, parsed, String(note || '').slice(0, 300), 'qr', null, null, { approvalState, publicRef }));
     } catch (e) {
-      // Two phones at the same table submitting their first order at the same
-      // instant: one of them loses the one_open_order_per_table race. Append to
-      // the winner instead of failing the customer (phase 03 could only 409).
-      if (e.code === '23505' && e.constraint === 'one_open_order_per_table') {
+      // Two phones on the same card submitting their first order at the same
+      // instant: one of them loses the one_open_order_per_card race. Append to
+      // the winner instead of failing the customer.
+      if (e.code === '23505' && e.constraint === 'one_open_order_per_card') {
         const winner = await pool.query(
-          "SELECT id FROM orders WHERE table_id = $1 AND status NOT IN ('paid','cancelled','refunded') ORDER BY id DESC LIMIT 1",
-          [tableId]);
+          "SELECT id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled','refunded') ORDER BY id DESC LIMIT 1",
+          [cardId]);
         if (!winner.rows[0]) throw e;
         orderId = winner.rows[0].id;
         ({ sendId, seqNo } = await appendSend(orderId, parsed, 'qr', null, null, { approvalState, publicRef }));
@@ -130,8 +126,7 @@ router.post('/api/public/orders', publicH(async (req, res) => {
     }
   }
 
-  await recomputeOrderBill(orderId);
-  publish(open.rows[0] ? 'order.updated' : 'order.created', { order_id: orderId, table_id: tableId });
+  publish(open.rows[0] ? 'order.updated' : 'order.created', { order_id: orderId, card_id: cardId });
   // A round awaiting staff approval reaches no printer and no station display
   // until someone accepts it.
   if (approvalState === 'approved') await printing.enqueueRoundChits(sendId);
@@ -139,6 +134,7 @@ router.post('/api/public/orders', publicH(async (req, res) => {
   res.status(201).json({
     ref: publicRef,
     round: seqNo,
+    card: card.number,
     status: approvalState === 'pending' ? 'pending' : 'sent',
   });
 }));
@@ -147,12 +143,14 @@ router.post('/api/public/orders', publicH(async (req, res) => {
    handed out at submit time — never an order id, and it exposes only what that
    customer already knows they ordered. */
 router.get('/api/public/sends/:ref', publicH(async (req, res) => {
+  if (!(await qrSettings()).enabled) return res.status(404).json({ error: 'Please order at the counter' });
   if (!rateLimit('sendref:' + req.ip, 240, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many requests' });
   const s = await pool.query(
-    `SELECT s.id, s.seq_no, s.sent_at, s.approval_state, t.name AS table_name
+    `SELECT s.id, s.seq_no, s.sent_at, s.approval_state, ${locationSql('cd', 't')} AS table_name
        FROM order_sends s
        JOIN orders o ON o.id = s.order_id
        LEFT JOIN tables t ON t.id = o.table_id
+       LEFT JOIN cards cd ON cd.id = o.card_id
       WHERE s.public_ref = $1`, [req.params.ref]);
   if (!s.rows[0]) return res.status(404).json({ error: 'not found' });
   const send = s.rows[0];

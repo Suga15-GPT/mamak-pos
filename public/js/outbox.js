@@ -129,8 +129,8 @@ async function sendOne(entry) {
   }
 
   if (res.status === 409 && !entry.converted && entry.method === 'POST' && entry.url === '/api/orders') {
-    // one_open_order_per_table (phase 03): another device created the order
-    // for this table while we were offline. Convert the queued create into an
+    // one_open_order_per_card (card mode, migration 014): another device
+    // opened this card while we were offline. Convert the queued create into an
     // append to that order and retry once — never twice, so a genuinely bad
     // append doesn't loop forever pretending to be a fresh conversion.
     const data = await res.json().catch(() => ({}));

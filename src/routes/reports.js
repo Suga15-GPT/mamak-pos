@@ -121,7 +121,7 @@ router.get('/api/dashboard', requireRole('admin', 'staff'), awaitH(async (req, r
 
     pool.query(`
       SELECT
-        COUNT(*) FILTER (WHERE order_type = 'dine_in')::int  AS open_tables,
+        COUNT(*) FILTER (WHERE order_type = 'dine_in')::int  AS open_cards,
         COUNT(*) FILTER (WHERE order_type = 'takeaway')::int  AS open_takeaway,
         COUNT(*) FILTER (WHERE status = 'served')::int        AS ready_to_pay,
         COALESCE(SUM(total_cents), 0)::int                    AS open_cents
@@ -141,7 +141,7 @@ router.get('/api/dashboard', requireRole('admin', 'staff'), awaitH(async (req, r
     month: { sales: cents2rm(s.month_cents) },
     year: { sales: cents2rm(s.year_cents) },
     floor: {
-      open_tables: f.open_tables, open_takeaway: f.open_takeaway,
+      open_cards: f.open_cards, open_takeaway: f.open_takeaway,
       ready_to_pay: f.ready_to_pay, open_value: cents2rm(f.open_cents),
     },
     kitchen: {
@@ -163,7 +163,7 @@ router.get('/api/dashboard', requireRole('admin', 'staff'), awaitH(async (req, r
 
 const SETTING_KEYS = [
   'tax_rate_bp', 'svc_rate_bp', 'restaurant_name', 'restaurant_address', 'sst_number',
-  'qr_ordering_enabled', 'qr_require_approval',
+  'qr_mode', 'qr_require_approval',
 ];
 
 router.get('/api/settings', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
@@ -172,9 +172,9 @@ router.get('/api/settings', requireRole('admin', 'staff', 'kitchen'), awaitH(asy
   res.json({
     tax_rate_bp: Number(v.tax_rate_bp) || 0, svc_rate_bp: Number(v.svc_rate_bp) || 0,
     restaurant_name: v.restaurant_name || '', restaurant_address: v.restaurant_address || '', sst_number: v.sst_number || '',
-    // Shipped default is on: a QR sticker that silently does nothing is worse
-    // than one that works.
-    qr_ordering_enabled: v.qr_ordering_enabled !== '0',
+    // Card mode (migration 014): per_card | shop | off. Shipped default is
+    // per_card — a QR that silently does nothing is worse than one that works.
+    qr_mode: ['per_card', 'shop', 'off'].includes(v.qr_mode) ? v.qr_mode : 'per_card',
     qr_require_approval: v.qr_require_approval === '1',
   });
 }));
@@ -200,10 +200,11 @@ router.patch('/api/settings', requireRole('admin'), awaitH(async (req, res) => {
     if (b[key] == null) continue;
     rows.push([key, String(b[key]).slice(0, max)]);
   }
-  for (const key of ['qr_ordering_enabled', 'qr_require_approval']) {
-    if (b[key] === undefined) continue;
-    rows.push([key, b[key] ? '1' : '0']);
+  if (b.qr_mode !== undefined) {
+    if (!['per_card', 'shop', 'off'].includes(b.qr_mode)) return res.status(400).json({ error: 'bad qr_mode' });
+    rows.push(['qr_mode', b.qr_mode]);
   }
+  if (b.qr_require_approval !== undefined) rows.push(['qr_require_approval', b.qr_require_approval ? '1' : '0']);
 
   if (!rows.length) return res.status(400).json({ error: 'nothing to update' });
   for (const [key, value] of rows) {

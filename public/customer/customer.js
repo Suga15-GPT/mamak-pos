@@ -5,11 +5,14 @@ import { initVoice, applyChoice, reopenReview } from './voice.js';
 /* ===== CUSTOMER QR PAGE =====
    Deliberately tiny: a menu, a basket, and honest progress on what the kitchen
    is doing with your food. No internal POS controls, no prices staff can edit
-   from here, no order ids — this page only ever knows the table's own QR token
-   and an opaque reference to each round it sent. */
+   from here, no order ids — this page only ever knows the QR token it was
+   opened with (a card's own, or the shop poster's plus the card number the
+   customer typed) and an opaque reference to each round it sent. */
 
 let menu = { categories: [], items: [], modifier_groups: [], modifier_options: [], stations: [] };
 let tableToken = null, tableName = '';
+// Shop QR mode: the number on the customer's card, typed in on arrival.
+let cardNumber = null;
 let ordering = { enabled: true, approval_required: false };
 let cart = [];
 let activeCat = null;
@@ -23,7 +26,8 @@ let pendingItem = null;
 let myRounds = [];
 let statusTimer = null;
 
-const STORE_KEY = () => `mamak_rounds_${tableToken}`;
+const STORE_KEY = () => `mamak_rounds_${tableToken}${cardNumber ? '_' + cardNumber : ''}`;
+const CARD_KEY = () => `mamak_card_${tableToken}`;
 function loadRounds() {
   try { myRounds = JSON.parse(sessionStorage.getItem(STORE_KEY()) || '[]'); } catch { myRounds = []; }
 }
@@ -34,22 +38,29 @@ function saveRounds() {
 async function init() {
   const parts = window.location.pathname.split('/');
   tableToken = parts[parts.length - 1];
-  if (!tableToken || tableToken === 'customer.html') return fail('Invalid QR code', 'Please scan the QR at your table.');
+  if (!tableToken || tableToken === 'customer.html') return fail('Invalid QR code', 'Please scan the QR on your card.');
+  try { cardNumber = sessionStorage.getItem(CARD_KEY()) || null; } catch { cardNumber = null; }
+  return start();
+}
 
+// Card mode: a card's own QR goes straight to the menu; the shop poster asks
+// for the number on the customer's card first; QR "off" asks them to order at
+// the counter.
+async function start() {
   try {
-    const info = await fetch('/api/t/' + tableToken).then(r => r.json());
+    const res = await fetch('/api/t/' + tableToken + (cardNumber ? '?card=' + encodeURIComponent(cardNumber) : ''));
+    const info = await res.json();
+    if (res.status === 404 && /counter/i.test(info.error || '')) return showCounter();
+    if (res.status === 400 && cardNumber) { cardNumber = null; return askCardNumber(info.error); }
     if (info.error) return fail('This QR code is not in use', 'Please ask our staff for help.');
-    tableName = info.table.name;
+    if (info.needs_card_number) return askCardNumber();
+    cardNumber = info.card.number;
+    try { if (info.mode === 'shop') sessionStorage.setItem(CARD_KEY(), String(cardNumber)); } catch { /* private mode */ }
+    tableName = `Card ${info.card.number}`;
     ordering = info.ordering;
     $('table-name').textContent = tableName;
+    $('card-view').style.display = 'none';
     loadRounds();
-
-    if (!ordering.enabled) {
-      $('loading').style.display = 'none';
-      $('paused-message').textContent = info.paused_message;
-      $('paused-view').style.display = '';
-      return;
-    }
 
     menu = await fetch('/api/menu').then(r => r.json());
     activeCat = menu.categories[0]?.id;
@@ -64,6 +75,7 @@ async function init() {
     if (info.voice && info.voice.enabled) {
       initVoice({
         tableToken,
+        cardNumber,
         menu,
         onConfirm: items => postRound(items),
         onAddMore: mergeVoiceDraftIntoBasket,
@@ -75,6 +87,29 @@ async function init() {
   } catch (e) {
     fail('Could not load the menu', 'Check your connection and try again.');
   }
+}
+
+function askCardNumber(error) {
+  $('loading').style.display = 'none';
+  $('card-view').style.display = '';
+  $('card-number-err').textContent = error || '';
+  $('card-number-input').focus();
+}
+
+function submitCardNumber() {
+  const n = parseInt($('card-number-input').value, 10);
+  if (!(n > 0)) { $('card-number-err').textContent = 'Please enter the number on your card.'; return; }
+  cardNumber = n;
+  start();
+}
+
+function showCounter() {
+  $('loading').style.display = 'none';
+  $('card-view').style.display = 'none';
+  $('app').style.display = 'none'; $('cart-bar').style.display = 'none';
+  $('paused-title').textContent = 'Please order at the counter';
+  $('paused-message').textContent = 'Our staff will take your order at the counter.';
+  $('paused-view').style.display = '';
 }
 
 function fail(title, detail) {
@@ -239,17 +274,17 @@ function cd(i) { cart.splice(i, 1); updateBar(); if (cart.length) showCart(); el
    One path out of this page, whichever way the order was built. Voice and the
    basket both end up here, and here posts to the same public endpoint it always
    did — which re-validates every line, applies the restaurant's own prices, and
-   appends a kitchen round to whatever bill the table already has. */
+   appends a kitchen round to whatever bill the card already has. */
 async function postRound(items) {
   const r = await fetch('/api/public/orders', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ table_token: tableToken, items }),
+    body: JSON.stringify({ table_token: tableToken, card_number: cardNumber, items }),
   });
   const body = await r.json().catch(() => ({}));
 
-  if (r.status === 503) { $('paused-message').textContent = body.message; showPaused(); return null; }
+  if (r.status === 404) { closeCartModal(); showCounter(); return null; }
   if (r.status === 409) { showBlocked(body.message); return null; }
-  if (r.status === 429) { showBlocked('Too many orders from this table just now. Please ask our staff.'); return null; }
+  if (r.status === 429) { showBlocked('Too many orders from this card just now. Please ask our staff.'); return null; }
   if (!r.ok) throw new Error(body.error === 'invalid items' ? 'Something on that order is no longer available.' : (body.message || body.error || 'failed'));
 
   myRounds.push({
@@ -299,11 +334,6 @@ function mergeVoiceDraftIntoBasket(lines) {
   toast('Added to your order — keep going.');
 }
 
-function showPaused() {
-  $('app').style.display = 'none'; $('cart-bar').style.display = 'none'; $('cart-modal').classList.remove('show');
-  $('paused-view').style.display = '';
-}
-
 function showBlocked(message) {
   closeCartModal();
   $('app').style.display = 'none'; $('cart-bar').style.display = 'none';
@@ -335,7 +365,7 @@ function showSuccess() {
   $('app').style.display = 'none';
   $('cart-bar').style.display = 'none';
   $('success-view').style.display = '';
-  $('success-table').textContent = `Table ${tableName}`;
+  $('success-table').textContent = tableName;
   renderSuccess(latest);
 }
 
@@ -398,7 +428,8 @@ document.body.addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const a = el.dataset.action;
-  if (a === 'set-cat') { activeCat = Number(el.dataset.id); renderCats(); renderItems(); }
+  if (a === 'set-card-number') submitCardNumber();
+  else if (a === 'set-cat') { activeCat = Number(el.dataset.id); renderCats(); renderItems(); }
   else if (a === 'add-item') addItem(Number(el.dataset.id));
   else if (a === 'show-cart') showCart();
   else if (a === 'close-cart-modal') closeCartModal();

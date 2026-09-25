@@ -1,6 +1,4 @@
 const express = require('express');
-const crypto = require('crypto');
-const QRCode = require('qrcode');
 const { pool } = require('../db');
 const { requireRole, hashPin, pinPolicyError } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
@@ -8,7 +6,7 @@ const { rm2cents } = require('../lib/money');
 const { writeAudit } = require('../services/orders');
 const printing = require('../services/printing');
 const rounds = require('../services/rounds');
-const { publicBaseUrl, qrHealth } = require('../lib/baseurl');
+const { qrHealth } = require('../lib/baseurl');
 const { systemHealth } = require('../services/health');
 const { publish } = require('../lib/events');
 
@@ -324,88 +322,12 @@ router.get('/api/admin/stations', adminOnly, awaitH(async (req, res) => {
   res.json(stations.map(s => ({ ...s, item_count: byCode[s.code] || 0 })));
 }));
 
-/* ===== tables & QR ===== */
+/* ===== QR =====
+   Card QR codes and the shop poster live in routes/cards.js (card mode,
+   migration 014); table management is retired with tables. */
 
 router.get('/api/admin/qr-health', adminOnly, awaitH(async (req, res) => {
   res.json(qrHealth(req));
-}));
-
-router.get('/api/admin/tables', adminOnly, awaitH(async (req, res) => {
-  const base = publicBaseUrl(req);
-  const r = await pool.query(`
-    SELECT t.id, t.name, t.qr_token, t.active, t.sort,
-           (SELECT count(*)::int FROM orders o
-             WHERE o.table_id = t.id AND o.status NOT IN ('paid','cancelled','refunded')) AS open_orders
-      FROM tables t ORDER BY t.active DESC, t.sort, t.id`);
-  res.json(r.rows.map(t => ({ ...t, url: `${base}/t/${t.qr_token}` })));
-}));
-
-router.post('/api/admin/tables', adminOnly, awaitH(async (req, res) => {
-  const name = String(req.body?.name || '').trim().slice(0, 40);
-  if (!name) return res.status(400).json({ error: 'name required' });
-  const token = crypto.randomBytes(5).toString('hex');
-  try {
-    const r = await pool.query(
-      'INSERT INTO tables (name, qr_token, sort) VALUES ($1,$2, COALESCE((SELECT max(sort)+1 FROM tables),0)) RETURNING id', [name, token]);
-    await writeAudit(pool, {
-      userId: req.user.id, action: 'table.create', entityType: 'table', entityId: r.rows[0].id, detail: { name },
-    });
-    res.json({ id: r.rows[0].id, url: `${publicBaseUrl(req)}/t/${token}` });
-  } catch (e) {
-    if (e.code === '23505') return res.status(409).json({ error: `A table called ${name} already exists` });
-    throw e;
-  }
-}));
-
-/* Rename, reorder, retire or bring back a table. Retiring is refused while the
-   table still has a bill open on it — that bill has to be settled or moved
-   first (POST /api/orders/:id/move). */
-router.patch('/api/admin/tables/:id', adminOnly, awaitH(async (req, res) => {
-  const b = req.body || {};
-  const t = (await pool.query('SELECT * FROM tables WHERE id = $1', [req.params.id])).rows[0];
-  if (!t) return res.status(404).json({ error: 'not found' });
-
-  if (b.active === false && t.active) {
-    const open = await pool.query(
-      "SELECT count(*)::int n FROM orders WHERE table_id = $1 AND status NOT IN ('paid','cancelled','refunded')", [t.id]);
-    if (open.rows[0].n > 0) return res.status(409).json({ error: `${t.name} still has an open order. Settle or move it first.` });
-  }
-
-  const sets = [], vals = [];
-  if (b.name !== undefined) { sets.push('name = $' + (vals.push(String(b.name).trim().slice(0, 40)))); }
-  if (b.sort !== undefined) { sets.push('sort = $' + (vals.push(Number(b.sort) || 0))); }
-  if (b.active !== undefined) { sets.push('active = $' + (vals.push(!!b.active))); }
-  // Reissuing the token invalidates every printed sticker for this table —
-  // exactly what you want after a QR is photographed and abused.
-  if (b.regenerate_qr) { sets.push('qr_token = $' + (vals.push(crypto.randomBytes(5).toString('hex')))); }
-  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
-  vals.push(t.id);
-  try {
-    await pool.query(`UPDATE tables SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals);
-  } catch (e) {
-    if (e.code === '23505') return res.status(409).json({ error: 'Another active table already has that name' });
-    throw e;
-  }
-  if (Object.keys(b).some(k => k !== 'sort')) {
-    await writeAudit(pool, {
-      userId: req.user.id, action: 'table.update', entityType: 'table', entityId: t.id, detail: b,
-    });
-  }
-  const after = (await pool.query('SELECT qr_token FROM tables WHERE id = $1', [t.id])).rows[0];
-  res.json({ ok: true, url: `${publicBaseUrl(req)}/t/${after.qr_token}` });
-}));
-
-// Deletion is deliberately retired: old bills name the table, and a hard delete
-// would break `orders.table_id`. Deactivate instead.
-router.delete('/api/admin/tables/:id', adminOnly, awaitH(async (req, res) => {
-  res.status(410).json({ error: 'deleting a table is retired — PATCH /api/admin/tables/:id with {active:false} instead' });
-}));
-
-router.get('/api/admin/tables/:id/qr.png', adminOnly, awaitH(async (req, res) => {
-  const r = await pool.query('SELECT qr_token FROM tables WHERE id = $1', [req.params.id]);
-  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-  const buf = await QRCode.toBuffer(`${publicBaseUrl(req)}/t/${r.rows[0].qr_token}`, { width: 512, margin: 1 });
-  res.type('image/png').send(buf);
 }));
 
 /* ===== staff & PINs (phase 11) =====
@@ -567,13 +489,14 @@ router.get('/api/admin/print-jobs', adminOnly, awaitH(async (req, res) => {
   const r = await pool.query(
     `SELECT j.id, j.kind, j.order_id, j.status, j.attempts, j.last_error, j.created_at, j.send_id, j.station_code, j.retry_of,
             p.name AS printer_name, s.seq_no AS round, ps.name AS station_name,
-            COALESCE(tb.name, 'Takeaway #' || o.id) AS order_label
+            COALESCE('Card ' || cd.number, tb.name, 'Takeaway #' || o.id) AS order_label
      FROM print_jobs j
      LEFT JOIN printers p ON p.id = j.printer_id
      LEFT JOIN order_sends s ON s.id = j.send_id
      LEFT JOIN prep_stations ps ON ps.code = j.station_code
      LEFT JOIN orders o ON o.id = j.order_id
      LEFT JOIN tables tb ON tb.id = o.table_id
+     LEFT JOIN cards cd ON cd.id = o.card_id
      ${where} ORDER BY j.id DESC LIMIT $${params.length}`, params);
   res.json(r.rows);
 }));

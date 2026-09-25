@@ -1,5 +1,6 @@
 const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
+const { lockBills } = require('../lib/billlock');
 
 /* ===== kitchen rounds =====
    A "round" (order_sends) is one batch of items sent to preparation. Every
@@ -88,9 +89,26 @@ async function deriveOrderStatus(client, orderId) {
   const live = new Set(r.rows.map(x => x.status));
   const next = ROLLUP_ORDER.find(st => live.has(st)) || 'sent';
   if (next !== cur.rows[0].status) {
-    await client.query('UPDATE orders SET status = $1, updated_at = now() WHERE id = $2', [next, orderId]);
+    // Conditional: a cooking status can never overwrite a closed bill, whether
+    // or not the caller holds the bill lock (re-check 2, K).
+    await client.query(
+      "UPDATE orders SET status = $1, updated_at = now() WHERE id = $2 AND status NOT IN ('paid','cancelled','refunded')",
+      [next, orderId]);
   }
   return next;
+}
+
+/* Shop-mode QR (and approval mode generally): a round awaiting approval is
+   not on the bill yet — its lines are shown "awaiting approval" and count in
+   no total — so the till must not take money while one is outstanding. The
+   customer would either pay for food nobody has accepted, or the round would
+   drop out of the approval queue the moment the bill closed and never be
+   cooked. */
+const HELD_MESSAGE = 'A customer order is waiting for approval — approve or reject it first.';
+async function refuseWhileHeld(client, orderIds) {
+  const r = await client.query(
+    "SELECT 1 FROM order_sends WHERE order_id = ANY($1::int[]) AND approval_state = 'pending' LIMIT 1", [orderIds]);
+  if (r.rows[0]) throw AppError(HELD_MESSAGE, 409);
 }
 
 /* The status of the station ticket a given order line is actually on — what
@@ -125,6 +143,9 @@ async function advanceTicket(ticketId, status, { userId, role }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // A tap writes a ticket and the order's status: bill lock first, so it is
+    // serialised with payment and cancel (re-check 2, K and X1).
+    await lockBills(client);
     const t = await client.query(
       `SELECT t.*, s.order_id FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id
         WHERE t.id = $1 FOR UPDATE OF t`, [ticketId]);
@@ -213,11 +234,13 @@ async function listStationTickets(stationCode) {
             pu.name AS preparing_by_name, ru.name AS ready_by_name, su.name AS served_by_name,
             s.id AS send_id, s.seq_no, s.sent_at, s.source, s.approval_state,
             u.name AS sent_by_name,
-            o.id AS order_id, o.order_type, o.status AS order_status, tb.name AS table_name
+            o.id AS order_id, o.order_type, o.status AS order_status,
+            COALESCE('Card ' || cd.number, tb.name) AS table_name
        FROM order_send_tickets t
        JOIN order_sends s ON s.id = t.send_id
        JOIN orders o ON o.id = s.order_id
        LEFT JOIN tables tb ON tb.id = o.table_id
+       LEFT JOIN cards cd ON cd.id = o.card_id
        LEFT JOIN users u ON u.id = s.sent_by
        LEFT JOIN users pu ON pu.id = t.preparing_by
        LEFT JOIN users ru ON ru.id = t.ready_by
@@ -269,10 +292,12 @@ async function listStationTickets(stationCode) {
 /* Rounds still waiting for a staff decision, for the QR approval queue. */
 async function listPendingSends() {
   const r = await pool.query(
-    `SELECT s.id, s.seq_no, s.sent_at, s.source, s.order_id, o.order_type, tb.name AS table_name
+    `SELECT s.id, s.seq_no, s.sent_at, s.source, s.order_id, o.order_type,
+            COALESCE('Card ' || cd.number, tb.name) AS table_name
        FROM order_sends s
        JOIN orders o ON o.id = s.order_id
        LEFT JOIN tables tb ON tb.id = o.table_id
+       LEFT JOIN cards cd ON cd.id = o.card_id
       WHERE s.approval_state = 'pending' AND o.status NOT IN ('paid','cancelled','refunded')
       ORDER BY s.sent_at ASC LIMIT 100`);
   if (!r.rows.length) return [];
@@ -288,6 +313,7 @@ async function listPendingSends() {
 
 module.exports = {
   TICKET_STATUSES, TERMINAL_ORDER_STATUSES, TICKET_TRANSITIONS, BACKWARD_TICKET,
+  HELD_MESSAGE, refuseWhileHeld,
   listStations, createSend, openTickets, deriveOrderStatus, ticketStatusForLine,
   ticketTransitionError, advanceTicket, attachSends, listStationTickets, listPendingSends,
 };

@@ -11,6 +11,7 @@ const reportRoutes = require('./routes/reports');
 const streamRoutes = require('./routes/stream');
 const kitchenRoutes = require('./routes/kitchen');
 const voiceRoutes = require('./routes/voice');
+const cardRoutes = require('./routes/cards');
 
 const app = express();
 
@@ -51,6 +52,7 @@ app.use(reportRoutes);
 app.use(streamRoutes);
 app.use(kitchenRoutes);
 app.use(voiceRoutes);
+app.use(cardRoutes);
 
 /* customer page route */
 app.get('/t/:token', (req, res) => {

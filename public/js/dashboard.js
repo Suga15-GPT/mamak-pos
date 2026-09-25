@@ -87,7 +87,7 @@ export async function refreshDashboard() {
       kpi({ label: 'Today sales', value: fmt(d.today.sales), cls: 'hero', sub: comparison(d.today.sales, d.yesterday.sales) }),
       kpi({ label: 'Orders', value: String(d.today.orders), sub: { text: `${d.today.dine_in.orders} dine in · ${d.today.takeaway.orders} takeaway` } }),
       kpi({ label: 'Average order', value: fmt(d.today.average_order) }),
-      kpi({ label: 'Open tables', value: String(d.floor.open_tables), sub: { text: `${fmt(d.floor.open_value)} on the floor` } }),
+      kpi({ label: 'Cards in use', value: String(d.floor.open_cards), sub: { text: `${fmt(d.floor.open_value)} on the floor` } }),
       kpi({
         label: 'Ready to pay', value: String(d.floor.ready_to_pay),
         cls: d.floor.ready_to_pay ? 'good' : '',

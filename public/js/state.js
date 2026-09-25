@@ -1,7 +1,7 @@
 /* ===== STATE ===== */
 export const state = {
   menu: { categories: [], items: [], modifier_groups: [], modifier_options: [] },
-  tables: [],
+  cards: [],
   cart: [],
   selTable: null,
   activeCat: null,
@@ -26,7 +26,7 @@ export function esc(s) {
 
 /* ===== SHARED VOCABULARY =====
    One place decides what each preparation state is called and which icon goes
-   with it, so the table grid, the kitchen display, the bill and the customer
+   with it, so the card grid, the kitchen display, the bill and the customer
    page never disagree. An icon is never used on its own — the words are the
    label, the icon is the shortcut (master spec §35). */
 export const STATE_WORDS = {

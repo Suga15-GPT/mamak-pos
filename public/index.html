@@ -61,7 +61,7 @@
       <div id="pos-tables">
         <div class="view-head">
           <div>
-            <h2>🍽 <span data-i18n="pos.tables">Tables</span></h2>
+            <h2>🍽 <span data-i18n="pos.tables">Cards</span></h2>
             <div class="sub" id="floor-summary"></div>
           </div>
           <div class="actions">
@@ -71,6 +71,12 @@
         </div>
         <div class="floor-section">
           <div id="tables-grid" class="tables-grid"></div>
+        </div>
+        <div class="floor-section" id="legacy-section" hidden>
+          <div class="floor-section-head">
+            <h3 class="eyebrow">🪑 Table orders from before cards</h3>
+          </div>
+          <div id="legacy-grid" class="tables-grid"></div>
         </div>
         <div class="floor-section">
           <div class="floor-section-head">
@@ -82,9 +88,10 @@
 
       <div id="pos-workspace" style="display:none">
         <div class="ws-head">
-          <button class="back-btn" data-action="back-to-tables">← <span data-i18n="pos.backToTables">Back to Tables</span></button>
+          <button class="back-btn" data-action="back-to-tables">← <span data-i18n="pos.backToTables">Back to Cards</span></button>
           <span class="ws-title" id="ws-title"></span>
           <span class="spacer"></span>
+          <button class="btn small ghost" id="combine-btn" data-action="open-combine" style="display:none">🔗 Combine bills</button>
           <button class="btn small ghost" id="move-order-btn" data-action="open-move" style="display:none">↔ <span data-i18n="pos.moveOrder">Move</span></button>
         </div>
 
@@ -106,6 +113,7 @@
               </div>
               <span id="bill-badge"></span>
             </div>
+            <div id="bill-group"></div>
             <div class="bill-scroll">
               <div id="cart-body"></div>
               <div id="cart-empty" class="empty"><span class="big" aria-hidden="true">🧾</span><span data-i18n="pos.noItems">No items yet</span></div>
@@ -290,7 +298,7 @@
       <div id="admin-tabs" class="admin-tabs" aria-label="Admin sections">
         <button class="active" data-action="admin-section" data-id="menu">🍜 Menu</button>
         <button data-action="admin-section" data-id="staff">👤 Staff</button>
-        <button data-action="admin-section" data-id="tables">🍽 Tables &amp; QR</button>
+        <button data-action="admin-section" data-id="tables">🎴 Cards &amp; QR</button>
         <button data-action="admin-section" data-id="restaurant">🏠 Restaurant</button>
         <button data-action="admin-section" data-id="payments">💳 Payments &amp; Tax</button>
         <button data-action="admin-section" data-id="printers">🖨 Printers</button>
@@ -351,8 +359,17 @@
         </div>
       </div>
 
-      <!-- TABLES & QR -->
+      <!-- CARDS & QR -->
       <div class="admin-section" id="sec-tables">
+        <div class="card">
+          <h3>Customer cards</h3>
+          <p class="meta" style="margin-bottom:14px">Numbered cards handed out at the counter. A card is in use while its bill is open and frees itself when the bill is paid.</p>
+          <div class="form-grid">
+            <div><label class="label" for="card-count-input">How many cards</label><input type="number" id="card-count-input" min="1" max="999" step="1"></div>
+            <div><button class="btn" data-action="save-card-count">Save</button></div>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-head">
             <h3>Customer QR ordering</h3>
@@ -360,11 +377,15 @@
           </div>
           <div id="qr-health"></div>
           <div class="admin-row">
-            <div><b>Accept QR orders</b><div class="meta">Off shows customers a short message asking them to order with staff.</div></div>
-            <label class="switch"><input type="checkbox" id="qr-enabled-toggle" data-action="toggle-qr-enabled"><span class="slider"></span></label>
+            <div><b>QR mode</b><div class="meta">One QR on each card, one poster for the shop (customers type their card number), or off (customers are asked to order at the counter).</div></div>
+            <select id="qr-mode-select" data-action="set-qr-mode" style="max-width:240px">
+              <option value="per_card">A QR on each card</option>
+              <option value="shop">One shop poster</option>
+              <option value="off">Off</option>
+            </select>
           </div>
           <div class="admin-row">
-            <div><b>QR handling</b><div class="meta">Send straight to the kitchen, or hold each order for a staff member to accept.</div></div>
+            <div><b>QR handling</b><div class="meta" id="qr-approval-meta">Send straight to the kitchen, or hold each order for a staff member to accept.</div></div>
             <select id="qr-approval-select" data-action="set-qr-approval" style="max-width:240px">
               <option value="direct">Send directly to kitchen</option>
               <option value="approval">Require staff approval</option>
@@ -372,10 +393,10 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" id="qr-print-card">
           <div class="card-head">
-            <h3>Tables</h3>
-            <button class="btn small" data-action="new-table">➕ Add table</button>
+            <h3 id="qr-print-title">Card faces</h3>
+            <button class="btn small" data-action="print-qr-sheet">🖨 Print</button>
           </div>
           <div id="qr-grid" class="qr-grid"></div>
         </div>
@@ -498,7 +519,7 @@
     <h3>Payment</h3>
     <div id="pay-details" style="margin-bottom:18px"></div>
 
-    <div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--light-gray)">
+    <div id="pay-discount-section" style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--light-gray)">
       <button class="btn outline block" data-action="open-discount-form">Discount</button>
       <div id="discount-form" style="display:none;margin-top:12px">
         <select id="discount-kind" style="margin-bottom:8px">
@@ -548,6 +569,23 @@
       <button class="btn primary-lg charcoal" data-action="pay" data-method="DuitNow/eWallet">📱 DuitNow / eWallet</button>
     </div>
 
+    <!-- Combined bill: paid in full in one go. Every leg (say RM20 cash, the
+         rest by card) is collected here and submitted together. -->
+    <div id="pay-group-legs" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
+      <label class="label" for="group-cash-part">Part in cash, the rest by card or e-wallet</label>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <input type="number" id="group-cash-part" min="0" step="0.05" placeholder="Cash part (RM)">
+        <select id="group-rest-method" style="max-width:190px">
+          <option value="Card">Rest by card</option>
+          <option value="DuitNow/eWallet">Rest by DuitNow / eWallet</option>
+        </select>
+      </div>
+      <label class="label" for="group-cash-received">Cash received (RM)</label>
+      <input type="number" id="group-cash-received" min="0" step="0.05" style="margin-bottom:8px">
+      <div id="group-legs-summary" class="meta" style="margin-bottom:8px"></div>
+      <button class="btn" data-action="pay-group-legs">Take both payments</button>
+    </div>
+
     <div id="pay-amount-row" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
       <label class="label" for="pay-amount-input">Pay a specific amount (RM)</label>
       <input type="number" id="pay-amount-input" min="0" step="0.01" style="margin-bottom:8px">
@@ -558,7 +596,7 @@
       </div>
     </div>
 
-    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
+    <div id="pay-split-section" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
       <div style="display:flex;gap:8px">
         <button class="btn small outline" style="flex:1" data-action="split-evenly">Split evenly</button>
         <button class="btn small outline" style="flex:1" data-action="split-by-seat">Split by seat</button>
@@ -646,13 +684,27 @@
 <!-- MOVE ORDER -->
 <div id="move-modal" class="modal-bg">
   <div class="modal">
-    <h3>Move order</h3>
-    <p class="meta" style="margin-bottom:12px">The whole bill moves — nothing is re-entered and the kitchen keeps cooking.</p>
+    <h3>Move to another card</h3>
+    <p class="meta" style="margin-bottom:12px">For a lost or swapped card. The whole bill moves — nothing is re-entered and the kitchen keeps cooking.</p>
     <div class="field"><label for="move-target">Move to</label><select id="move-target"></select></div>
     <div id="move-err" class="err"></div>
     <div class="modal-actions">
       <button class="btn ghost" data-action="close-move">Cancel</button>
       <button class="btn" data-action="confirm-move">Move order</button>
+    </div>
+  </div>
+</div>
+
+<!-- COMBINE BILLS -->
+<div id="combine-modal" class="modal-bg">
+  <div class="modal">
+    <h3>Combine bills</h3>
+    <p class="meta" style="margin-bottom:12px">These cards will pay together. Each card keeps its own items and kitchen tickets, and you can keep adding to any of them.</p>
+    <div id="combine-list"></div>
+    <div id="combine-err" class="err"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-action="close-combine">Cancel</button>
+      <button class="btn" data-action="confirm-combine">Combine</button>
     </div>
   </div>
 </div>

@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const { pool, migrate } = require('./db');
 const { hashPin } = require('./lib/auth');
 
@@ -56,15 +55,8 @@ async function seed() {
       console.log('Seeded menu + modifiers');
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   }
-  const t = await pool.query('SELECT count(*)::int n FROM tables');
-  if (t.rows[0].n === 0) {
-    // "Takeaway" is no longer a table: migration 012 made it a real order type,
-    // so a fresh install seeds only physical tables.
-    const names = [...Array(12)].map((_, i) => `T${i + 1}`).concat(['Counter']);
-    for (const n of names)
-      await pool.query('INSERT INTO tables (name, qr_token) VALUES ($1,$2)', [n, crypto.randomBytes(5).toString('hex')]);
-    console.log('Seeded 13 tables');
-  }
+  // No tables are seeded: card mode (migration 014) identifies dine-in orders
+  // by numbered card, and the migration itself seeds cards 1-50.
   const u = await pool.query('SELECT count(*)::int n FROM users');
   if (u.rows[0].n === 0) {
     const pin = process.env.ADMIN_PIN || '1234';

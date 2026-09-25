@@ -35,9 +35,11 @@ async function openAccountMenu(page) {
   return true;
 }
 
-async function openTable(page, name) {
-  await page.locator('#tables-grid').getByRole('button', { name: new RegExp(`^${name}\\b`) }).click();
-  await expect(page.locator('#ws-title')).toHaveText(name);
+// Card mode: the floor is a grid of numbered cards. Tapping a free card starts
+// its order; tapping an in-use card opens its bill.
+async function openCard(page, number) {
+  await page.locator('#tables-grid').getByRole('button', { name: new RegExp(`^Card ${number}\\b`) }).click();
+  await expect(page.locator('#ws-title')).toHaveText(`Card ${number}`);
 }
 
 // Tapping an item adds it straight to the bill — the redesign removed the
@@ -55,7 +57,7 @@ test('staff login → order → kitchen → pay', async ({ page, request }) => {
   await request.post('/api/shift/open', { headers: { 'X-CSRF-Token': csrfToken }, data: { float: 0 } });
 
   await login(page);
-  await openTable(page, 'T1');
+  await openCard(page, 1);
   await addItem(page, 'Roti', 'Roti Canai');
   await expect(page.locator('#cart-body')).toContainText('Roti Canai');
 
@@ -64,19 +66,19 @@ test('staff login → order → kitchen → pay', async ({ page, request }) => {
   await expect(page.locator('#cart-body')).toContainText('Round 1');
 
   await navTab(page, 'Kitchen').click();
-  await expect(page.locator('#k-col-sent')).toContainText('T1');
+  await expect(page.locator('#k-col-sent')).toContainText('Card 1');
   await expect(page.locator('#k-col-sent')).toContainText('Roti Canai');
 
   await page.locator('#k-col-sent').getByRole('button', { name: /Start cooking/ }).click();
-  await expect(page.locator('#k-col-preparing')).toContainText('T1');
+  await expect(page.locator('#k-col-preparing')).toContainText('Card 1');
   await page.locator('#k-col-preparing').getByRole('button', { name: /Ready/ }).click();
-  await expect(page.locator('#k-col-ready')).toContainText('T1');
+  await expect(page.locator('#k-col-ready')).toContainText('Card 1');
   await page.locator('#k-col-ready').getByRole('button', { name: /Served/ }).click();
-  await expect(page.locator('#k-col-served')).toContainText('T1');
+  await expect(page.locator('#k-col-served')).toContainText('Card 1');
 
   // Returning to the floor tab comes back to the bill that was open, refreshed.
-  await navTab(page, 'Tables').click();
-  await expect(page.locator('#ws-title')).toHaveText('T1');
+  await navTab(page, 'Cards').click();
+  await expect(page.locator('#ws-title')).toHaveText('Card 1');
   await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
   await expect(page.getByRole('heading', { name: 'Payment' })).toBeVisible();
   await page.locator('#pay-modal').getByRole('button', { name: '💵 Cash', exact: true }).click();
@@ -91,22 +93,22 @@ test('add-on opens a new round: round 1 stays served, round 2 is new', async ({ 
   if (!existing) await request.post('/api/shift/open', { headers: { 'X-CSRF-Token': csrfToken }, data: { float: 0 } });
 
   await login(page);
-  await openTable(page, 'T8');
+  await openCard(page, 8);
   await addItem(page, 'Mee & Goreng', 'Mee Goreng Mamak');
   await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#cart-body')).toContainText('Round 1');
 
   // Take round 1 all the way through the kitchen.
   await navTab(page, 'Kitchen').click();
-  const r1 = page.locator('.k-order', { hasText: 'T8' });
+  const r1 = page.locator('.k-order', { hasText: 'Card 8' });
   await r1.getByRole('button', { name: /Start cooking/ }).click();
-  await page.locator('#k-col-preparing').locator('.k-order', { hasText: 'T8' }).getByRole('button', { name: /Ready/ }).click();
-  await page.locator('#k-col-ready').locator('.k-order', { hasText: 'T8' }).getByRole('button', { name: /Served/ }).click();
-  await expect(page.locator('#k-col-served')).toContainText('T8');
+  await page.locator('#k-col-preparing').locator('.k-order', { hasText: 'Card 8' }).getByRole('button', { name: /Ready/ }).click();
+  await page.locator('#k-col-ready').locator('.k-order', { hasText: 'Card 8' }).getByRole('button', { name: /Served/ }).click();
+  await expect(page.locator('#k-col-served')).toContainText('Card 8');
 
-  // Later, the same table orders one more thing.
-  await navTab(page, 'Tables').click();
-  await expect(page.locator('#ws-title')).toHaveText('T8');
+  // Later, the same card orders one more thing.
+  await navTab(page, 'Cards').click();
+  await expect(page.locator('#ws-title')).toHaveText('Card 8');
   await addItem(page, 'Roti', 'Roti Canai');
   await page.getByRole('button', { name: /Send 1 new item/ }).click();
 
@@ -123,7 +125,7 @@ test('add-on opens a new round: round 1 stays served, round 2 is new', async ({ 
 
   // The kitchen sees the add-on as its own fresh ticket.
   await navTab(page, 'Kitchen').click();
-  await expect(page.locator('#k-col-sent')).toContainText('T8');
+  await expect(page.locator('#k-col-sent')).toContainText('Card 8');
   await expect(page.locator('#k-col-sent')).toContainText('Add-on · Round 2');
   await expect(page.locator('#k-col-sent')).toContainText('Roti Canai');
   await expect(page.locator('#k-col-sent')).not.toContainText('Mee Goreng Mamak');
@@ -131,11 +133,11 @@ test('add-on opens a new round: round 1 stays served, round 2 is new', async ({ 
 
 test('QR customer orders, then orders more on the same bill', async ({ page, request }) => {
   await apiLogin(request);
-  const tables = await request.get('/api/admin/tables').then(r => r.json());
-  const t2 = tables.find(t => t.name === 'T2');
+  const cards = await request.get('/api/admin/cards').then(r => r.json());
+  const c2 = cards.find(c => c.number === 2);
 
-  await page.goto(t2.url);
-  await expect(page.locator('#table-name')).toHaveText('T2');
+  await page.goto(c2.url);
+  await expect(page.locator('#table-name')).toHaveText('Card 2');
 
   await page.locator('#menu-cats').getByRole('button', { name: 'Roti', exact: true }).click();
   await page.locator('#menu-items').getByRole('button', { name: /Roti Telur/ }).click();
@@ -161,12 +163,12 @@ test('QR customer orders, then orders more on the same bill', async ({ page, req
 
   // One bill, two rounds, both items on it.
   const orders = await request.get('/api/orders').then(r => r.json());
-  const t2Order = orders.find(o => o.table === 'T2');
-  expect(t2Order.sends.length).toBe(2);
-  expect(t2Order.items.map(i => i.name).sort()).toEqual(['Roti Telur', 'Teh Tarik']);
+  const c2Order = orders.find(o => o.label === 'Card 2');
+  expect(c2Order.sends.length).toBe(2);
+  expect(c2Order.items.map(i => i.name).sort()).toEqual(['Roti Telur', 'Teh Tarik']);
 });
 
-test('takeaway order needs no table', async ({ page, request }) => {
+test('takeaway order needs no card', async ({ page, request }) => {
   const csrfToken = await apiLogin(request);
   const existing = await request.get('/api/shift/current').then(r => r.json());
   if (!existing) await request.post('/api/shift/open', { headers: { 'X-CSRF-Token': csrfToken }, data: { float: 0 } });
@@ -178,7 +180,7 @@ test('takeaway order needs no table', async ({ page, request }) => {
   await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#ws-title')).toContainText('Takeaway #');
 
-  await page.getByRole('button', { name: /Back to Tables/ }).click();
+  await page.getByRole('button', { name: /Back to Cards/ }).click();
   await expect(page.locator('#takeaway-grid')).toContainText('Takeaway #');
 });
 
@@ -192,7 +194,7 @@ test('split bill', async ({ page, request }) => {
   page.on('dialog', dialog => dialog.accept());
 
   await login(page);
-  await openTable(page, 'T3');
+  await openCard(page, 3);
   await addItem(page, 'Roti', 'Roti Canai');
   await addItem(page, 'Roti', 'Roti Canai');
   await expect(page.locator('#cart-body')).toContainText('2×');
@@ -217,13 +219,66 @@ test('split bill', async ({ page, request }) => {
   await expect(page.locator('#pos-tables')).toBeVisible();
 });
 
+/* Card mode: two parties on two cards decide to pay together. Nothing moves
+   between their orders; the whole combined bill is paid in one go — here RM2
+   in cash and the rest by card, submitted together — and both cards free up. */
+test('two cards, combine, pay once', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  const existing = await request.get('/api/shift/current').then(r => r.json());
+  if (!existing) await request.post('/api/shift/open', { headers: { 'X-CSRF-Token': csrfToken }, data: { float: 0 } });
+  // Nothing has been served, so Take Payment asks "food still cooking?".
+  page.on('dialog', dialog => dialog.accept());
+
+  await login(page);
+  await openCard(page, 11);
+  await addItem(page, 'Roti', 'Roti Canai');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#cart-body')).toContainText('Already sent');
+  await page.getByRole('button', { name: /Back to Cards/ }).click();
+
+  await openCard(page, 12);
+  await addItem(page, 'Minuman Panas', 'Teh Tarik');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#cart-body')).toContainText('Already sent');
+
+  await page.getByRole('button', { name: /Combine bills/ }).click();
+  await page.locator('#combine-list label', { hasText: 'Card 11' }).locator('input').check();
+  await page.locator('#combine-modal').getByRole('button', { name: 'Combine', exact: true }).click();
+  await expect(page.locator('#bill-group')).toContainText('Card 11');
+  await expect(page.locator('#bill-group')).toContainText('Card 12');
+
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
+  await expect(page.locator('#pay-details')).toContainText('Combined bill');
+  await expect(page.locator('#pay-details')).toContainText('Roti Canai');
+  await expect(page.locator('#pay-details')).toContainText('Teh Tarik');
+  // Roti 2.12 + teh tarik 2.97 = 5.09: RM2.00 cash, RM3.09 by card.
+  await expect(page.locator('#pay-amount-row')).toBeHidden();
+  await page.locator('#group-cash-part').fill('2');
+  await page.locator('#group-cash-received').fill('5');
+  await expect(page.locator('#group-legs-summary')).toContainText('Cash RM 2.00 + card RM 3.09 · change RM 3.00');
+  await page.getByRole('button', { name: 'Take both payments' }).click();
+  await expect(page.locator('#pos-tables')).toBeVisible();
+
+  // Both cards are free again, and the payments are ordinary per-order rows,
+  // lowest card first: Card 11 by card; Card 12 the rest of the card, then cash.
+  const open = await request.get('/api/orders').then(r => r.json());
+  expect(open.find(o => o.label === 'Card 11' || o.label === 'Card 12')).toBeUndefined();
+  const recent = await request.get('/api/orders?mode=recent').then(r => r.json());
+  const paid = recent.filter(o => o.label === 'Card 11' || o.label === 'Card 12');
+  expect(paid.map(o => o.status)).toEqual(['paid', 'paid']);
+  const byLabel = Object.fromEntries(paid.map(o => [o.label, o.payments.map(p => [p.method, p.amount])]));
+  expect(byLabel['Card 11']).toEqual([['Card', 2.12]]);
+  expect(byLabel['Card 12']).toEqual([['Card', 0.97], ['Cash', 2]]);
+  await expect(page.locator('#tables-grid').getByRole('button', { name: /^Card 11\b/ })).toContainText('Free');
+});
+
 test('void a line', async ({ page }) => {
   await login(page);
 
   // Two lines, not one — voiding the only line on an unpaid order drops its
   // total to zero, which equals what's already paid (nothing) and auto-settles
   // it. A second line keeps the order open through the void.
-  await openTable(page, 'T4');
+  await openCard(page, 4);
   await addItem(page, 'Roti', 'Roti Canai');
   await addItem(page, 'Roti', 'Roti Telur');
   await page.getByRole('button', { name: /Send 2 new items/ }).click();
@@ -243,15 +298,15 @@ test('offline order reconciles', async ({ page, context, request }) => {
   await login(page);
   await context.setOffline(true);
 
-  await openTable(page, 'T6');
+  await openCard(page, 6);
   await addItem(page, 'Roti', 'Roti Canai');
   await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#cart-body')).toContainText('Sending');
   await expect(page.locator('#offline-banner')).toBeVisible();
   await expect(page.locator('#offline-banner')).toContainText('1 order');
 
-  await page.getByRole('button', { name: /Back to Tables/ }).click();
-  await openTable(page, 'T7');
+  await page.getByRole('button', { name: /Back to Cards/ }).click();
+  await openCard(page, 7);
   await addItem(page, 'Roti', 'Roti Telur');
   await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#offline-banner')).toContainText('2 orders');
@@ -262,8 +317,8 @@ test('offline order reconciles', async ({ page, context, request }) => {
 
   await apiLogin(request);
   const orders = await request.get('/api/orders').then(r => r.json());
-  const t6 = orders.find(o => o.table === 'T6');
-  const t7 = orders.find(o => o.table === 'T7');
+  const t6 = orders.find(o => o.label === 'Card 6');
+  const t7 = orders.find(o => o.label === 'Card 7');
   expect(t6).toBeTruthy();
   expect(t7).toBeTruthy();
   expect(t6.items.some(i => i.name === 'Roti Canai')).toBe(true);
@@ -307,10 +362,10 @@ test('shift open → close', async ({ page, request }) => {
    in the kitchen, and only the customer's confirmation changes that. */
 test('QR customer speaks an order, reviews it, and only then does the kitchen get it', async ({ page, request }) => {
   await apiLogin(request);
-  const tables = await request.get('/api/admin/tables').then(r => r.json());
-  const t5 = tables.find(t => t.name === 'T5');
+  const cards = await request.get('/api/admin/cards').then(r => r.json());
+  const c5 = cards.find(c => c.number === 5);
 
-  await page.goto(t5.url);
+  await page.goto(c5.url);
   await expect(page.locator('#voice-hero')).toBeVisible();
 
   await page.getByRole('button', { name: 'Speak your order' }).click();
@@ -334,9 +389,9 @@ test('QR customer speaks an order, reviews it, and only then does the kitchen ge
   await expect(page.locator('#vs-total')).toHaveText(expected);
 
   // Nothing has been created yet — this is the property the whole design exists
-  // for. (Scoped to this table: the suite shares one database.)
+  // for. (Scoped to this card: the suite shares one database.)
   const before = await request.get('/api/orders').then(r => r.json());
-  expect(before.find(o => o.table === 'T5')).toBeUndefined();
+  expect(before.find(o => o.label === 'Card 5')).toBeUndefined();
 
   // The customer edits, then confirms.
   await page.locator('#vs-lines .qty button').first().click();   // one fewer roti
@@ -346,7 +401,7 @@ test('QR customer speaks an order, reviews it, and only then does the kitchen ge
   await expect(page.getByRole('heading', { name: 'Order sent' })).toBeVisible({ timeout: 15000 });
 
   const orders = await request.get('/api/orders').then(r => r.json());
-  const order = orders.find(o => o.table === 'T5');
+  const order = orders.find(o => o.label === 'Card 5');
   expect(order.source).toBe('qr');
   expect(order.sends.length).toBe(1);
   expect(order.items.map(i => i.name).sort()).toEqual(['Roti Canai', 'Teh Tarik']);
@@ -355,14 +410,14 @@ test('QR customer speaks an order, reviews it, and only then does the kitchen ge
 
 test('a spoken order the customer abandons leaves nothing behind', async ({ page, request }) => {
   await apiLogin(request);
-  const tables = await request.get('/api/admin/tables').then(r => r.json());
-  const t6 = tables.find(t => t.name === 'T6');
+  const cards = await request.get('/api/admin/cards').then(r => r.json());
+  const c6 = cards.find(c => c.number === 6);
 
   // The suite shares one database and earlier journeys have left orders on the
   // floor, so the assertion is "nothing changed", not "nothing exists".
   const before = await request.get('/api/orders').then(r => r.json());
 
-  await page.goto(t6.url);
+  await page.goto(c6.url);
   await page.getByRole('button', { name: 'Speak your order' }).click();
   await page.waitForTimeout(1800);
   await page.getByRole('button', { name: 'Done', exact: true }).click();

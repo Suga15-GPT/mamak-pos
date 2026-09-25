@@ -70,13 +70,13 @@ test('a failed chit can be retried: one reprint, no new order, no new round, bil
       body: JSON.stringify({ name: 'Kitchen 1', host: '127.0.0.1', port: deadPort, role: 'kitchen', width: 42 }),
     });
 
-    const tables = await json(await fetch(`${base}/api/tables`, { headers: h }));
+    const cards = await json(await fetch(`${base}/api/cards`, { headers: h }));
     const menu = await json(await fetch(`${base}/api/menu`, { headers: h }));
     const roti = menu.items.find(i => i.name === 'Roti Canai');
 
     const order = await json(await fetch(`${base}/api/orders`, {
       method: 'POST', headers: h,
-      body: JSON.stringify({ table_id: tables[0].id, items: [{ item_id: roti.id, qty: 2 }] }),
+      body: JSON.stringify({ card_id: cards[0].id, items: [{ item_id: roti.id, qty: 2 }] }),
     }));
 
     const failed = await waitFor(async () => {
@@ -87,7 +87,7 @@ test('a failed chit can be retried: one reprint, no new order, no new round, bil
     assert.equal(failed.kind, 'chit');
     assert.equal(failed.round, 1, 'the jobs list says which round it was');
     assert.equal(failed.station_name, 'Kitchen');
-    assert.equal(failed.order_label, tables[0].name);
+    assert.equal(failed.order_label, `Card ${cards[0].number}`);
 
     const beforeOrders = await json(await fetch(`${base}/api/orders?mode=recent`, { headers: h }));
     const beforeOrder = beforeOrders.find(o => o.id === order.id);
@@ -131,14 +131,14 @@ test('only a failed job can be retried, and a job with no printer is refused', a
 
     // With no printer configured at all, the chit is recorded failed
     // immediately — visible, but with nothing to reprint to.
-    const tables = await json(await fetch(`${base}/api/tables`, { headers: h }));
+    const cards = await json(await fetch(`${base}/api/cards`, { headers: h }));
     const menu = await json(await fetch(`${base}/api/menu`, { headers: h }));
     // Roti Canai specifically: a kandar item would be refused for missing its
     // required food options, and then there would be no chit to fail at all.
     const roti = menu.items.find(i => i.name === 'Roti Canai');
     await fetch(`${base}/api/orders`, {
       method: 'POST', headers: h,
-      body: JSON.stringify({ table_id: tables[0].id, items: [{ item_id: roti.id, qty: 1 }] }),
+      body: JSON.stringify({ card_id: cards[0].id, items: [{ item_id: roti.id, qty: 1 }] }),
     });
 
     const job = await waitFor(async () => {

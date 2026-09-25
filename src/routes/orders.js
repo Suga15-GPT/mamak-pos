@@ -8,6 +8,8 @@ const { buildOrderItems, insertOrder, appendSend, ordersWithItems, writeAudit } 
 const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const rounds = require('../services/rounds');
+const { leaveGroupIfClosedTx } = require('../services/bill_groups');
+const { lockBills } = require('../lib/billlock');
 const {
   recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
   addRefund, listRefunds,
@@ -66,28 +68,21 @@ router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async
   res.json(orders);
 }));
 
-/* tables for staff/kitchen: names only, no qr_token (that stays admin-only).
-   Retired tables are hidden from the floor but kept in the database, because
-   old bills still name them. */
-router.get('/api/tables', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
-  const r = await pool.query('SELECT id, name FROM tables WHERE active ORDER BY sort, id');
-  res.json(r.rows);
-}));
-
 /* Idempotency-Key (phase 07): a client-generated UUID per submission batch, so
    the offline outbox can retry a create it's unsure landed without risking a
    duplicate order. A duplicate key returns the original result with 200
    instead of erroring or creating a second row — checked up front for the
    common (sequential) retry, and again by catching the unique-index violation
-   for the concurrent-retry race, the same pattern one_open_order_per_table
+   for the concurrent-retry race, the same pattern one_open_order_per_card
    already uses below. */
 router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res) => {
-  const { table_id, items, note } = req.body || {};
-  // Takeaway is a first-class order type, not a table called "Takeaway"
-  // (master spec §23) — it takes no table at all, and any number can be open.
+  const { card_id, items, note } = req.body || {};
+  // Takeaway is a first-class order type (master spec §23) — it takes no card
+  // at all, and any number can be open. A dine-in order is identified by its
+  // customer card; a new order never names a table (card mode, migration 014).
   const orderType = req.body?.order_type === 'takeaway' ? 'takeaway' : 'dine_in';
-  const tableId = orderType === 'takeaway' ? null : Number(table_id);
-  if (orderType === 'dine_in' && !(tableId > 0)) return res.status(400).json({ error: 'table_id required for a dine-in order' });
+  const cardId = orderType === 'takeaway' ? null : Number(card_id);
+  if (orderType === 'dine_in' && !(cardId > 0)) return res.status(400).json({ error: 'card_id required for a dine-in order' });
 
   const idemKey = req.headers['idempotency-key'] || null;
   if (idemKey) {
@@ -98,17 +93,17 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
   const parsed = await buildOrderItems(pool, items);
   try {
     const { orderId: id, sendId } = await insertOrder(
-      tableId, parsed, String(note || '').slice(0, 300), 'staff', req.user.id, idemKey, { orderType });
-    await recomputeOrderBill(id);
+      cardId, parsed, String(note || '').slice(0, 300), 'staff', req.user.id, idemKey, { orderType });
+    const cardNo = cardId ? (await pool.query('SELECT number FROM cards WHERE id = $1', [cardId])).rows[0]?.number : null;
     await writeAudit(pool, {
       userId: req.user.id, action: 'order.create', entityType: 'order', entityId: id,
-      detail: { table_id: tableId, order_type: orderType, source: 'staff', send_id: sendId, round: 1 },
+      detail: { card_id: cardId, card: cardNo != null ? `Card ${cardNo}` : null, order_type: orderType, source: 'staff', send_id: sendId, round: 1 },
     });
-    publish('order.created', { order_id: id, table_id: tableId });
+    publish('order.created', { order_id: id, card_id: cardId });
     await printing.enqueueRoundChits(sendId);
     res.status(201).json({ id });
   } catch (e) {
-    // A concurrent retry of the *same* request (same table, same key) can hit
+    // A concurrent retry of the *same* request (same card, same key) can hit
     // either unique index first depending on Postgres's own check ordering —
     // not just uniq_orders_idem specifically. Whenever a key was supplied,
     // check for it on any unique violation, not only that one constraint.
@@ -116,13 +111,13 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
       const existing = await pool.query('SELECT id FROM orders WHERE idempotency_key = $1', [idemKey]);
       if (existing.rows[0]) return res.status(200).json({ id: existing.rows[0].id });
     }
-    // one_open_order_per_table: a second tablet raced us to the same table.
+    // one_open_order_per_card: a second till raced us to the same card.
     // Not a 500 — tell the client which order already exists so it can join it.
-    if (e.code === '23505' && e.constraint === 'one_open_order_per_table') {
+    if (e.code === '23505' && e.constraint === 'one_open_order_per_card') {
       const existing = await pool.query(
-        "SELECT id FROM orders WHERE table_id = $1 AND status NOT IN ('paid','cancelled','refunded') ORDER BY id DESC LIMIT 1",
-        [tableId]);
-      return res.status(409).json({ error: 'table already has an open order', order_id: existing.rows[0]?.id });
+        "SELECT id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled','refunded') ORDER BY id DESC LIMIT 1",
+        [cardId]);
+      return res.status(409).json({ error: 'card already has an open order', order_id: existing.rows[0]?.id });
     }
     throw e;
   }
@@ -166,7 +161,8 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
     throw e;
   }
 
-  await recomputeOrderBill(o.rows[0].id);
+  // appendSend recomputed the bill inside its own transaction; recomputing it
+  // again here could land after a payment and rewrite a settled bill.
   publish('order.updated', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
   // The new round prints its own chit(s) — only its own lines, at each station
   // it touches. The original order is never reprinted.
@@ -180,39 +176,50 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
   const reason = String(req.body?.reason || '').trim();
   if (reason.length < 3 || reason.length > 200) return res.status(400).json({ error: 'reason must be 3-200 chars' });
 
-  const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
-  if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
-  if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) return res.status(400).json({ error: 'order closed' });
+  // One transaction under the bill lock and the order's row lock. Everything
+  // is read after locking: checked before it, a void racing a payment waited
+  // on the payment's lock and then recomputed the bill it had just paid
+  // (re-check, N-B). A bill closed by then is refused with 409.
+  const client = await pool.connect();
+  let o, li;
+  try {
+    await client.query('BEGIN');
+    await lockBills(client);
+    o = await client.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (!o.rows[0]) throw Object.assign(new Error('not found'), { status: 404 });
+    if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw Object.assign(new Error('order closed'), { status: 409 });
 
-  const li = await pool.query('SELECT * FROM order_items WHERE id = $1 AND order_id = $2', [req.params.lineId, o.rows[0].id]);
-  if (!li.rows[0]) return res.status(404).json({ error: 'line not found' });
-  if (li.rows[0].voided_at) return res.status(400).json({ error: 'already voided' });
+    li = await client.query('SELECT * FROM order_items WHERE id = $1 AND order_id = $2', [req.params.lineId, o.rows[0].id]);
+    if (!li.rows[0]) throw Object.assign(new Error('line not found'), { status: 404 });
+    if (li.rows[0].voided_at) throw Object.assign(new Error('already voided'), { status: 400 });
 
-  // Now that one bill can hold several rounds at different stages, "has the
-  // kitchen started this?" is a question about *this line's* station ticket,
-  // not about the order as a whole: a still-'sent' add-on stays staff-voidable
-  // even though round 1 was served an hour ago.
-  const lineStatus = await rounds.ticketStatusForLine(pool, li.rows[0].id);
-  if (lineStatus && lineStatus !== 'sent' && req.user.role !== 'admin')
-    return res.status(403).json({ error: 'admin only once the kitchen has started this item' });
+    // Now that one bill can hold several rounds at different stages, "has the
+    // kitchen started this?" is a question about *this line's* station ticket,
+    // not about the order as a whole: a still-'sent' add-on stays staff-voidable
+    // even though round 1 was served an hour ago.
+    const lineStatus = await rounds.ticketStatusForLine(client, li.rows[0].id);
+    if (lineStatus && lineStatus !== 'sent' && req.user.role !== 'admin')
+      throw Object.assign(new Error('admin only once the kitchen has started this item'), { status: 403 });
 
-  // A partially-paid order's status stays 'sent' — voiding a line can drop the
-  // total below what's already been paid, which the status check alone (paid
-  // orders only) never catches. Guard before committing anything.
-  const paidCents = await paidCentsFor(o.rows[0].id);
-  const preview = await previewBillExcludingLine(o.rows[0].id, li.rows[0].id);
-  guardAgainstShortfall('voiding this line', preview.total_cents, paidCents);
+    // A partially-paid order's status stays 'sent' — voiding a line can drop the
+    // total below what's already been paid, which the status check alone (paid
+    // orders only) never catches. Guard before committing anything.
+    const paidCents = await paidCentsFor(o.rows[0].id, client);
+    const preview = await previewBillExcludingLine(o.rows[0].id, li.rows[0].id, client);
+    guardAgainstShortfall('voiding this line', preview.total_cents, paidCents);
 
-  await pool.query(
-    'UPDATE order_items SET voided_at = now(), voided_by = $1, void_reason = $2 WHERE id = $3',
-    [req.user.id, reason, li.rows[0].id]);
-  await pool.query('UPDATE orders SET updated_at = now() WHERE id = $1', [o.rows[0].id]);
-  await writeAudit(pool, {
-    userId: req.user.id, action: 'order.void_line', entityType: 'order_item', entityId: li.rows[0].id,
-    detail: { order_id: o.rows[0].id, name: li.rows[0].name, qty: li.rows[0].qty, price_cents: li.rows[0].price_cents, reason },
-  });
-  const bill = await recomputeOrderBill(o.rows[0].id);
-  await settleIfMatchesPaid(o.rows[0].id, bill.total_cents, paidCents, req.user.id, 'void');
+    await client.query(
+      'UPDATE order_items SET voided_at = now(), voided_by = $1, void_reason = $2 WHERE id = $3',
+      [req.user.id, reason, li.rows[0].id]);
+    await client.query('UPDATE orders SET updated_at = now() WHERE id = $1', [o.rows[0].id]);
+    await writeAudit(client, {
+      userId: req.user.id, action: 'order.void_line', entityType: 'order_item', entityId: li.rows[0].id,
+      detail: { order_id: o.rows[0].id, name: li.rows[0].name, qty: li.rows[0].qty, price_cents: li.rows[0].price_cents, reason },
+    });
+    const bill = await recomputeOrderBill(o.rows[0].id, client);
+    await settleIfMatchesPaid(client, o.rows[0].id, bill.total_cents, paidCents, req.user.id, 'void');
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   publish('order.voided', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
   await printing.enqueue('void', o.rows[0].id, { itemId: li.rows[0].id });
   res.json({ ok: true });
@@ -248,6 +255,10 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Cancelling closes a bill: bill lock first, then re-read under the lock.
+      await lockBills(client);
+      const now = (await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [o.rows[0].id])).rows[0];
+      if (!(TRANSITIONS[now.status] || []).includes('cancelled')) throw Object.assign(new Error(`cannot go ${now.status} -> cancelled`), { status: 409 });
       await client.query('UPDATE orders SET status = $1, closed_by = $2, updated_at = now() WHERE id = $3', [status, req.user.id, o.rows[0].id]);
       // Cancelling the bill stops every station: a cancelled ticket drops off
       // the kitchen display instead of being cooked for nobody.
@@ -258,12 +269,19 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
         userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: o.rows[0].id,
         detail: { from: cur },
       });
+      await leaveGroupIfClosedTx(client, o.rows[0].id, req.user.id, 'cancelled');
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   } else {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Writes tickets and the order's status: bill lock first, then re-read
+      // the order. Read before the lock, a tap racing a payment waited on it
+      // and then wrote "served" over "paid" (re-check 2, K).
+      await lockBills(client);
+      const now = (await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [o.rows[0].id])).rows[0];
+      if (!(TRANSITIONS[now.status] || []).includes(status)) throw Object.assign(new Error(`cannot go ${now.status} -> ${status}`), { status: 409 });
       const tickets = (await client.query(
         `SELECT t.* FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id
           WHERE s.order_id = $1 AND s.approval_state = 'approved' AND t.status <> 'cancelled' FOR UPDATE OF t`,
@@ -293,35 +311,63 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
   res.json({ ok: true });
 }));
 
-/* Move an open order to another table (master spec §50) — the whole dining
-   order goes with it: rounds, bill, payments and audit are untouched, nothing
-   is re-entered. Refuses a table that already has an open order rather than
-   letting two bills collide on one table. */
+/* Move an open order to another card (a lost or swapped card) — the whole
+   dining order goes with it: rounds, bill, payments, a combined bill and audit
+   are untouched, nothing is re-entered. Refuses a card that already has an
+   open order rather than letting two bills collide on one card. A table order
+   from before card mode moves onto a card the same way, keeping its table_id
+   as history — the card is what names it from then on. */
 router.post('/api/orders/:id/move', requireRole('admin', 'staff'), awaitH(async (req, res) => {
-  const targetId = Number(req.body?.table_id);
-  const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
+  const targetId = Number(req.body?.card_id);
+  const o = await pool.query(
+    `SELECT o.*, c.number AS card_number, t.name AS table_name
+       FROM orders o LEFT JOIN cards c ON c.id = o.card_id LEFT JOIN tables t ON t.id = o.table_id WHERE o.id = $1`,
+    [req.params.id]);
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
   if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) return res.status(400).json({ error: 'order closed' });
-  if (!(targetId > 0)) return res.status(400).json({ error: 'table_id required' });
+  if (!(targetId > 0)) return res.status(400).json({ error: 'card_id required' });
 
-  const target = (await pool.query('SELECT id, name FROM tables WHERE id = $1', [targetId])).rows[0];
-  if (!target) return res.status(404).json({ error: 'table not found' });
-  if (o.rows[0].table_id === targetId) return res.status(400).json({ error: 'order is already on that table' });
+  if (o.rows[0].card_id === targetId) return res.status(400).json({ error: 'order is already on that card' });
 
-  const from = (await pool.query('SELECT name FROM tables WHERE id = $1', [o.rows[0].table_id])).rows[0]?.name || null;
+  const from = o.rows[0].card_number != null ? `Card ${o.rows[0].card_number}` : (o.rows[0].table_name || null);
+  // The target card is locked FOR SHARE and its `active` re-read after the
+  // lock, exactly as opening an order does: lowering the card count locks the
+  // cards it retires FOR UPDATE, so the two can no longer interleave and leave
+  // an open bill on a card that is off the floor (finding #4).
+  const client = await pool.connect();
+  let target;
   try {
-    await pool.query(
-      "UPDATE orders SET table_id = $1, order_type = 'dine_in', updated_at = now() WHERE id = $2", [targetId, o.rows[0].id]);
+    await client.query('BEGIN');
+    await lockBills(client);
+    // Re-read under the lock: checked only before it, a move racing a payment
+    // waited for the payment and then relabelled the bill it had just paid
+    // (a takeaway turned dine-in, a paid card moved). A bill closed by now is
+    // refused.
+    const now = (await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [o.rows[0].id])).rows[0];
+    if (['paid', 'cancelled', 'refunded'].includes(now.status)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This bill has just been closed, so it can no longer be moved.' });
+    }
+    target = (await client.query('SELECT id, number, active FROM cards WHERE id = $1 FOR SHARE', [targetId])).rows[0];
+    if (!target || !target.active) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'card not found' }); }
+    await client.query(
+      "UPDATE orders SET card_id = $1, order_type = 'dine_in', updated_at = now() WHERE id = $2", [targetId, o.rows[0].id]);
+    // In the same transaction as the move, so the audit trail's order matches
+    // the order things actually happened in.
+    await writeAudit(client, {
+      userId: req.user.id, action: 'order.move', entityType: 'order', entityId: o.rows[0].id,
+      detail: {
+        from_card_id: o.rows[0].card_id, from_table_id: o.rows[0].table_id, from, to_card_id: targetId, to: `Card ${target.number}`,
+      },
+    });
+    await client.query('COMMIT');
   } catch (e) {
-    if (e.code === '23505') return res.status(409).json({ error: `${target.name} already has an open order` });
+    await client.query('ROLLBACK');
+    if (e.code === '23505') return res.status(409).json({ error: `Card ${target.number} already has an open order` });
     throw e;
-  }
-  await writeAudit(pool, {
-    userId: req.user.id, action: 'order.move', entityType: 'order', entityId: o.rows[0].id,
-    detail: { from_table_id: o.rows[0].table_id, from_table: from, to_table_id: targetId, to_table: target.name },
-  });
-  publish('order.updated', { order_id: o.rows[0].id, table_id: targetId });
-  res.json({ ok: true, table_id: targetId, table: target.name });
+  } finally { client.release(); }
+  publish('order.updated', { order_id: o.rows[0].id, card_id: targetId });
+  res.json({ ok: true, card_id: targetId, card_number: target.number, label: `Card ${target.number}` });
 }));
 
 /* One payment leg. Body: { method, amount?, tendered? } — amount (RM) defaults to
@@ -375,6 +421,9 @@ router.post('/api/orders/:id/reprint-receipt', requireRole('admin'), awaitH(asyn
 /* Preview only — does not record anything. ?ways=N for an even split of the
    remaining balance, or ?by=seat for a per-seat breakdown. */
 router.get('/api/orders/:id/split', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  const o = (await pool.query('SELECT bill_group_id FROM orders WHERE id = $1', [req.params.id])).rows[0];
+  if (!o) return res.status(404).json({ error: 'not found' });
+  if (o.bill_group_id) return res.status(409).json({ error: 'This card is on a combined bill. Remove it from the combined bill before splitting it.' });
   if (req.query.by === 'seat') {
     const bySeat = await splitBySeat(req.params.id);
     return res.json({ seats: Object.fromEntries(Object.entries(bySeat).map(([k, v]) => [k, cents2rm(v)])) });

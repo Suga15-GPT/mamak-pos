@@ -7,6 +7,8 @@ const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const rounds = require('../services/rounds');
 const { recomputeOrderBill } = require('../services/billing');
+const { leaveGroupIfClosedTx } = require('../services/bill_groups');
+const { lockBills } = require('../lib/billlock');
 
 const router = express.Router();
 
@@ -52,14 +54,29 @@ router.get('/api/kitchen/pending', requireRole('admin', 'staff'), awaitH(async (
   res.json(await rounds.listPendingSends());
 }));
 
-router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), awaitH(async (req, res) => {
-  const s = (await pool.query('SELECT * FROM order_sends WHERE id = $1', [req.params.id])).rows[0];
-  if (!s) return res.status(404).json({ error: 'round not found' });
-  if (s.approval_state !== 'pending') return res.status(400).json({ error: `round is already ${s.approval_state}` });
+const NOT_OPEN = 'This order is no longer open, so there is nothing to approve or reject.';
 
+/* Locks the order, then the round, and checks both are still decidable. A
+   round on a closed order is refused (409) rather than recomputing a bill
+   that has already been settled or written off. */
+async function lockDecidable(client, sendId) {
+  // Approving or rejecting changes a bill's total: bill lock first.
+  await lockBills(client);
+  const s0 = (await client.query('SELECT order_id FROM order_sends WHERE id = $1', [sendId])).rows[0];
+  if (!s0) throw Object.assign(new Error('round not found'), { status: 404 });
+  const o = (await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [s0.order_id])).rows[0];
+  const s = (await client.query('SELECT * FROM order_sends WHERE id = $1 FOR UPDATE', [sendId])).rows[0];
+  if (rounds.TERMINAL_ORDER_STATUSES.includes(o.status)) throw Object.assign(new Error(NOT_OPEN), { status: 409 });
+  if (s.approval_state !== 'pending') throw Object.assign(new Error(`round is already ${s.approval_state}`), { status: 400 });
+  return s;
+}
+
+router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  let s;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    s = await lockDecidable(client, req.params.id);
     await client.query(
       "UPDATE order_sends SET approval_state = 'approved', decided_at = now(), decided_by = $1 WHERE id = $2",
       [req.user.id, s.id]);
@@ -67,6 +84,9 @@ router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), awa
       'SELECT DISTINCT station_code FROM order_items WHERE send_id = $1', [s.id])).rows;
     await rounds.openTickets(client, s.id, stationRows.map(x => x.station_code));
     await rounds.deriveOrderStatus(client, s.order_id);
+    // The accepted lines join the bill in the same transaction, so no payment
+    // can be taken against the total from before they counted.
+    await recomputeOrderBill(s.order_id, client);
     await writeAudit(client, {
       userId: req.user.id, action: 'round.approve', entityType: 'order_send', entityId: s.id,
       detail: { order_id: s.order_id, round: s.seq_no, source: s.source },
@@ -74,7 +94,6 @@ router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), awa
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 
-  await recomputeOrderBill(s.order_id);
   await printing.enqueueRoundChits(s.id);
   const o = await pool.query('SELECT table_id FROM orders WHERE id = $1', [s.order_id]);
   publish('order.updated', { order_id: s.order_id, table_id: o.rows[0]?.table_id || null });
@@ -85,13 +104,11 @@ router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), awa
    did ask for these, and a bill that silently loses lines is unauditable. */
 router.post('/api/kitchen/sends/:id/reject', requireRole('admin', 'staff'), awaitH(async (req, res) => {
   const reason = String(req.body?.reason || '').trim() || 'rejected by staff';
-  const s = (await pool.query('SELECT * FROM order_sends WHERE id = $1', [req.params.id])).rows[0];
-  if (!s) return res.status(404).json({ error: 'round not found' });
-  if (s.approval_state !== 'pending') return res.status(400).json({ error: `round is already ${s.approval_state}` });
-
+  let s;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    s = await lockDecidable(client, req.params.id);
     await client.query(
       "UPDATE order_sends SET approval_state = 'rejected', decided_at = now(), decided_by = $1 WHERE id = $2",
       [req.user.id, s.id]);
@@ -102,25 +119,26 @@ router.post('/api/kitchen/sends/:id/reject', requireRole('admin', 'staff'), awai
       userId: req.user.id, action: 'round.reject', entityType: 'order_send', entityId: s.id,
       detail: { order_id: s.order_id, round: s.seq_no, reason },
     });
+    await recomputeOrderBill(s.order_id, client);
+
+    // If rejecting emptied the bill entirely — a customer's first and only round
+    // turned away — the order is over. Leaving it open would hold the card
+    // hostage to a zero-value bill nobody can pay or void.
+    const remaining = await client.query(
+      'SELECT count(*)::int n FROM order_items WHERE order_id = $1 AND voided_at IS NULL', [s.order_id]);
+    if (remaining.rows[0].n === 0) {
+      await client.query(
+        "UPDATE orders SET status = 'cancelled', closed_by = $1, updated_at = now() WHERE id = $2",
+        [req.user.id, s.order_id]);
+      await writeAudit(client, {
+        userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: s.order_id,
+        detail: { reason: 'every item on this order was rejected' },
+      });
+      // A cancelled card leaves its combined bill (and a group of one dissolves).
+      await leaveGroupIfClosedTx(client, s.order_id, req.user.id, 'every item rejected');
+    }
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
-
-  await recomputeOrderBill(s.order_id);
-
-  // If rejecting emptied the bill entirely — a customer's first and only round
-  // turned away — the order is over. Leaving it open would hold the table
-  // hostage to a zero-value bill nobody can pay or void.
-  const remaining = await pool.query(
-    'SELECT count(*)::int n FROM order_items WHERE order_id = $1 AND voided_at IS NULL', [s.order_id]);
-  if (remaining.rows[0].n === 0) {
-    await pool.query(
-      "UPDATE orders SET status = 'cancelled', closed_by = $1, updated_at = now() WHERE id = $2 AND status NOT IN ('paid','cancelled','refunded')",
-      [req.user.id, s.order_id]);
-    await writeAudit(pool, {
-      userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: s.order_id,
-      detail: { reason: 'every item on this order was rejected' },
-    });
-  }
 
   const o = await pool.query('SELECT table_id FROM orders WHERE id = $1', [s.order_id]);
   publish('order.updated', { order_id: s.order_id, table_id: o.rows[0]?.table_id || null });

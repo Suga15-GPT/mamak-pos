@@ -1,8 +1,8 @@
 const express = require('express');
 const { publicH } = require('../lib/errors');
 const { rateLimit } = require('../lib/auth');
-const { pool } = require('../db');
 const voice = require('../services/voice');
+const { resolveQr } = require('../services/cards');
 
 const router = express.Router();
 
@@ -26,19 +26,25 @@ const FRIENDLY = {
 };
 
 router.post('/api/public/voice/interpret', publicH(async (req, res) => {
+  const { table_token: tableToken, card_number: cardNumber, audio_base64: audioB64, mime_type: mimeType, draft } = req.body || {};
+  // The card's own QR token (or, in shop mode, the shop token plus the typed
+  // card number) is the entire identity, exactly as it is for a typed QR
+  // order. No session, no staff endpoint, no order id. QR mode 'off' is a 404
+  // here too.
+  let card;
+  try {
+    ({ card } = await resolveQr(tableToken, cardNumber));
+  } catch (e) {
+    if (e.code === 'qr_off') return res.status(404).json({ error: 'qr_off', message: e.message });
+    return res.status(400).json({ error: 'invalid_card', message: 'Please scan the QR code on your card again.' });
+  }
   if (!voice.isEnabled()) return res.status(503).json({ error: 'voice_disabled', message: FRIENDLY.disabled });
 
   // Voice costs money per utterance, so it is limited harder than tapping the
-  // menu is — per IP and per table, because one hotspot at a busy table is one
+  // menu is — per IP and per card, because one hotspot at a busy table is one
   // IP for a whole group of diners.
-  const { table_token: tableToken, audio_base64: audioB64, mime_type: mimeType, draft } = req.body || {};
   if (!rateLimit('voice:' + req.ip, 15, 10 * 60 * 1000)) return res.status(429).json({ error: 'rate_limited', message: FRIENDLY.busy });
-  if (!rateLimit('voicetable:' + tableToken, 25, 10 * 60 * 1000)) return res.status(429).json({ error: 'rate_limited', message: FRIENDLY.busy });
-
-  // The table's own QR token is the entire identity, exactly as it is for a
-  // typed QR order. No session, no staff endpoint, no order id.
-  const t = await pool.query('SELECT id FROM tables WHERE qr_token = $1 AND active', [tableToken]);
-  if (!t.rows[0]) return res.status(400).json({ error: 'invalid_table', message: 'Please scan the QR code at your table again.' });
+  if (!rateLimit('voicecard:' + card.id, 25, 10 * 60 * 1000)) return res.status(429).json({ error: 'rate_limited', message: FRIENDLY.busy });
 
   let buffer;
   try {

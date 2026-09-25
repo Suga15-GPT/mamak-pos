@@ -51,19 +51,23 @@ async function enqueueForRole(kind, orderId, role, buildPayload, meta = {}) {
 /* ===== templates ===== */
 
 async function loadOrderForPrint(orderId) {
-  // LEFT JOIN tables: a takeaway order has no table (migration 012).
+  // LEFT JOINs: a takeaway order has no card or table (migration 012); a card
+  // order has no table, a pre-card-mode table order no card (migration 014).
   const o = await pool.query(
-    `SELECT o.*, t.name AS table_name, u.name AS opened_by_name
+    `SELECT o.*, t.name AS table_name, cd.number AS card_number, u.name AS opened_by_name
      FROM orders o LEFT JOIN tables t ON t.id = o.table_id
+     LEFT JOIN cards cd ON cd.id = o.card_id
      LEFT JOIN users u ON u.id = o.opened_by
      WHERE o.id = $1`, [orderId]);
   if (!o.rows[0]) throw AppError('order not found', 404);
   return o.rows[0];
 }
 
-// What staff call this order out as. Takeaway has no table to name.
+// What staff call this order out as: "Card 7". Takeaway has no card to name;
+// a table order from before card mode keeps its table.
 function orderLabel(order) {
-  return order.order_type === 'takeaway' ? `TAKEAWAY #${order.id}` : `Table ${order.table_name}`;
+  if (order.order_type === 'takeaway') return `TAKEAWAY #${order.id}`;
+  return order.card_number != null ? `Card ${order.card_number}` : `Table ${order.table_name}`;
 }
 
 async function withMods(items) {
@@ -76,11 +80,15 @@ async function withMods(items) {
   return items;
 }
 
+// Without itemIds: the lines on the bill — not voided, and not in a round
+// still awaiting approval (those count in no total, so no receipt shows them).
 async function loadItems(orderId, itemIds = null) {
   const r = await pool.query(
     itemIds
       ? 'SELECT * FROM order_items WHERE order_id = $1 AND id = ANY($2::int[]) ORDER BY id'
-      : 'SELECT * FROM order_items WHERE order_id = $1 AND voided_at IS NULL ORDER BY id',
+      : `SELECT oi.* FROM order_items oi WHERE oi.order_id = $1 AND oi.voided_at IS NULL
+           AND (oi.send_id IS NULL OR EXISTS (SELECT 1 FROM order_sends s WHERE s.id = oi.send_id AND s.approval_state = 'approved'))
+         ORDER BY oi.id`,
     itemIds ? [orderId, itemIds] : [orderId]);
   return withMods(r.rows);
 }
@@ -188,6 +196,64 @@ async function buildReceipt(orderId, width) {
   if (order.discount_cents) p.row('Discount', `-${formatRM(order.discount_cents)}`);
   if (order.rounding_cents) p.row('Rounding', formatRM(order.rounding_cents));
   p.bold(true); p.row('TOTAL', formatRM(order.total_cents || 0)); p.bold(false);
+  p.line('-');
+  payments.forEach(pay => {
+    p.row(pay.method, formatRM(pay.amount_cents));
+    if (pay.tendered_cents != null && pay.tendered_cents > pay.amount_cents) {
+      p.row('Change', formatRM(pay.tendered_cents - pay.amount_cents));
+    }
+  });
+  p.line('-');
+  p.align(1);
+  p.text('Thank you!\n\n\n');
+  p.cut();
+  return p.toBuffer();
+}
+
+// Combined-bill receipt (card mode) — one receipt for a whole bill group:
+// each member card's lines under its own "Card N" heading, the money
+// breakdown summed across members (each member's tax was computed on its own
+// order, never on the combined subtotal), one total. A group payment is one
+// payments row per member, all stamped in one transaction, so rows sharing a
+// method and timestamp are shown as the single payment the customer made.
+async function buildGroupReceipt(groupId, width) {
+  const members = (await pool.query(
+    `SELECT o.id FROM orders o JOIN cards cd ON cd.id = o.card_id
+      WHERE o.bill_group_id = $1 AND o.status <> 'cancelled' ORDER BY cd.number`, [groupId])).rows;
+  const orders = [];
+  for (const m of members) orders.push({ order: await loadOrderForPrint(m.id), items: await loadItems(m.id) });
+  const payments = (await pool.query(
+    `SELECT method, at, SUM(amount_cents)::int AS amount_cents, SUM(tendered_cents)::int AS tendered_cents
+       FROM payments WHERE order_id = ANY($1::int[]) GROUP BY method, at ORDER BY at`, [members.map(m => m.id)])).rows;
+  const settingsRows = (await pool.query(
+    "SELECT key, value FROM settings WHERE key IN ('restaurant_name','restaurant_address','sst_number')")).rows;
+  const settings = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
+  const sum = k => orders.reduce((s, x) => s + (x.order[k] || 0), 0);
+
+  const p = createPrinter(width);
+  p.init().align(1);
+  p.bold(true).text(`${settings.restaurant_name || 'Mamak POS'}\n`).bold(false);
+  if (settings.restaurant_address) p.text(`${settings.restaurant_address}\n`);
+  if (settings.sst_number) p.text(`SST Reg: ${settings.sst_number}\n`);
+  p.align(0);
+  p.line('-');
+  p.text(`Combined bill #${groupId}  ${orders.map(x => orderLabel(x.order)).join(', ')}\n`);
+  p.text(`${nowKL()}\n`);
+  p.line('-');
+  orders.forEach(({ order, items }) => {
+    p.bold(true).text(`${orderLabel(order)}  (Order #${order.id})\n`).bold(false);
+    items.forEach(item => {
+      p.row(`${item.qty}x ${item.name}`, formatRM(item.price_cents * item.qty));
+      item.mods.forEach(m => p.row(`  + ${m.name}`, m.price_cents ? formatRM(m.price_cents * item.qty) : ''));
+    });
+  });
+  p.line('-');
+  p.row('Subtotal', formatRM(sum('subtotal_cents')));
+  if (sum('service_charge_cents')) p.row('Service charge', formatRM(sum('service_charge_cents')));
+  p.row('SST', formatRM(sum('tax_cents')));
+  if (sum('discount_cents')) p.row('Discount', `-${formatRM(sum('discount_cents'))}`);
+  if (sum('rounding_cents')) p.row('Rounding', formatRM(sum('rounding_cents')));
+  p.bold(true); p.row('TOTAL', formatRM(sum('total_cents'))); p.bold(false);
   p.line('-');
   payments.forEach(pay => {
     p.row(pay.method, formatRM(pay.amount_cents));
@@ -336,7 +402,13 @@ async function enqueue(kind, orderId, opts = {}) {
       return await enqueueForRole('void', orderId, st?.printer_role || 'kitchen',
         width => buildVoidChit(orderId, width, opts.itemId), { stationCode: st?.station_code || null });
     }
-    if (kind === 'receipt') return await enqueueForRole('receipt', orderId, 'receipt', width => buildReceipt(orderId, width));
+    if (kind === 'receipt') {
+      // A card on a combined bill prints the group's one receipt, whichever
+      // member it was asked for through (settling, or an admin reprint).
+      const groupId = (await pool.query('SELECT bill_group_id FROM orders WHERE id = $1', [orderId])).rows[0]?.bill_group_id;
+      if (groupId) return await enqueueForRole('receipt', orderId, 'receipt', width => buildGroupReceipt(groupId, width));
+      return await enqueueForRole('receipt', orderId, 'receipt', width => buildReceipt(orderId, width));
+    }
     throw new Error(`unknown print kind '${kind}'`);
   } catch (e) {
     console.error(`printing.enqueue(${kind}, ${orderId}) failed:`, e.message);
@@ -386,5 +458,5 @@ async function reprintReceipt(orderId, userId) {
 
 module.exports = {
   enqueue, enqueueRoundChits, retryJob, testPrint, reprintReceipt, processQueue,
-  buildChit, buildVoidChit, buildReceipt, buildZReport, printShiftReport,
+  buildChit, buildVoidChit, buildReceipt, buildGroupReceipt, buildZReport, printShiftReport,
 };

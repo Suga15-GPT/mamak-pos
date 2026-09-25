@@ -7,9 +7,9 @@ const translations = {
   'common.logout': { en: 'Log Out', ms: 'Log Keluar' },
   'common.refresh': { en: 'Refresh', ms: 'Muat Semula' },
   'common.changePin': { en: 'Change my PIN', ms: 'Tukar PIN Saya' },
-  // The destination is the floor plan, and "Tables" is what staff call it —
-  // the tab heading and the nav label have to be the same word.
-  'nav.pos': { en: 'Tables', ms: 'Meja' },
+  // The destination is the floor, and in card mode "Cards" is what staff call
+  // it — the tab heading and the nav label have to be the same word.
+  'nav.pos': { en: 'Cards', ms: 'Kad' },
   'nav.kitchen': { en: 'Kitchen', ms: 'Dapur' },
   // "Sales" is what the screen is headed and what staff call it; the nav label
   // has to be the same word.
@@ -23,7 +23,7 @@ const translations = {
   'login.pin': { en: 'PIN', ms: 'PIN' },
   'login.submit': { en: 'Log In', ms: 'Log Masuk' },
 
-  'pos.backToTables': { en: 'Back to Tables', ms: 'Kembali ke Meja' },
+  'pos.backToTables': { en: 'Back to Cards', ms: 'Kembali ke Kad' },
   'pos.categories': { en: 'Categories', ms: 'Kategori' },
   'pos.search': { en: 'Search items…', ms: 'Cari item…' },
   'pos.currentOrder': { en: 'Current Order', ms: 'Pesanan Semasa' },
@@ -35,7 +35,7 @@ const translations = {
   'pos.sendToKitchen': { en: 'Send to Kitchen', ms: 'Hantar ke Dapur' },
   'pos.markPaid': { en: 'Mark Paid', ms: 'Tandakan Dibayar' },
   'pos.pay': { en: 'Take Payment', ms: 'Ambil Bayaran' },
-  'pos.tables': { en: 'Tables', ms: 'Meja' },
+  'pos.tables': { en: 'Cards', ms: 'Kad' },
   'pos.takeaway': { en: 'Takeaway', ms: 'Bungkus' },
   'pos.newTakeaway': { en: 'New Takeaway', ms: 'Bungkus Baru' },
   'pos.moveOrder': { en: 'Move', ms: 'Pindah' },
