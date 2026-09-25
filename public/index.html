@@ -91,7 +91,7 @@
           <button class="back-btn" data-action="back-to-tables">← <span data-i18n="pos.backToTables">Back to Cards</span></button>
           <span class="ws-title" id="ws-title"></span>
           <span class="spacer"></span>
-          <button class="btn small ghost" id="combine-btn" data-action="open-combine" style="display:none">🔗 Combine bills</button>
+          <button class="btn small ghost" id="combine-btn" data-feature="split_combine" data-action="open-combine" style="display:none">🔗 Combine bills</button>
           <button class="btn small ghost" id="move-order-btn" data-action="open-move" style="display:none">↔ <span data-i18n="pos.moveOrder">Move</span></button>
         </div>
 
@@ -152,13 +152,13 @@
       <div class="view-head">
         <div>
           <h2>🍳 <span data-i18n="kitchen.heading">Kitchen</span></h2>
-          <div class="sub" id="kitchen-summary"></div>
+          <div class="sub" id="kitchen-summary" data-feature="kitchen"></div>
         </div>
         <div class="actions"><button class="btn small ghost" data-action="help-jump" data-topic="kitchen">? How Kitchen works</button></div>
       </div>
-      <div id="station-tabs" class="station-tabs" aria-label="Preparation stations"></div>
+      <div id="station-tabs" class="station-tabs" data-feature="kitchen" aria-label="Preparation stations"></div>
       <div id="kitchen-pending"></div>
-      <div class="kds-columns">
+      <div class="kds-columns" data-feature="kitchen">
         <div class="kds-col"><h3><span data-i18n="kitchen.colNew">🔔 New</span> <span class="col-count" id="k-count-sent">0</span></h3><div id="k-col-sent"></div></div>
         <div class="kds-col"><h3><span data-i18n="kitchen.colPreparing">🍳 Cooking</span> <span class="col-count" id="k-count-preparing">0</span></h3><div id="k-col-preparing"></div></div>
         <div class="kds-col"><h3><span data-i18n="kitchen.colReady">✅ Ready</span> <span class="col-count" id="k-count-ready">0</span></h3><div id="k-col-ready"></div></div>
@@ -176,11 +176,11 @@
         <div class="actions"><button class="btn small ghost" data-action="refresh-dashboard">↻ <span data-i18n="common.refresh">Refresh</span></button></div>
       </div>
       <div id="dash-kpis" class="kpi-grid"></div>
-      <div class="chart-grid">
+      <div class="chart-grid" data-feature="dashboard">
         <div class="card"><h3 data-i18n="dashboard.hourly">Sales by hour</h3><div id="dash-hourly"></div></div>
         <div class="card"><h3 data-i18n="dashboard.topItems">Top items today</h3><div id="dash-top"></div></div>
         <div class="card"><h3 data-i18n="dashboard.paymentMix">Payment mix</h3><div id="dash-mix"></div></div>
-        <div class="card"><h3 data-i18n="dashboard.kitchenState">Kitchen right now</h3><div id="dash-kitchen"></div></div>
+        <div class="card" data-feature="kitchen"><h3 data-i18n="dashboard.kitchenState">Kitchen right now</h3><div id="dash-kitchen"></div></div>
       </div>
     </section>
 
@@ -232,7 +232,7 @@
         <div id="shift-z-report"></div>
         <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
           <button class="btn small outline" data-action="export-z-csv">Export CSV</button>
-          <button class="btn small outline" data-action="print-z-report">Print</button>
+          <button class="btn small outline" data-feature="printing" data-action="print-z-report">Print</button>
         </div>
       </div>
     </section>
@@ -301,9 +301,10 @@
         <button data-action="admin-section" data-id="tables">🎴 Cards &amp; QR</button>
         <button data-action="admin-section" data-id="restaurant">🏠 Restaurant</button>
         <button data-action="admin-section" data-id="payments">💳 Payments &amp; Tax</button>
-        <button data-action="admin-section" data-id="printers">🖨 Printers</button>
+        <button data-action="admin-section" data-id="printers" data-feature="printing">🖨 Printers</button>
         <button data-action="admin-section" data-id="system">⚙ System</button>
         <button data-action="admin-section" data-id="activity">📋 Activity</button>
+        <button data-action="admin-section" data-id="features" data-i18n="features.adminTab">🧩 Features &amp; setup</button>
       </div>
 
       <!-- MENU -->
@@ -370,7 +371,7 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-feature="qr">
           <div class="card-head">
             <h3>Customer QR ordering</h3>
             <button class="btn small ghost" data-action="help-jump" data-topic="qr">? How customers order</button>
@@ -393,7 +394,7 @@
           </div>
         </div>
 
-        <div class="card" id="qr-print-card">
+        <div class="card" id="qr-print-card" data-feature="qr">
           <div class="card-head">
             <h3 id="qr-print-title">Card faces</h3>
             <button class="btn small" data-action="print-qr-sheet">🖨 Print</button>
@@ -466,6 +467,25 @@
         </div>
       </div>
 
+      <!-- FEATURES & SETUP: which optional modules this shop uses, one switch
+           each, and the setup wizard again. setup.js owns it. -->
+      <div class="admin-section" id="sec-features">
+        <div class="card">
+          <div class="card-head">
+            <h3 data-i18n="features.heading">What your POS does</h3>
+            <button class="btn small ghost" data-action="help-jump" data-topic="features">? Choosing what your POS does</button>
+          </div>
+          <p class="meta" data-i18n="features.intro" style="margin-bottom:6px">Switch on only what your shop uses.</p>
+          <p class="meta" data-i18n="features.alwaysOn" style="margin-bottom:12px">Always on.</p>
+          <div id="features-list" class="feature-list"></div>
+        </div>
+        <div class="card">
+          <h3 data-i18n="features.wizardHeading">Setup wizard</h3>
+          <p class="meta" data-i18n="features.wizardIntro" style="margin-bottom:12px">Go through the first-day questions again.</p>
+          <button class="btn outline" data-action="run-setup" data-i18n="features.rerun">Run setup again</button>
+        </div>
+      </div>
+
       <!-- ACTIVITY -->
       <div class="admin-section" id="sec-activity">
         <div class="card">
@@ -519,7 +539,7 @@
     <h3>Payment</h3>
     <div id="pay-details" style="margin-bottom:18px"></div>
 
-    <div id="pay-discount-section" style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--light-gray)">
+    <div id="pay-discount-section" data-feature="discounts" style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--light-gray)">
       <button class="btn outline block" data-action="open-discount-form">Discount</button>
       <div id="discount-form" style="display:none;margin-top:12px">
         <select id="discount-kind" style="margin-bottom:8px">
@@ -540,7 +560,7 @@
       </div>
     </div>
 
-    <div id="refund-section" style="display:none;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--light-gray)">
+    <div id="refund-section" data-feature="refunds" style="display:none;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--light-gray)">
       <button class="btn outline block" style="color:var(--red);border-color:var(--red)" data-action="open-refund-form">Refund</button>
       <div id="refund-form" style="display:none;margin-top:12px">
         <select id="refund-payment" style="margin-bottom:8px"></select>
@@ -579,7 +599,7 @@
       </div>
     </div>
 
-    <div id="pay-split-section" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
+    <div id="pay-split-section" data-feature="split_combine" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
       <div style="display:flex;gap:8px">
         <button class="btn small outline" style="flex:1" data-action="split-evenly">Split evenly</button>
         <button class="btn small outline" style="flex:1" data-action="split-by-seat">Split by seat</button>
@@ -615,7 +635,7 @@
     <div class="form-grid">
       <div class="field" style="margin:0"><label for="item-category">Category</label><select id="item-category"></select></div>
       <div class="field" style="margin:0"><label for="item-price">Price (RM)</label><input type="number" id="item-price" min="0" step="0.05"></div>
-      <div class="field" style="margin:0"><label for="item-station">Prepared at</label><select id="item-station"></select></div>
+      <div class="field" style="margin:0" data-feature="stations"><label for="item-station">Prepared at</label><select id="item-station"></select></div>
     </div>
     <div class="admin-row" style="border-bottom:none">
       <div><b>On the menu</b><div class="meta">Turn off to hide this item until you turn it back on.</div></div>
@@ -704,6 +724,25 @@
     <div class="modal-actions">
       <button class="btn ghost" data-action="ask-cancel">Cancel</button>
       <button class="btn" data-action="ask-ok" id="ask-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- FIRST-RUN SETUP. On a fresh install it has no Cancel and the backdrop
+     does nothing: a shop has to say what it is before it trades. -->
+<div id="setup-modal" class="modal-bg">
+  <div class="modal wide setup-modal" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+    <div class="setup-top">
+      <span class="eyebrow" id="setup-step"></span>
+      <button class="btn small ghost" id="setup-cancel" data-action="setup-cancel" hidden></button>
+    </div>
+    <div class="setup-progress" aria-hidden="true"><span id="setup-bar"></span></div>
+    <h3 id="setup-title"></h3>
+    <div id="setup-body"></div>
+    <div id="setup-err" class="err" role="alert"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="setup-back" data-action="setup-back"></button>
+      <button class="btn" id="setup-next" data-action="setup-next"></button>
     </div>
   </div>
 </div>

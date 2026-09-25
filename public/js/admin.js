@@ -1,5 +1,7 @@
 import { $, fmt, esc, toast, ask } from './state.js';
 import { refreshStaff } from './staff.js';
+import { on } from './features.js';
+import { renderFeaturesSection } from './setup.js';
 
 /* ===== ADMIN =====
    Eight small sections instead of one endless page. Each section loads what it
@@ -22,6 +24,7 @@ function showSection(id) {
   document.querySelectorAll('.admin-section').forEach(s => s.classList.toggle('active', s.id === `sec-${id}`));
   if (id === 'system') refreshSystem();
   if (id === 'printers') refreshPrintJobs();
+  if (id === 'features') renderFeaturesSection();
 }
 
 export async function refreshAdmin() {
@@ -40,6 +43,10 @@ export async function refreshAdmin() {
     refreshPrintJobs();
     renderAuditSummary();
     if (activeSection === 'system') refreshSystem();
+    if (activeSection === 'features') renderFeaturesSection();
+    // A section whose module was just switched off has nothing to show.
+    const tab = document.querySelector(`#admin-tabs button[data-id="${activeSection}"]`);
+    if (tab && tab.offsetParent === null) showSection('menu');
   } catch (e) { toast('Admin load error: ' + e.message); console.error(e); }
 }
 
@@ -395,6 +402,8 @@ function renderTablesSection() {
   $('qr-approval-meta').textContent = settings.qr_mode === 'shop'
     ? 'Shop mode always holds each order for a staff member to accept — anyone can type any card number.'
     : 'Send straight to the kitchen, or hold each order for a staff member to accept.';
+  // QR switched off: the card count above is all this section has.
+  if (!on('qr')) return;
 
   API.get('/api/admin/qr-health').then(h => {
     const problems = [...h.problems, ...h.warnings];
@@ -508,6 +517,7 @@ async function saveRestaurantIdentity() {
 const PRINTER_ROLE_NAMES = { kitchen: 'Kitchen', receipt: 'Receipts', bar: 'Drinks / bar' };
 
 async function refreshPrinters() {
+  if (!on('printing')) return;
   try {
     const printers = await API.get('/api/admin/printers');
     $('admin-printers').innerHTML = printers.map(pr => `
@@ -528,6 +538,7 @@ async function refreshPrinters() {
 const JOB_KIND_NAMES = { chit: 'Kitchen chit', receipt: 'Receipt', void: 'Void slip', report: 'Report' };
 
 async function refreshPrintJobs() {
+  if (!on('printing')) return;
   try {
     const jobs = await API.get('/api/admin/print-jobs?limit=50');
     $('admin-print-jobs').innerHTML = jobs.map(j => {

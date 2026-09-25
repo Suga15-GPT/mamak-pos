@@ -1,5 +1,7 @@
 import { state, $, fmt, esc, toast, onStreamEvent, stateWords, minsSince, ask } from './state.js';
 import { enqueue, pending as outboxPending, onOutboxChange, resultFor } from './outbox.js';
+import { on } from './features.js';
+import { t } from './i18n.js';
 
 /* ===== DATA LOADING ===== */
 export async function loadAll() {
@@ -459,7 +461,7 @@ function renderCart() {
   const btn = $('send-btn');
   btn.disabled = count === 0;
   btn.innerHTML = count === 0
-    ? '🍳 <span>Send to Kitchen</span>'
+    ? (on('kitchen') ? '🍳 <span>Send to Kitchen</span>' : `🧾 <span>${t('pos.sendOrder')}</span>`)
     : `🍳 <span>Send ${count} new item${count === 1 ? '' : 's'}</span>`;
 
   renderTimeline();
@@ -815,7 +817,7 @@ function renderPayModal() {
       `<div class="cart-line"><div class="line-sub">${esc(p.method)}</div><div class="line-right">${fmt(p.amount)}</div></div>`));
     // Reprints are a known fraud vector — admin only, and always audited.
     if (API.user.role === 'admin') {
-      rows.push('<div style="margin-top:8px"><button class="btn small outline" data-action="reprint-receipt">Reprint receipt</button></div>');
+      rows.push('<div style="margin-top:8px" data-feature="printing"><button class="btn small outline" data-action="reprint-receipt">Reprint receipt</button></div>');
     }
   }
 
