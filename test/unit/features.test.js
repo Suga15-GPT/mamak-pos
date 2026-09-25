@@ -60,8 +60,8 @@ const post = (base, s, url, body) => call(base, s, 'POST', url, body || {});
 const get = async (base, s, url) => json(await fetch(`${base}${url}`, { headers: s.h }));
 
 async function setFeatures(base, s, features) {
-  const r = await call(base, s, 'PUT', '/api/features', { features });
-  assert.equal(r.status, 200, `PUT /api/features ${JSON.stringify(features)}`);
+  const r = await call(base, s, 'PATCH', '/api/features', { features });
+  assert.equal(r.status, 200, `PATCH /api/features ${JSON.stringify(features)}`);
   return json(r);
 }
 const allFlags = on => Object.fromEntries(MODULES.map(m => [m, on]));
@@ -285,7 +285,7 @@ test('split and combine cannot be switched off under an open combined bill', asy
     const a = await openCard(base, s, 10);
     const b = await openCard(base, s, 11);
     const g = await json(await post(base, s, '/api/bill-groups', { order_ids: [a, b] }));
-    const r = await call(base, s, 'PUT', '/api/features', { features: { split_combine: false } });
+    const r = await call(base, s, 'PATCH', '/api/features', { features: { split_combine: false } });
     assert.equal(r.status, 409);
     assert.equal((await get(base, s, '/api/features')).features.split_combine, true, 'nothing changed');
     await call(base, s, 'DELETE', `/api/bill-groups/${g.id}`);

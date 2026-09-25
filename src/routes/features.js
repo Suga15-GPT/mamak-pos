@@ -44,7 +44,7 @@ function pickFlags(body) {
 /* Body: { features: { kitchen: false, ... } } — any subset. The response says
    which children were switched off with their parent, so the screen can tell
    the owner rather than leave a box silently unticked. */
-router.put('/api/features', requireRole('admin'), awaitH(async (req, res) => {
+router.patch('/api/features', requireRole('admin'), awaitH(async (req, res) => {
   const changes = pickFlags(req.body);
   if (!Object.keys(changes).length) return res.status(400).json({ error: 'nothing to update' });
   res.json(await saveFeatures(changes, req.user.id));
