@@ -295,8 +295,8 @@ works.
   corrections properly and replaces the draft outright.
 - Off-device backup is still prepared, not configured (`BACKUP_REMOTE_TARGET`).
 - Stations are still `kitchen` and `drinks` with no management UI.
-- `npm audit` reports three moderate advisories in express/qs. They predate this
-  programme and were not touched by it.
+- `npm audit` reports 0 vulnerabilities. The three moderate express/qs advisories
+  were fixed by lockfile bumps within express 4 (express 4.22.3, qs 6.16.0).
 
 ## Latest test state
 
