@@ -395,3 +395,19 @@ serve/accept `qr_mode` instead of `qr_ordering_enabled` · `/api/summary`'s
 | `test/unit/cards.test.js` | 419 | **New.** Concurrent opens on one card, a card freeing on payment, lowering the count below an in-use card, combine → add → group cash payment (rows sum to the cash, rounding once, per-order tax), partial payment blocks un-combine, closed/takeaway can't combine, group merge, shop-mode forced approval, QR off 404, and a table order opened *before* migration 014 staying payable after it |
 | `test/e2e/journeys.spec.js` | 499 | Journeys open cards instead of tables; new journey: two cards, combine, pay once |
 
+
+### Card mode — PR #16 review fixes
+
+| File | Contains |
+|---|---|
+| `src/services/bill_groups.js` | `lockGroupSet()` — the one lock order (orders by ascending id, then groups by ascending id) used by `combine`, `uncombine`, `payGroup` and `leaveGroupIfClosed`. `payGroup(id, {legs})` pays the whole group in one transaction or refuses (400 "A combined bill has to be paid in full in one go."); partial group payments no longer exist. `leaveGroupIfClosed(orderId, userId, reason)` — a card that closes on its own leaves its group; a group of one dissolves; both audited. `getGroup` adds `awaiting_approval` |
+| `src/routes/cards.js` | `POST /api/bill-groups/:id/pay {legs:[{method, amount, tendered?}]}` (RM); `POST /api/admin/cards/:id/regenerate-qr`, `POST /api/admin/qr-shop/regenerate` (audited `card.qr_regenerate` / `qr_shop.regenerate`) |
+| `src/services/billing.js` | `addPayment` is one transaction under the order's row lock, refuses a grouped card and a held round (409), and settles a 1–2 sen cash remainder on rounding alone. `computeLiveBill`/`recomputeOrderBill`/`amountDue`/`paidCentsFor` take an optional client; held (unapproved) lines are off the bill; paid is net of refunds. `settleIfMatchesPaid` calls `leaveGroupIfClosed`. `addRefund` marks `refunded` only on a paid order |
+| `src/services/orders.js` | `appendSend` re-checks open/unpaid after taking the order lock and recomputes the bill in the same transaction. `ordersWithItems` items carry `held` and held lines are out of `total` |
+| `src/services/rounds.js` | `HELD_MESSAGE`, `refuseWhileHeld(client, orderIds)` |
+| `src/routes/kitchen.js` | approve/reject lock the order, 409 on a closed order, recompute inside the transaction; a reject that cancels a grouped card makes it leave its group |
+| `src/routes/orders.js` | move locks the target card `FOR SHARE` and re-checks `active`; cancel makes a grouped card leave its group; no recompute after append |
+| `src/services/printing.js` | receipts leave out held lines |
+| `public/js/pos.js` | held lines marked "⏳ Awaiting approval", off every total; combined-bill pay screen collects a cash part plus the rest by card/e-wallet and submits once; no part-payment row for a combined bill |
+| `public/js/admin.js` | "New QR" on each card face and on the shop poster, with a confirm |
+| `test/unit/card_review.test.js` | **New.** 16 regression tests, one or more per review finding; the races fire concurrently, several rounds each |

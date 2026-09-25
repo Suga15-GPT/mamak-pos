@@ -159,17 +159,33 @@ mamak; a table number never reliably named a bill.
 - **Group total = sum of member `total_cents`.** Tax is each order's own,
   computed as it always was. It is never recomputed on the combined subtotal
   (asserted by a test where the two would differ by a sen).
-- **Paying a group writes one `payments` row per member** (same method,
-  taken_by, shift), allocated in ascending card number, so the rows always sum
-  exactly to what was taken. Cash 5-sen rounding is applied once, on the leg
-  that settles the group, to the group's remaining due; the adjustment goes on
-  the last member settled. Change is the group's. Partial group payments are
-  allocated the same way. When the group's due reaches zero every member is
-  paid and the group closed in one transaction. Because payments stay one row
-  per order, shifts, Z reports and refunds did not change.
+- **A combined bill is paid in full, in one go.** `POST
+  /api/bill-groups/:id/pay {legs:[{method, amount, tendered?}, ...]}` takes
+  every leg together (say RM20 cash and the rest by card) and writes them all
+  in one transaction. At most one cash leg; card/e-wallet legs name their
+  amounts and together may not exceed the group's due; the cash leg covers the
+  remainder after 5-sen rounding, applied once to that remainder; change =
+  tendered − rounded remainder. Legs that don't settle the group exactly are
+  refused (400 "A combined bill has to be paid in full in one go.") and write
+  nothing. There is no part-paid combined bill — that state is what stranded
+  cards and blocked every correction in review (PR #16, findings #1 and #3).
+- **Each leg becomes ordinary per-order `payments` rows** (same taken_by,
+  shift), allocated in ascending card number, legs in the order given and cash
+  last, so the rows always sum exactly to what was taken. The rounding goes on
+  the last member settled in cash; a 1–2 sen cash remainder that rounds to
+  nothing settles on the rounding alone with no zero-sen row. Every member is
+  paid and the group closed in the same transaction. Because payments stay one
+  row per order, shifts, Z reports and refunds did not change.
+- **A grouped card that closes on its own** (voided to zero, comped, cancelled
+  because its QR round was rejected, or cancelled by an admin) leaves its group
+  automatically; a group left with one card dissolves. Each step is audited.
 - **Un-combining is allowed only while no member has a payment** (409 "This
-  combined bill has a payment on it and can't be split apart."). A group left
-  with one card dissolves.
+  combined bill has a payment on it and can't be split apart."). Under the
+  rule above that can only be a payment a card took on its own before it was
+  combined. A group left with one card dissolves.
+- **One lock order**: every order involved by ascending id, then every group
+  by ascending id — combine, un-combine, pay and leave-on-close all take locks
+  this way, so they can't deadlock.
 - A grouped card is paid and split with its group: its own pay and split
   routes return 409. Per-card split keeps working for ungrouped cards.
 - A group prints one receipt: lines under "Card N", the money summed, one total.
@@ -184,6 +200,25 @@ mamak; a table number never reliably named a bill.
   404; the customer page says "Please order at the counter"). Migrated from
   `qr_ordering_enabled`. The old 503 "paused" message is gone.
 - Voice changed only in how its token resolves to a card.
+- **Approval rule.** A round awaiting approval (always, in shop mode) is not on
+  the bill: its lines show "awaiting approval" and count in no total — card
+  bill, combined bill, POS cart or receipt. The till refuses payment, single
+  card or combined, while any round on it awaits approval (409 "A customer
+  order is waiting for approval — approve or reject it first."). Approve and
+  reject lock the order and return 409 once it is no longer open; they never
+  recompute a closed bill. Approving recomputes the bill in the same
+  transaction, so no payment can be taken against the pre-approval total.
+- Admin can regenerate one card's QR token or the shop poster's; printed copies
+  of the old one stop working. Audited.
+
+### Payments and locking
+
+- Taking a payment, adding a round (staff, QR or voice) and approving a round
+  all hold the order's row lock, and appendSend re-checks "still open, nothing
+  paid" *after* taking it and recomputes the bill inside the same transaction.
+  Items can no longer land on a bill that was paid in the same instant.
+- A refund on a still-open bill only reduces what has been paid; only a paid
+  (closed) order whose refunds equal its payments becomes `refunded`.
 
 ## Migrations added
 
@@ -223,6 +258,9 @@ the tap flow produces. Card mode added `014_card_mode.sql`.
   programme and were not touched by it.
 
 ## Latest test state
+
+After the PR #16 review fixes: `npm test` 136/136 (16 regression tests in
+`test/unit/card_review.test.js`, one or more per finding). Playwright 17/17.
 
 After card mode: `npm test` 120/120 (8 new in `test/unit/cards.test.js`).
 Playwright 17/17 (12 journeys, including "two cards, combine, pay once", + 5
