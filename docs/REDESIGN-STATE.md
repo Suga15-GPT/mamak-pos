@@ -118,15 +118,77 @@ audio -> transcription -> menu-aware interpretation -> structured proposal
 ## Architecture decisions carried forward (do not relitigate)
 
 Dining order vs kitchen round, station tickets, derived `orders.status`,
-preparation stations, order types, QR ordering and approval, integer cents,
+preparation stations, order types, QR approval, integer cents,
 parameterised SQL, `esc()` on render, the snapshot rule, forward-only
 migrations, idempotency keys, payment and shortfall guards, the audit log, the
-KL-midnight sold-out reset, role permissions. All unchanged by V2.
+KL-midnight sold-out reset, role permissions. All unchanged by V2 and by card
+mode.
+
+The **table model** (a dine-in order identified by its table, one open order per
+table, a QR sticker per table) is no longer on this list: card mode replaced it.
+See below.
+
+## Card mode
+
+Numbered customer cards replace tables as the way a dine-in order is identified.
+A card handed over at the counter is what actually follows a party around a
+mamak; a table number never reliably named a bill.
+
+- **A card is in use while it has an open order**, enforced by the partial
+  unique index `one_open_order_per_card`. It frees itself when the order is
+  paid, cancelled or refunded — there is no in-use flag and no manual release.
+  Two tills racing for one card get one 201 and one 409 naming the winner.
+- **Cards 1–50 are seeded**; Admin → Cards & QR sets the count. Raising it
+  activates or creates numbers; lowering it deactivates the top numbers and is
+  refused (409) while any of them has an open bill.
+- **New dine-in orders set `card_id`, never `table_id`.** Tables are kept, never
+  dropped: old bills keep their table names, and a table order open at upgrade
+  time stays visible (its own section on the floor) and payable until it
+  closes. Takeaway is unchanged — no card.
+- **Move** takes a card (a lost or swapped card), with the same guards as
+  before and 409 if the target card is in use.
+- **Everywhere a location is shown it says "Card 7"**: POS, kitchen tickets,
+  chits, receipts, print jobs, the approval queue, the dashboard
+  (`open_cards`), audit detail.
+
+### Combining bills
+
+- `bill_groups` + `orders.bill_group_id`. **Nothing moves between orders**:
+  each card keeps its own order, rounds, kitchen tickets and discounts, and
+  staff can keep adding to any member card after combining.
+- **Group total = sum of member `total_cents`.** Tax is each order's own,
+  computed as it always was. It is never recomputed on the combined subtotal
+  (asserted by a test where the two would differ by a sen).
+- **Paying a group writes one `payments` row per member** (same method,
+  taken_by, shift), allocated in ascending card number, so the rows always sum
+  exactly to what was taken. Cash 5-sen rounding is applied once, on the leg
+  that settles the group, to the group's remaining due; the adjustment goes on
+  the last member settled. Change is the group's. Partial group payments are
+  allocated the same way. When the group's due reaches zero every member is
+  paid and the group closed in one transaction. Because payments stay one row
+  per order, shifts, Z reports and refunds did not change.
+- **Un-combining is allowed only while no member has a payment** (409 "This
+  combined bill has a payment on it and can't be split apart."). A group left
+  with one card dissolves.
+- A grouped card is paid and split with its group: its own pay and split
+  routes return 409. Per-card split keeps working for ungrouped cards.
+- A group prints one receipt: lines under "Card N", the money summed, one total.
+- Combine, un-combine and group payment each write `audit_log`.
+
+### QR self-ordering
+
+- `qr_mode`: **per_card** (each card's own QR; orders onto its open order or
+  opens one), **shop** (one poster token; the customer types their card
+  number, and approval is always required whatever `qr_require_approval` says,
+  because anyone can type any number), **off** (public QR and voice endpoints
+  404; the customer page says "Please order at the counter"). Migrated from
+  `qr_ordering_enabled`. The old 503 "paused" message is gone.
+- Voice changed only in how its token resolves to a card.
 
 ## Migrations added
 
 None in V2. Speak to Order needed no schema change — it produces the same rows
-the tap flow produces.
+the tap flow produces. Card mode added `014_card_mode.sql`.
 
 ## Files materially changed in V2
 
@@ -162,6 +224,10 @@ the tap flow produces.
 
 ## Latest test state
 
-`npm test` 112/112. Playwright 16/16 (11 journeys + 5 responsive viewports).
+After card mode: `npm test` 120/120 (8 new in `test/unit/cards.test.js`).
+Playwright 17/17 (12 journeys, including "two cards, combine, pay once", + 5
+responsive viewports).
+
+Before card mode: `npm test` 112/112. Playwright 16/16 (11 journeys + 5 responsive viewports).
 A separate scripted sweep checked 5 viewports × every screen × light and dark
 for horizontal overflow, console errors and page errors: clean.

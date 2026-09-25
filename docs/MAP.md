@@ -91,7 +91,7 @@ read by any validation or modal-selection logic) ·
 `item_modifier_groups` (item_id, group_id, sort — PK on the pair) — **(phase 04)** which groups an
 item actually offers; `buildOrderItems` rejects any option whose group isn't attached, and any
 attached group's selection count outside `[min_select, max_select]` ·
-`tables` (id, name, qr_token) ·
+`tables` (id, name, qr_token) — **(card mode, migration 014)** no longer used for new orders; kept so history keeps its table names and a table order open at upgrade time stays payable. See "Card mode" at the end ·
 `orders` (id, table_id, status∈sent/preparing/ready/served/paid/cancelled/**(phase 12)**refunded, source∈staff/qr, note, created_at, updated_at, paid_at, **(phase 02)** subtotal_cents, service_charge_cents, tax_cents, discount_cents, rounding_cents, total_cents, tax_rate_bp, svc_rate_bp — **(phase 05)** these eight now stay live-recomputed (`billing.recomputeOrderBill`) on every mutation while the order is open, not just written once at payment; they only become a true frozen *snapshot* once the order is `paid` — the last two rate columns still specifically preserve the rates in effect at that moment, independent of the live `settings` row, **(phase 03)** opened_by, paid_by, closed_by — all `INT REFERENCES users(id)`; a partial unique index `one_open_order_per_table` on `(table_id) WHERE status NOT IN ('paid','cancelled','refunded')` enforces at most one open order per table, **(phase 07)** idempotency_key — nullable, a partial unique index (`uniq_orders_idem`) lets `POST /api/orders` recognise a retried create, **(phase 09)** shift_id — the shift open when the order was created (nullable; only *payment*, not order creation, requires an open shift), `pay_method`/`pay_total_cents` dropped — every reader moved onto `payments`/`total_cents` first, **(phase 12)** closed_shift_id — the shift the order *settled* in (stamped by `billing.addPayment`/`settleIfMatchesPaid`), backfilled for pre-phase-12 paid orders from the shift of their last payment; every status guard that used to stop at `paid`/`cancelled` now also stops at `refunded`) ·
 `order_items` (id, order_id, item_id, name, price_cents, qty, note, **(phase 03)** added_by, voided_at, voided_by, void_reason — a voided line is never deleted, just marked; excluded from every total, **(phase 05)** seat — optional, drives `splitBySeat`, **(phase 07)** idempotency_key — nullable, one derived sub-key (`` `${batchKey}:${index}` ``) per line, `uniq_order_items_idem` lets `POST /api/orders/:id/items` recognise a retried batch) ·
 `order_item_mods` (id, order_item_id, name, price_cents) ·
@@ -183,7 +183,7 @@ session cookie and returns `{csrf_token, name, role, must_change_pin}` — no to
 **(Phase 11)** `POST /api/me/pin` (`{current_pin, new_pin}` — any authenticated user; verifies
 `current_pin`, enforces the same PIN policy as admin-create/reset, kills every other session for
 that user, and is one of the two routes `must_change_pin` still lets through) ·
-`GET /api/tables` (all roles, names only) · `GET /api/orders[?mode=recent]` (each order now
+~~`GET /api/tables`~~ (**removed in card mode** — see `GET /api/cards`) · `GET /api/orders[?mode=recent]` (each order now
 also carries `payments[]`, `discounts[]` and `amount_due`; **(phase 11)** bounded to the most
 recent 200 unless `?since=<ISO timestamp>` is given, which returns everything newer; **(phase 12)**
 also `refunds[]`, and each `payments[]` entry gains `id`/`refundable`) ·
@@ -230,7 +230,7 @@ Admin only: `GET /api/admin/menu` (now also returns `item_modifier_groups`) ·
 `POST|PATCH|DELETE /api/admin/modifier_options` ·
 `POST|PATCH /api/admin/modifier_groups` · `POST /api/admin/item_modifier_groups` (attach) ·
 `DELETE /api/admin/item_modifier_groups/:itemId/:groupId` (detach) ·
-`GET|POST /api/admin/tables` · `GET /api/admin/tables/:id/qr.png` ·
+~~`GET|POST|PATCH|DELETE /api/admin/tables`, `GET /api/admin/tables/:id/qr.png`~~ (**removed in card mode** — see `/api/admin/cards`) ·
 **(Phase 11)** `GET /api/admin/users` (active + former, each with `last_seen_at`) ·
 `POST /api/admin/users` (`{name,role,pin}`, PIN-policy-enforced, `must_change_pin=true`) ·
 `PATCH /api/admin/users/:id` (name/role/`active`; refuses to deactivate the last active admin
@@ -260,7 +260,7 @@ history/audit rows keep a valid owner) · `GET /api/admin/audit[?limit=&entity_i
   on the staff app, `../js/state.js` re-imported on the customer page). Dynamic
   markup uses `data-action`/`data-id` attributes plus one delegated `click` (or
   `change`) listener per container — never an inline `onclick`/`onchange`.
-- Shared staff-app state (`menu`, `tables`, `cart`, `selTable`, `activeCat`, …) lives
+- Shared staff-app state (`menu`, `cards` — was `tables` before card mode, `cart`, `selTable`, `activeCat`, …) lives
   in the single `state` object exported by `public/js/state.js`; import and mutate
   `state.foo`, don't reassign a destructured local.
 
@@ -273,7 +273,8 @@ DATABASE_URL=postgres://postgres:PASS@localhost:5432/postgres \
   ADMIN_PIN=1234 BASE_URL=http://localhost:3000 node src/server.js
 ```
 
-Seeds on first boot: 6 categories, 25 items, 2 modifier groups, 14 tables, and an
+Seeds on first boot: 6 categories, 25 items, 2 modifier groups (cards 1–50 come from
+migration 014; tables are no longer seeded), and an
 `Admin` user with `ADMIN_PIN`. Boot runs `src/db.js`'s `migrate()` first, applying
 `migrations/*.sql` in order.
 
@@ -336,3 +337,61 @@ Read `docs/REDESIGN-STATE.md` first — it is the short version of the decisions
 | `public/js/nav.js` | 103 | Role-based navigation painted into two shells from one list — a left rail (216px, or 84px compact under 1180) and a phone bottom bar. The rail additionally carries the wordmark and who is logged in; the header carries the page title. Fires a `tab-changed` event so Help can stop its walkthrough when you leave it |
 | `public/js/pos.js` | 1019 | The till. Menu cards now carry a monogram tile built from the item's own name (four token tints, deterministic — there is no image column and inventing an upload pipeline was not the answer). A bill line is three rows (what and how much, what was asked for, the controls) instead of one that wrapped every dish onto three lines at real panel width; seat is one tap behind the line. On a phone a fixed bar carries the running total and the send action |
 | `test/e2e/journeys.spec.js` | 453 | The eight original journeys plus three new ones: a spoken order reviewed and confirmed (asserting nothing exists before Confirm and a real round after), a spoken order abandoned (asserting the order list is byte-identical), and the Help centre searched, opened, stepped and reached through a contextual link. Playwright now launches with a synthetic microphone and `VOICE_MODE=mock` |
+
+## Card mode
+
+Numbered customer cards replace tables as the way a dine-in order is identified,
+and several cards can be combined into one bill. Read the "Card mode" section of
+`docs/REDESIGN-STATE.md` for the rules; this is where they live.
+
+**Schema (migration 014).** `cards` (id, number UNIQUE, active, qr_token UNIQUE;
+1–50 seeded) · `orders.card_id` + partial unique index `one_open_order_per_card`
+(`WHERE status NOT IN ('paid','cancelled','refunded')` — a card frees itself when
+its order closes) · `orders_table_matches_type` replaced by
+`orders_location_matches_type` (dine-in needs a card *or* a table; the table branch
+exists only for history and table orders open at upgrade) · `bill_groups` (id,
+created_by, created_at, closed_at) + `orders.bill_group_id` · settings `qr_mode`
+(`per_card`|`shop`|`off`, migrated from `qr_ordering_enabled`) and `qr_shop_token`.
+Nothing is dropped: `tables`, `orders.table_id` and `one_open_order_per_table` stay.
+
+**API.** Added: `GET /api/cards` (all roles: number, active, in_use, open-order
+summary) · `PATCH /api/admin/cards/count {count}` (409 if lowering retires an
+in-use card) · `GET /api/admin/cards` (with QR urls) · `GET /api/admin/cards/:id/qr.png` ·
+`GET /api/admin/qr-shop` / `qr-shop.png` · `POST /api/bill-groups {order_ids}` ·
+`GET /api/bill-groups/:id` · `DELETE /api/bill-groups/:id/orders/:orderId` ·
+`DELETE /api/bill-groups/:id` · `POST /api/bill-groups/:id/pay {method, amount?, tendered?}`.
+Changed: `POST /api/orders` takes `card_id` (never `table_id`; 409 on the
+`one_open_order_per_card` race) · `POST /api/orders/:id/move {card_id}` ·
+`POST /api/orders/:id/pay` and `GET /api/orders/:id/split` 409 for a grouped card ·
+`GET /api/orders` rows carry `card_id`, `card_number`, `bill_group_id`, `label`
+("Card 7") · `GET /api/t/:token[?card=N]` returns `{mode, card, needs_card_number, …}`,
+404 when QR is off · `POST /api/public/orders` takes `card_number` in shop mode, 404
+when off · `/api/public/sends/:ref` and voice interpret 404 when off · settings
+serve/accept `qr_mode` instead of `qr_ordering_enabled` · `/api/summary`'s
+`floor.open_tables` is now `floor.open_cards`. Removed: `GET /api/tables`, every
+`/api/admin/tables*` route.
+
+| File | Lines | Contains |
+|---|---|---|
+| `migrations/014_card_mode.sql` | 70 | **New.** Everything under "Schema" above. Safe on a live database: additive, backfill-free except the `qr_mode` setting, which is derived from the old on/off switch |
+| `src/services/cards.js` | 128 | **New.** `listCards()` (the floor: one row per card, in-use derived from an open order), `setCardCount(count, userId)` (locks the cards it would retire `FOR UPDATE`, 409s if any has an open order, creates missing numbers, audits `cards.count`), `qrSettings()` (`mode`, `enabled`, `approval_required` — forced true in shop mode, `shop_token`), `resolveQr(token, cardNumber, {requireCard})` (the one place a public token becomes a card; a `code: 'qr_off'` 404 when off), `locationSql()` |
+| `src/services/bill_groups.js` | 257 | **New.** `combine(orderIds, userId)` (locks the orders; 409 for a closed, takeaway or table order; joins an existing group or merges several into the oldest, closing the rest), `uncombine(groupId, {orderId?, userId})` (409 "This combined bill has a payment on it and can't be split apart." once any member has a payment; a group left with one card dissolves), `getGroup(id)` (members with their lines, money summed per member — never re-taxed), `payGroup(id, {method, amountCents, tenderedCents, userId})` (one transaction: locks group and members, requires an open shift, allocates by ascending card number into one `payments` row per member, cash 5-sen rounding once on the settling leg with the adjustment on the last member settled, change on the group, settles every member and closes the group when due hits 0). Every combine/un-combine/pay writes `audit_log` via `writeAudit` |
+| `src/routes/cards.js` | 108 | **New.** The card and bill-group endpoints listed above; a settled group queues one receipt |
+| `src/services/orders.js` | 209 | `insertOrder(cardId, …)` — takes a card, never a table; checks the card is active `FOR SHARE` inside the transaction. `ordersWithItems` joins `cards` and returns `card_id`/`card_number`/`bill_group_id`, `label` = "Card N" (table name for a legacy table order, "Takeaway #id" for takeaway) |
+| `src/routes/orders.js` | 458 | `GET /api/tables` removed. Create/move by card; pay and split refuse a grouped card (409) |
+| `src/routes/public.js` | 168 | Token resolution via `cards.resolveQr` for all three QR modes; rate limit keyed by card (the shop token is shared by every customer); the old 503 "paused" path is gone — off is 404 |
+| `src/routes/voice.js` | 81 | Same token resolution; 404 when QR is off; rate limit per card |
+| `src/routes/admin.js` | 519 | Table CRUD and table QR routes removed; print-job labels say "Card N" |
+| `src/services/printing.js` | 458 | `orderLabel()` says "Card N"; `enqueue('receipt', id)` builds `buildGroupReceipt(groupId)` for a grouped order — lines under "Card N" headings, money summed across members, one total, a group payment shown once |
+| `src/services/rounds.js` | — | Kitchen tickets and the approval queue label orders "Card N" |
+| `src/routes/reports.js` | 249 | `qr_mode` in settings; `floor.open_cards` |
+| `src/services/health.js` | — | System → QR ordering reads `qr_mode` |
+| `src/seed.js` | 68 | No longer seeds tables |
+| `public/js/pos.js` | 1152 | The floor is a card grid 1..N (free vs in-use with time, items, running total, "Combined bill"); a section for table orders from before card mode; Move picks a free card; **Combine bills** dialog, the "Combined bill: Card 1, Card 4" line with "Take this card out"; the pay modal in group mode (`currentGroupId`) renders each card's lines and pays `POST /api/bill-groups/:id/pay`, hiding discount/refund/split, which stay per card |
+| `public/js/admin.js` | 810 | Tables & QR is now **Cards & QR**: card count, QR mode, approval (shown forced in shop mode), a printable sheet of card faces (big number + QR) or one shop poster |
+| `public/customer/customer.js` | 457 | Card mode: title "Card N"; shop mode asks for the card number first (checked via `?card=`, remembered for the session); off shows "Please order at the counter"; sends `card_number` |
+| `public/customer/voice.js` | — | Sends `card_number` with each utterance |
+| `public/index.html` | 716 | Floor heading Cards, legacy table section, Combine button + `#combine-modal`, `#bill-group`, ids on the pay modal's discount/split sections, Cards & QR admin section |
+| `test/unit/cards.test.js` | 419 | **New.** Concurrent opens on one card, a card freeing on payment, lowering the count below an in-use card, combine → add → group cash payment (rows sum to the cash, rounding once, per-order tax), partial payment blocks un-combine, closed/takeaway can't combine, group merge, shop-mode forced approval, QR off 404, and a table order opened *before* migration 014 staying payable after it |
+| `test/e2e/journeys.spec.js` | 499 | Journeys open cards instead of tables; new journey: two cards, combine, pay once |
+
