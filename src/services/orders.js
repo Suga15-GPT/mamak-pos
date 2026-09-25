@@ -148,7 +148,9 @@ async function appendSend(orderId, parsed, source, userId = null, idemKey = null
     await lockBills(client);
     const send = await rounds.createSend(client, orderId, { source, userId, approvalState, publicRef });
     const cur = (await client.query(
-      `SELECT status, EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id) AS has_payment
+      `SELECT status,
+              COALESCE((SELECT SUM(amount_cents) FROM payments p WHERE p.order_id = o.id), 0)
+            - COALESCE((SELECT SUM(amount_cents) FROM refunds r WHERE r.order_id = o.id), 0) > 0 AS has_payment
          FROM orders o WHERE o.id = $1`, [orderId])).rows[0];
     if (rounds.TERMINAL_ORDER_STATUSES.includes(cur.status)) throw Object.assign(AppError('order closed', 400), { code: 'order_closed' });
     if (cur.has_payment) throw Object.assign(AppError('order has a payment recorded; cannot add items', 409), { code: 'has_payment' });

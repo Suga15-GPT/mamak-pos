@@ -130,9 +130,11 @@ async function amountDue(orderId, client = pool) {
   return (o.rows[0].total_cents || 0) - await paidCentsFor(orderId, client);
 }
 
+// Has money been taken and not given back? Net of refunds, like combine: a
+// part-payment refunded in full leaves nothing being settled, so items can be
+// added again (staff and QR both ask this before appending).
 async function hasPayments(orderId) {
-  const r = await pool.query('SELECT 1 FROM payments WHERE order_id = $1 LIMIT 1', [orderId]);
-  return r.rows.length > 0;
+  return (await paidCentsFor(orderId)) > 0;
 }
 
 async function listPayments(orderId) {
