@@ -224,16 +224,28 @@ mamak; a table number never reliably named a bill.
   share a bill, settle a bill, or change a bill's total takes one
   transaction-scoped advisory lock with a single fixed key
   (`pg_advisory_xact_lock`, `src/lib/billlock.js`) as its **first** lock:
-  combine, un-combine, dissolve, group pay, single-card pay, adding a round
-  (staff, QR, voice), void, discount/comp and its removal, refund, QR
-  approve/reject, move, cancel and leave-on-close. Only then does it lock
-  order rows, ascending id. They are serialised against each other, so they
+  opening an order (with its first total), combine, un-combine, dissolve,
+  group pay, single-card pay, adding a round (staff, QR, voice), void,
+  discount/comp and its removal, refund, QR approve/reject, move, cancel,
+  leave-on-close, **every status tap** (kitchen ticket and order-level),
+  shift close and cash pay-in/pay-out. Only then does it lock order rows,
+  ascending id. Rule of thumb: anything that writes an order's status,
+  lines, totals, payments, refunds, tickets or bill-group membership, or
+  closes a shift, takes the lock first. They are serialised against each other, so they
   cannot deadlock by construction, and each one reads the order *after*
   locking it.
 - So **every** one of those is race-safe against a payment, not only adding
   items: a void, discount or approval that loses the race to a payment finds
   the bill closed and is refused (409); one that wins is included in the total
   the payment then reads. Each recomputes the bill inside its own transaction.
+- **Closed bills stay closed, three ways.** The bill lock serialises status
+  taps with payment; `deriveOrderStatus` writes only
+  `WHERE status NOT IN ('paid','cancelled','refunded')`; and migration 015's
+  trigger rejects any status change out of `paid`, `cancelled` or `refunded`
+  except paid → refunded. A kitchen tap that read "ready" before a payment
+  once wrote "served" over "paid" (PR #16 re-check 2, K). A ticket can still
+  be advanced after its order is paid (food is often served after paying);
+  only the order's status is left alone.
 - **An order with any round awaiting approval is never auto-settled or
   auto-closed** (a void or discount that takes the accepted lines to zero
   leaves it open), and a grouped card with a held round never leaves its group
@@ -244,7 +256,8 @@ mamak; a table number never reliably named a bill.
 ## Migrations added
 
 None in V2. Speak to Order needed no schema change — it produces the same rows
-the tap flow produces. Card mode added `014_card_mode.sql`.
+the tap flow produces. Card mode added `014_card_mode.sql` and
+`015_closed_orders_stay_closed.sql` (the closed-status trigger).
 
 ## Files materially changed in V2
 
@@ -279,6 +292,9 @@ the tap flow produces. Card mode added `014_card_mode.sql`.
   programme and were not touched by it.
 
 ## Latest test state
+
+After PR #16 re-check 2: `npm test` 155/155 (`test/unit/card_recheck.test.js`
+12, `test/unit/card_recheck2.test.js` 7). Playwright 17/17.
 
 After the PR #16 review fixes: `npm test` 136/136 (16 regression tests in
 `test/unit/card_review.test.js`, one or more per finding). Playwright 17/17.

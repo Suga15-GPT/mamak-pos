@@ -423,3 +423,15 @@ serve/accept `qr_mode` instead of `qr_ordering_enabled` · `/api/summary`'s
 | `src/routes/kitchen.js` | Approve/reject take the bill lock; a reject that cancels a grouped card leaves its group in the same transaction |
 | `src/services/orders.js` | `appendSend` takes the bill lock before the order lock |
 | `test/unit/card_recheck.test.js` | **New.** 12 regression tests: the three deadlock scenarios, held-round survival (void, discount, comp, grouped), void/discount vs payment races, 40 concurrent runs each |
+
+### Card mode — PR #16 re-check 2 fixes
+
+| File | Contains |
+|---|---|
+| `migrations/015_closed_orders_stay_closed.sql` | **New.** Trigger `orders_closed_stays_closed`: rejects any `orders.status` change out of `paid`/`cancelled`/`refunded` except paid → refunded |
+| `src/services/rounds.js` | `deriveOrderStatus` writes only while the order is open; `advanceTicket` takes the bill lock first |
+| `src/routes/orders.js` | Order-level status taps take the bill lock and re-read status under it (409 if the move is no longer allowed); a new order's first total is written inside `insertOrder` |
+| `src/services/orders.js` | `insertOrder` takes the bill lock and writes the first total in its own transaction |
+| `src/services/shifts.js` | `close` and `addMovement` are transactions under the bill lock; `expectedCashCents` takes an optional client |
+| `src/services/bill_groups.js` | combine refuses only a card with net paid (payments − refunds) > 0 |
+| `test/unit/card_recheck2.test.js` | **New.** K1–K3 status-tap vs payment races, S1 shift close vs cash payment, X1 cancel vs kitchen tap (40 concurrent runs each), the trigger, and combining a fully refunded card |
