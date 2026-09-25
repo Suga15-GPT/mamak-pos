@@ -4,7 +4,7 @@ import { enqueue, pending as outboxPending, onOutboxChange, resultFor } from './
 /* ===== DATA LOADING ===== */
 export async function loadAll() {
   try {
-    [state.menu, state.tables] = await Promise.all([API.get('/api/menu'), API.get('/api/tables')]);
+    [state.menu, state.cards] = await Promise.all([API.get('/api/menu'), API.get('/api/cards')]);
     state.activeCat = state.menu.categories[0]?.id;
     renderTables();
     renderMenu();
@@ -13,8 +13,9 @@ export async function loadAll() {
 }
 
 /* ===== THE FLOOR =====
-   Table state is read off the order's rounds, not off one global kitchen
-   status: a table can hold round 1 served and round 2 cooking at the same
+   Card mode: the floor is a grid of numbered customer cards, 1..N. A card's
+   state is read off its order's rounds, not off one global kitchen
+   status: a card can hold round 1 served and round 2 cooking at the same
    time, and what the waiter needs to see is the most urgent of the two
    (master spec §14). Every tile is the same size and says its state in words —
    colour is a shortcut for people who already know it, never the message. */
@@ -42,13 +43,14 @@ function tileHtml({ key, name, order, action, id }) {
   return `<button class="table-btn ${conf.cls || ''}${stale}" data-action="${action}" data-id="${id}" id="${key}">
     <span class="t-name">${esc(name)}</span>
     <span class="t-state">${conf.icon || words.icon} ${esc(conf.label || words.label)}</span>
-    <span class="t-sub">${mins} min · ${items} item${items === 1 ? '' : 's'}${stale ? ' · check this table' : ''}</span>
+    <span class="t-sub">${mins} min · ${items} item${items === 1 ? '' : 's'}${stale ? ' · check this card' : ''}</span>
     ${pending ? `<span class="t-sub">⏳ ${pending} waiting for you</span>` : ''}
+    ${order.bill_group_id ? '<span class="t-sub">🔗 Combined bill</span>' : ''}
     <span class="t-total">${fmt(total)}</span>
   </button>`;
 }
 
-/* Coming back to the floor tab while a table's bill is open should return to
+/* Coming back to the floor tab while a card's bill is open should return to
    that bill, not throw the waiter back to the grid mid-order — but it must
    re-read the order first, because the kitchen may have moved it on while they
    were away. */
@@ -59,16 +61,27 @@ export function refreshPos() {
 
 export async function renderTables() {
   let orders = [];
-  try { orders = await API.get('/api/orders'); } catch (e) { /* offline: render the empty floor */ }
+  try {
+    // The card list is re-read too: an admin may have changed how many there are.
+    [orders, state.cards] = await Promise.all([API.get('/api/orders'), API.get('/api/cards')]);
+  } catch (e) { /* offline: render what we have */ }
 
   // GET /api/orders (no mode=) already excludes paid/cancelled/refunded, and the
-  // DB enforces at most one open order per table, so this is unambiguous.
-  const byTable = {};
-  orders.forEach(o => { if (o.table_id) byTable[o.table_id] = o; });
+  // DB enforces at most one open order per card, so this is unambiguous.
+  const byCard = {};
+  orders.forEach(o => { if (o.card_id) byCard[o.card_id] = o; });
 
-  $('tables-grid').innerHTML = state.tables
-    .map(t => tileHtml({ key: `tb-${t.id}`, name: t.name, order: byTable[t.id], action: 'select-table', id: t.id }))
-    .join('') || '<div class="empty">No tables set up yet — add them in Admin → Tables &amp; QR.</div>';
+  $('tables-grid').innerHTML = state.cards
+    .map(c => tileHtml({ key: `cd-${c.number}`, name: `Card ${c.number}`, order: byCard[c.id], action: 'select-table', id: c.id }))
+    .join('') || '<div class="empty">No cards set up yet — set how many in Admin → Cards &amp; QR.</div>';
+
+  // Table orders still open from before card mode stay visible and payable
+  // until they close; there is nothing to start on a table any more.
+  const legacy = orders.filter(o => o.order_type === 'dine_in' && !o.card_id);
+  $('legacy-section').hidden = !legacy.length;
+  $('legacy-grid').innerHTML = legacy
+    .map(o => tileHtml({ key: `lg-${o.id}`, name: o.label, order: o, action: 'select-legacy', id: o.id }))
+    .join('');
 
   // Takeaway is its own section, not a tile pretending to be a table.
   const takeaway = orders.filter(o => o.order_type === 'takeaway');
@@ -76,15 +89,15 @@ export async function renderTables() {
     .map(o => tileHtml({ key: `ta-${o.id}`, name: o.label, order: o, action: 'select-takeaway', id: o.id }))
     .join('') || '<div class="empty" style="grid-column:1/-1">No takeaway orders right now.</div>';
 
-  // A one-line read of the floor, above the grid: how many tables are running
+  // A one-line read of the floor, above the grid: how many cards are running
   // and how many are sitting there waiting to be collected from.
-  const open = Object.keys(byTable).length;
-  const toPay = Object.values(byTable).filter(o => o.status === 'served').length;
+  const open = Object.keys(byCard).length;
+  const toPay = Object.values(byCard).filter(o => o.status === 'served').length;
   const summary = $('floor-summary');
   if (summary) {
     summary.textContent = open
-      ? `${open} table${open === 1 ? '' : 's'} open` + (toPay ? ` · ${toPay} ready to pay` : '')
-      : 'Every table is free.';
+      ? `${open} card${open === 1 ? '' : 's'} in use` + (toPay ? ` · ${toPay} ready to pay` : '')
+      : 'Every card is free.';
   }
 }
 
@@ -111,23 +124,31 @@ function openWorkspace(sel) {
   $('bill-kind').textContent = sel.type === 'takeaway' ? 'Takeaway' : 'Dine in';
   $('bill-badge').innerHTML = '';
   $('move-order-btn').style.display = 'none';
+  $('combine-btn').style.display = 'none';
+  $('bill-group').innerHTML = '';
   renderCart();
   renderMenu();
   renderFavs();
   checkOpenOrder();
 }
 
+// A free card starts an order; an in-use card opens its bill.
 function selectTable(id) {
-  const t = state.tables.find(x => x.id === id);
-  openWorkspace({ type: 'dine_in', tableId: id, name: t ? t.name : '', orderId: null });
+  const c = state.cards.find(x => x.id === id);
+  openWorkspace({ type: 'dine_in', cardId: id, name: c ? `Card ${c.number}` : '', orderId: null });
+}
+
+// A table order from before card mode, found by its order id.
+function selectLegacy(orderId) {
+  openWorkspace({ type: 'dine_in', cardId: null, name: '', orderId });
 }
 
 function selectTakeaway(orderId) {
-  openWorkspace({ type: 'takeaway', tableId: null, name: `Takeaway #${orderId}`, orderId });
+  openWorkspace({ type: 'takeaway', cardId: null, name: `Takeaway #${orderId}`, orderId });
 }
 
 function newTakeaway() {
-  openWorkspace({ type: 'takeaway', tableId: null, name: 'New takeaway', orderId: null });
+  openWorkspace({ type: 'takeaway', cardId: null, name: 'New takeaway', orderId: null });
 }
 
 function backToTables() {
@@ -142,7 +163,7 @@ function backToTables() {
 
 async function checkOpenOrder() {
   if (!state.selTable) return;
-  // A brand-new takeaway ticket has no table to look itself up by, so it learns
+  // A brand-new takeaway ticket has no card to look itself up by, so it learns
   // its order id from the outbox entry that created it — which is also the only
   // path that works when the create was queued offline and landed later.
   if (pendingCreateEntry && !state.selTable.orderId) {
@@ -157,9 +178,9 @@ async function checkOpenOrder() {
   try {
     const orders = await API.get('/api/orders');
     const sel = state.selTable;
-    const open = sel.type === 'takeaway'
-      ? orders.find(o => o.id === sel.orderId)
-      : orders.find(o => o.table_id === sel.tableId);
+    const open = sel.cardId
+      ? orders.find(o => o.card_id === sel.cardId)
+      : orders.find(o => o.id === sel.orderId);
 
     // Keep whatever the server hasn't confirmed yet — lines still being typed
     // AND lines queued in the offline outbox (sent === 'pending') — and replace
@@ -171,7 +192,7 @@ async function checkOpenOrder() {
     if (open) {
       liveOrder = open;
       state.selTable.orderId = open.id;
-      if (sel.type === 'takeaway') {
+      if (!sel.cardId) {
         state.selTable.name = open.label;
         $('ws-title').textContent = open.label;
         $('bill-where').textContent = open.label;
@@ -185,6 +206,8 @@ async function checkOpenOrder() {
       $('pay-btn').dataset.orderId = open.id;
       $('pay-btn').dataset.orderStatus = open.status;
       $('move-order-btn').style.display = '';
+      $('combine-btn').style.display = open.card_id ? '' : 'none';
+      renderBillGroup(open, orders);
       const w = stateWords(open.status);
       $('bill-badge').innerHTML = `<span class="badge ${esc(open.status)}">${w.icon} ${esc(w.label)}</span>`;
     } else {
@@ -192,6 +215,8 @@ async function checkOpenOrder() {
       state.cart = unsent;
       $('pay-btn').style.display = 'none';
       $('move-order-btn').style.display = 'none';
+      $('combine-btn').style.display = 'none';
+      $('bill-group').innerHTML = '';
       $('bill-badge').innerHTML = '';
     }
     renderCart();
@@ -600,7 +625,8 @@ async function sendOrder() {
     ? { url: `/api/orders/${liveOrder.id}/items`, method: 'POST', body: { items } }
     : sel.type === 'takeaway'
       ? { url: '/api/orders', method: 'POST', body: { order_type: 'takeaway', items } }
-      : { url: '/api/orders', method: 'POST', body: { table_id: sel.tableId, items } };
+      : { url: '/api/orders', method: 'POST', body: { card_id: sel.cardId, items } };
+  if (!liveOrder && sel.type === 'dine_in' && !sel.cardId) return toast('This table order is closed — start a new one on a card');
 
   const entry = await enqueue(request);
   if (!liveOrder) pendingCreateEntry = entry.id;
@@ -609,30 +635,76 @@ async function sendOrder() {
   toast(navigator.onLine ? 'Sending to kitchen…' : 'Offline — queued, will send when back online');
 }
 
-/* ===== MOVE ORDER ===== */
+/* ===== MOVE ORDER =====
+   A lost or swapped card: the whole bill moves onto a free card. */
 async function openMove() {
   if (!liveOrder) return;
-  const orders = await API.get('/api/orders').catch(() => []);
-  const busy = new Set(orders.filter(o => o.table_id).map(o => o.table_id));
-  const options = state.tables.filter(t => !busy.has(t.id));
+  const cards = await API.get('/api/cards').catch(() => state.cards);
+  const options = cards.filter(c => !c.in_use);
   $('move-target').innerHTML = options.length
-    ? options.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('')
-    : '<option value="">No free table</option>';
+    ? options.map(c => `<option value="${c.id}">Card ${c.number}</option>`).join('')
+    : '<option value="">No free card</option>';
   $('move-err').textContent = '';
   $('move-modal').classList.add('show');
 }
 function closeMove() { $('move-modal').classList.remove('show'); }
 async function confirmMove() {
-  const tableId = Number($('move-target').value);
-  if (!tableId) return;
+  const cardId = Number($('move-target').value);
+  if (!cardId) return;
   try {
-    const r = await API.post(`/api/orders/${liveOrder.id}/move`, { table_id: tableId });
+    const r = await API.post(`/api/orders/${liveOrder.id}/move`, { card_id: cardId });
     closeMove();
-    toast(`Moved to ${r.table}`);
-    state.selTable = { type: 'dine_in', tableId, name: r.table, orderId: liveOrder.id };
-    $('ws-title').textContent = r.table;
+    toast(`Moved to ${r.label}`);
+    state.selTable = { type: 'dine_in', cardId, name: r.label, orderId: liveOrder.id };
+    $('ws-title').textContent = r.label;
+    $('bill-where').textContent = r.label;
     checkOpenOrder();
   } catch (e) { $('move-err').textContent = e.message; }
+}
+
+/* ===== COMBINED BILLS =====
+   Cards that pay together. Nothing moves between orders — each card keeps
+   its own lines and kitchen tickets; the group only settles them at once. */
+function renderBillGroup(open, orders) {
+  if (!open.bill_group_id) { $('bill-group').innerHTML = ''; return; }
+  const members = orders.filter(o => o.bill_group_id === open.bill_group_id)
+    .sort((a, b) => a.card_number - b.card_number);
+  $('bill-group').innerHTML = `<div class="bill-group-note">🔗 Combined bill: ${members.map(m => esc(m.label)).join(', ')}
+    <button class="btn small ghost" data-action="leave-group">Take this card out</button></div>`;
+}
+
+async function openCombine() {
+  if (!liveOrder) return;
+  const orders = await API.get('/api/orders').catch(() => []);
+  const others = orders
+    .filter(o => o.card_id && o.id !== liveOrder.id && (!liveOrder.bill_group_id || o.bill_group_id !== liveOrder.bill_group_id))
+    .sort((a, b) => a.card_number - b.card_number);
+  $('combine-list').innerHTML = others.length
+    ? others.map(o => `<label class="combine-option"><input type="checkbox" value="${o.id}">
+        <span>${esc(o.label)}${o.bill_group_id ? ' · already combined' : ''}</span><span>${fmt(o.grand_total ?? o.total)}</span></label>`).join('')
+    : '<div class="empty">No other card has an open bill.</div>';
+  $('combine-err').textContent = '';
+  $('combine-modal').classList.add('show');
+}
+function closeCombine() { $('combine-modal').classList.remove('show'); }
+async function confirmCombine() {
+  const ids = [...$('combine-list').querySelectorAll('input:checked')].map(i => Number(i.value));
+  if (!ids.length) { $('combine-err').textContent = 'Choose at least one card'; return; }
+  try {
+    const g = await API.post('/api/bill-groups', { order_ids: [liveOrder.id, ...ids] });
+    closeCombine();
+    toast(`Combined: ${g.members.map(m => m.label).join(' + ')}`);
+    checkOpenOrder();
+  } catch (e) { $('combine-err').textContent = e.message; }
+}
+
+async function leaveGroup() {
+  if (!liveOrder?.bill_group_id) return;
+  try {
+    await API.del(`/api/bill-groups/${liveOrder.bill_group_id}/orders/${liveOrder.id}`);
+    toast(`${liveOrder.label} is on its own bill again`);
+    checkOpenOrder();
+  } catch (e) { toast(e.message); }
 }
 
 /* ===== PAYMENT =====
@@ -640,6 +712,10 @@ async function confirmMove() {
    straight from the order, which the server keeps recomputed on every change —
    no client-side bill math to duplicate or get out of sync. */
 let currentOrder = null;
+// Set while the modal is taking payment for a combined bill: currentOrder is
+// then the group (GET /api/bill-groups/:id), which carries the same
+// amount_due/total fields the single-order flow reads.
+let currentGroupId = null;
 // A split view the cashier is actively working through. Computed once from the
 // balance at split time; paying a share removes just that entry, never a fresh
 // re-split of the shrinking remainder.
@@ -651,7 +727,17 @@ async function refreshPayModal() {
   const orders = await API.get('/api/orders').catch(() => []);
   const order = orders.find(o => o.id == orderId);
   if (!order) return false;
-  currentOrder = order;
+  if (order.bill_group_id) {
+    const group = await API.get(`/api/bill-groups/${order.bill_group_id}`).catch(() => null);
+    if (!group) return false;
+    currentGroupId = group.id;
+    // For the "still being prepared?" check: the most urgent member decides.
+    group.status = group.members.some(m => ['sent', 'preparing'].includes(m.status)) ? 'preparing' : 'served';
+    currentOrder = group;
+  } else {
+    currentGroupId = null;
+    currentOrder = order;
+  }
   renderPayModal();
   return true;
 }
@@ -667,7 +753,45 @@ async function openPayModal() {
   $('pay-modal').classList.add('show');
 }
 
+// A combined bill: each card's lines under its own "Card N" heading, the money
+// summed across the cards (each card's tax is its own), one total.
+function renderGroupPayModal() {
+  const g = currentOrder;
+  const rows = g.members.map(m => `<div class="bill-group-head">${esc(m.label)}</div>` +
+    m.items.filter(i => !i.voided).map(i => {
+      const unit = i.price + i.mods.reduce((t, x) => t + x.price, 0);
+      return `<div class="cart-line"><div class="line-sub">${i.qty}× ${esc(i.name)}</div>
+        <div class="line-right">${fmt(Math.round(unit * i.qty * 100) / 100)}</div></div>`;
+    }).join(''));
+  rows.push(`<div class="totals"><div class="row"><span>Subtotal</span><span>${fmt(g.subtotal)}</span></div>`);
+  if (g.service_charge) rows.push(`<div class="row"><span>Service charge</span><span>${fmt(g.service_charge)}</span></div>`);
+  rows.push(`<div class="row"><span>SST</span><span>${fmt(g.tax)}</span></div>`);
+  if (g.discount) rows.push(`<div class="row"><span>Discount</span><span>-${fmt(g.discount)}</span></div>`);
+  rows.push(`<div class="row grand"><span>Total</span><span>${fmt(g.total)}</span></div></div>`);
+  if (g.paid) rows.push(`<div class="cart-line"><div class="line-sub">Paid so far</div><div class="line-right">${fmt(g.paid)}</div></div>`);
+  rows.push(`<div class="totals"><div class="row grand"><span>To pay</span><span>${fmt(g.amount_due)}</span></div></div>`);
+  $('pay-details').innerHTML = `<div class="meta" style="margin-bottom:8px">Combined bill #${g.id} · ${g.members.map(m => esc(m.label)).join(', ')}</div>${rows.join('')}`;
+}
+
 function renderPayModal() {
+  // Discounts, refunds and splits are per card: they stay on a card's own
+  // bill, and a combined bill is paid as one.
+  $('pay-discount-section').style.display = currentGroupId ? 'none' : '';
+  $('pay-split-section').style.display = currentGroupId ? 'none' : '';
+  if (currentGroupId) {
+    renderGroupPayModal();
+    $('pay-amount-input').value = '';
+    $('cash-received-input').value = '';
+    $('pay-change-due').textContent = '';
+    $('pay-cash-row').style.display = '';
+    $('pay-amount-row').style.display = '';
+    closeDiscountForm();
+    closeRefundForm();
+    $('refund-section').style.display = 'none';
+    pendingShares = null;
+    renderSplitResult();
+    return;
+  }
   const o = currentOrder;
   const rows = [`<div class="totals"><div class="row"><span>Subtotal</span><span>${fmt(o.subtotal)}</span></div>`];
   if (o.service_charge) rows.push(`<div class="row"><span>Service charge</span><span>${fmt(o.service_charge)}</span></div>`);
@@ -727,7 +851,7 @@ function renderSplitResult() {
         </div></div>`).join('');
 }
 
-function closePayModal() { $('pay-modal').classList.remove('show'); currentOrder = null; pendingShares = null; }
+function closePayModal() { $('pay-modal').classList.remove('show'); currentOrder = null; currentGroupId = null; pendingShares = null; }
 
 function updateChangeDue() {
   if (!currentOrder) return;
@@ -750,7 +874,7 @@ async function processPay(method, amount, tendered) {
     const body = { method };
     if (amount != null) body.amount = amount;
     if (method === 'Cash' && tendered != null) body.tendered = tendered;
-    const r = await API.post(`/api/orders/${orderId}/pay`, body);
+    const r = await API.post(currentGroupId ? `/api/bill-groups/${currentGroupId}/pay` : `/api/orders/${orderId}/pay`, body);
     if (r.settled) {
       closePayModal();
       toast(r.change > 0 ? `Paid — change ${fmt(r.change)}` : 'Paid in full');
@@ -910,6 +1034,7 @@ $('tab-pos').addEventListener('click', e => {
   if (!el) return;
   const a = el.dataset.action;
   if (a === 'select-table') selectTable(Number(el.dataset.id));
+  else if (a === 'select-legacy') selectLegacy(Number(el.dataset.id));
   else if (a === 'select-takeaway') selectTakeaway(Number(el.dataset.id));
   else if (a === 'new-takeaway') newTakeaway();
   else if (a === 'refresh-tables') renderTables();
@@ -923,6 +1048,8 @@ $('tab-pos').addEventListener('click', e => {
   else if (a === 'send-order') sendOrder();
   else if (a === 'open-pay') openPayModal();
   else if (a === 'open-move') openMove();
+  else if (a === 'open-combine') openCombine();
+  else if (a === 'leave-group') leaveGroup();
   else if (a === 'set-seat') setSeat(Number(el.dataset.id));
   else if (a === 'scroll-to-bill') $('bill-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
@@ -962,6 +1089,12 @@ $('move-modal').addEventListener('click', e => {
   else if (el?.dataset.action === 'confirm-move') confirmMove();
 });
 
+$('combine-modal').addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (el?.dataset.action === 'close-combine' || e.target === $('combine-modal')) closeCombine();
+  else if (el?.dataset.action === 'confirm-combine') confirmCombine();
+});
+
 $('pay-modal').addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
   if (el) {
@@ -989,7 +1122,7 @@ $('pay-modal').addEventListener('change', e => {
 });
 $('cash-received-input').addEventListener('input', updateChangeDue);
 
-/* Realtime: a change on any table's order updates the floor live, or — if this
+/* Realtime: a change on any card's order updates the floor live, or — if this
    device is inside that order's workspace — its bill and pay button. */
 onStreamEvent(batch => {
   if (batch.some(e => e.type === 'menu.updated')) loadAll();

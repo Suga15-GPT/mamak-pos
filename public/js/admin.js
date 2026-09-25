@@ -8,7 +8,8 @@ import { refreshStaff } from './staff.js';
    a toggle the size of a grain of rice. */
 
 let menuData = null;      // last GET /api/admin/menu
-let tablesData = [];
+let cardsData = [];       // last GET /api/admin/cards (active cards, with QR urls)
+let shopUrl = null;      // the shop poster's customer-page URL (shop QR mode)
 let settings = null;
 let menuFilterCat = 'all';
 let menuSearch = '';
@@ -25,10 +26,10 @@ function showSection(id) {
 
 export async function refreshAdmin() {
   try {
-    const [menu, s, tables] = await Promise.all([
-      API.get('/api/admin/menu'), API.get('/api/settings'), API.get('/api/admin/tables'),
+    const [menu, s, cards] = await Promise.all([
+      API.get('/api/admin/menu'), API.get('/api/settings'), API.get('/api/admin/cards'),
     ]);
-    menuData = menu; settings = s; tablesData = tables;
+    menuData = menu; settings = s; cardsData = cards;
     renderMenuSection();
     renderGroups();
     renderCategories();
@@ -380,10 +381,20 @@ async function moveCategory(id, dir) {
   } catch (e) { toast(e.message); }
 }
 
-/* ===== TABLES & QR ===== */
+/* ===== CARDS & QR =====
+   Card mode: how many numbered cards the shop hands out, and how customers
+   reach the QR page — a QR on each card (a printable sheet of card faces), one
+   shop poster (the customer types their card number), or off. */
 function renderTablesSection() {
-  $('qr-enabled-toggle').checked = settings.qr_ordering_enabled;
-  $('qr-approval-select').value = settings.qr_require_approval ? 'approval' : 'direct';
+  $('card-count-input').value = cardsData.length;
+  $('qr-mode-select').value = settings.qr_mode;
+  $('qr-approval-select').value = settings.qr_mode === 'shop' || settings.qr_require_approval ? 'approval' : 'direct';
+  // Anyone can type any card number on the shop poster, so shop mode always
+  // holds orders for a person to accept; the switch only governs per-card QR.
+  $('qr-approval-select').disabled = settings.qr_mode === 'shop';
+  $('qr-approval-meta').textContent = settings.qr_mode === 'shop'
+    ? 'Shop mode always holds each order for a staff member to accept — anyone can type any card number.'
+    : 'Send straight to the kitchen, or hold each order for a staff member to accept.';
 
   API.get('/api/admin/qr-health').then(h => {
     const problems = [...h.problems, ...h.warnings];
@@ -396,95 +407,71 @@ function renderTablesSection() {
          </div>`;
   }).catch(() => {});
 
-  $('qr-grid').innerHTML = tablesData.map(t => `
-    <div class="qr-card${t.active ? '' : ' muted'}">
-      <img id="qr-img-${t.id}" alt="QR code for ${esc(t.name)}">
-      <div class="qr-name">${esc(t.name)}${t.active ? '' : ' <span class="chip danger">Retired</span>'}</div>
-      <div class="qr-url">${esc(t.url)}</div>
-      ${t.open_orders ? '<div class="chip warn" style="margin-top:6px">Order open</div>' : ''}
-      <div class="qr-actions">
-        <a class="btn small outline" href="${esc(t.url)}" target="_blank" rel="noopener">Open</a>
-        <button class="btn small outline" data-action="copy-qr" data-id="${t.id}">Copy link</button>
-        <button class="btn small outline" data-action="download-qr" data-id="${t.id}">Download</button>
-        <button class="btn small outline" data-action="print-qr" data-id="${t.id}">Print</button>
-        <button class="btn small outline" data-action="rename-table" data-id="${t.id}">Rename</button>
-        ${t.active
-          ? `<button class="btn-danger" data-action="retire-table" data-id="${t.id}">Retire</button>`
-          : `<button class="btn small sage" data-action="restore-table" data-id="${t.id}">Bring back</button>`}
-      </div>
-    </div>`).join('') || '<div class="empty">No tables yet.</div>';
-
-  tablesData.forEach(t => {
-    API.getBlobUrl(`/api/admin/tables/${t.id}/qr.png`)
-      .then(url => { const img = $('qr-img-' + t.id); if (img) { img.src = url; img.dataset.blob = url; } })
+  $('qr-print-card').hidden = settings.qr_mode === 'off';
+  if (settings.qr_mode === 'shop') {
+    $('qr-print-title').textContent = 'Shop poster';
+    $('qr-grid').innerHTML = `<div class="qr-card"><img id="qr-img-shop" alt="Shop QR code">
+      <div class="qr-name">Scan to order</div><div class="qr-url" id="qr-shop-url"></div></div>`;
+    API.get('/api/admin/qr-shop').then(r => { shopUrl = r.url; const u = $('qr-shop-url'); if (u) u.textContent = r.url || ''; }).catch(() => {});
+    API.getBlobUrl('/api/admin/qr-shop.png')
+      .then(url => { const img = $('qr-img-shop'); if (img) { img.src = url; img.dataset.blob = url; } })
+      .catch(() => {});
+    return;
+  }
+  $('qr-print-title').textContent = 'Card faces';
+  $('qr-grid').innerHTML = cardsData.map(c => `
+    <div class="qr-card">
+      <div class="qr-number">${c.number}</div>
+      <img id="qr-img-${c.id}" alt="QR code for card ${c.number}">
+      <div class="qr-url">${esc(c.url)}</div>
+    </div>`).join('') || '<div class="empty">No cards yet.</div>';
+  cardsData.forEach(c => {
+    API.getBlobUrl(`/api/admin/cards/${c.id}/qr.png`)
+      .then(url => { const img = $('qr-img-' + c.id); if (img) { img.src = url; img.dataset.blob = url; } })
       .catch(() => {});
   });
 }
 
-async function copyQr(id) {
-  const t = tablesData.find(x => x.id === id);
-  try { await navigator.clipboard.writeText(t.url); toast('Link copied'); }
-  catch { await ask({ title: 'Copy this link', value: t.url, ok: 'Done' }); }
-}
-
-function downloadQr(id) {
-  const t = tablesData.find(x => x.id === id);
-  const img = $('qr-img-' + id);
-  if (!img?.dataset.blob) return toast('QR image is still loading');
-  const a = document.createElement('a');
-  a.href = img.dataset.blob;
-  a.download = `qr-${t.name.replace(/\W+/g, '-').toLowerCase()}.png`;
-  a.click();
-}
-
-// Prints a single QR at sticker size using a print-only region in this
-// document — a popup window would be blocked, and writing into one would fall
-// foul of the app's own Content-Security-Policy.
-function printQr(id) {
-  const t = tablesData.find(x => x.id === id);
-  const img = $('qr-img-' + id);
-  if (!img?.dataset.blob) return toast('QR image is still loading');
+// Prints the card faces (one big number + its QR each) or the one shop
+// poster, using a print-only region in this document — a popup window would
+// be blocked, and writing into one would fall foul of the app's own
+// Content-Security-Policy.
+function printQrSheet() {
+  let html;
+  if (settings.qr_mode === 'shop') {
+    const img = $('qr-img-shop');
+    if (!img?.dataset.blob) return toast('QR image is still loading');
+    html = `<div class="print-qr"><h1>Scan to order</h1><img src="${esc(img.dataset.blob)}" alt="">
+      <p>Enter the number on your card, then order from your phone</p><small>${esc(shopUrl || '')}</small></div>`;
+  } else {
+    if (cardsData.some(c => !$('qr-img-' + c.id)?.dataset.blob)) return toast('QR images are still loading');
+    html = `<div class="print-cards">${cardsData.map(c => `<div class="print-card-face">
+      <div class="print-card-number">${c.number}</div>
+      <img src="${esc($('qr-img-' + c.id).dataset.blob)}" alt="">
+      <p>Scan to order more</p></div>`).join('')}</div>`;
+  }
   let area = $('print-area');
   if (!area) {
     area = document.createElement('div');
     area.id = 'print-area';
     document.body.appendChild(area);
   }
-  area.innerHTML = `<div class="print-qr">
-    <h1>${esc(t.name)}</h1>
-    <img src="${esc(img.dataset.blob)}" alt="">
-    <p>Scan to see the menu and order</p>
-    <small>${esc(t.url)}</small></div>`;
+  area.innerHTML = html;
   document.body.classList.add('printing');
   const done = () => { document.body.classList.remove('printing'); area.innerHTML = ''; window.removeEventListener('afterprint', done); };
   window.addEventListener('afterprint', done);
   window.print();
 }
 
-async function newTable() {
-  const name = await ask({ title: 'Add a table', hint: 'What do staff call it? For example T13, or Booth 2.', ok: 'Add' });
-  if (!name) return;
-  try { await API.post('/api/admin/tables', { name }); toast('Table added'); refreshAdmin(); }
-  catch (e) { toast(e.message); }
-}
-
-async function renameTable(id) {
-  const t = tablesData.find(x => x.id === id);
-  const name = await ask({ title: 'Rename table', value: t?.name || '', ok: 'Rename' });
-  if (!name) return;
-  try { await API.patch(`/api/admin/tables/${id}`, { name }); toast('Renamed'); refreshAdmin(); }
-  catch (e) { toast(e.message); }
-}
-
-async function setTableActive(id, active) {
-  const t = tablesData.find(x => x.id === id);
-  if (!active && !confirm(`Retire ${t?.name}? Its QR stops working and it disappears from the floor. Old bills keep its name.`)) return;
-  try { await API.patch(`/api/admin/tables/${id}`, { active }); toast(active ? 'Back in service' : 'Retired'); refreshAdmin(); }
-  catch (e) { toast(e.message); }
+async function saveCardCount() {
+  const count = parseInt($('card-count-input').value, 10);
+  if (!(count >= 1)) return toast('Enter how many cards');
+  try { await API.patch('/api/admin/cards/count', { count }); toast(`${count} cards in use`); refreshAdmin(); }
+  catch (e) { toast(e.message); refreshAdmin(); }
 }
 
 async function setQrSetting(body, message) {
-  try { await API.patch('/api/settings', body); settings = await API.get('/api/settings'); toast(message); }
+  try { await API.patch('/api/settings', body); settings = await API.get('/api/settings'); toast(message); renderTablesSection(); }
   catch (e) { toast(e.message); refreshAdmin(); }
 }
 
@@ -652,7 +639,10 @@ const ACTION_WORDS = {
   'order.settle': 'Closed an order',
   'order.void_line': 'Voided an item',
   'order.refund': 'Issued a refund',
-  'order.move': 'Moved an order to another table',
+  'order.move': 'Moved an order to another card',
+  'bill_group.combine': 'Combined bills', 'bill_group.remove': 'Took a card off a combined bill',
+  'bill_group.dissolve': 'Split a combined bill apart', 'bill_group.pay': 'Took a payment on a combined bill',
+  'cards.count': 'Changed how many cards are in use',
   'round.status': 'Moved a kitchen round along',
   'round.approve': 'Accepted a customer order',
   'round.reject': 'Rejected a customer order',
@@ -673,6 +663,9 @@ function auditContext(a) {
   const d = a.detail || {};
   const bits = [];
   if (d.to_table) bits.push(`to ${d.to_table}`);
+  if (d.card) bits.push(d.card);
+  if (d.cards) bits.push(d.cards.join(' + '));
+  if (d.count) bits.push(`${d.count} cards`);
   if (a.entity_type === 'order' && a.entity_id) bits.push(`Order #${a.entity_id}`);
   if (d.round) bits.push(`Round ${d.round}`);
   if (d.name) bits.push(d.name);
@@ -736,13 +729,8 @@ $('tab-admin').addEventListener('click', e => {
       try { await API.post(`/api/admin/modifier_groups/${id}/duplicate`, {}); toast('Duplicated'); refreshAdmin(); }
       catch (e) { toast('Could not duplicate: ' + e.message); }
     },
-    'new-table': newTable,
-    'rename-table': () => renameTable(id),
-    'retire-table': () => setTableActive(id, false),
-    'restore-table': () => setTableActive(id, true),
-    'copy-qr': () => copyQr(id),
-    'download-qr': () => downloadQr(id),
-    'print-qr': () => printQr(id),
+    'save-card-count': saveCardCount,
+    'print-qr-sheet': printQrSheet,
     'save-rates': saveRates,
     'save-restaurant-identity': saveRestaurantIdentity,
     'create-printer': createPrinter,
@@ -761,8 +749,8 @@ $('tab-admin').addEventListener('change', e => {
   if (!el) return;
   const a = el.dataset.action;
   if (a === 'toggle-printer-enabled') togglePrinterEnabled(Number(el.dataset.id), el.checked);
-  else if (a === 'toggle-qr-enabled') setQrSetting({ qr_ordering_enabled: el.checked },
-    el.checked ? 'Customers can order again' : 'QR ordering paused');
+  else if (a === 'set-qr-mode') setQrSetting({ qr_mode: el.value },
+    { per_card: 'Each card has its own QR', shop: 'One shop QR — customers type their card number', off: 'QR ordering is off' }[el.value]);
   else if (a === 'set-qr-approval') setQrSetting({ qr_require_approval: el.value === 'approval' },
     el.value === 'approval' ? 'Customer orders now wait for staff' : 'Customer orders go straight to the kitchen');
 });

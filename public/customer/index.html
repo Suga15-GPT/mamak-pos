@@ -44,8 +44,21 @@
 <div id="paused-view" style="display:none">
   <div class="c-success">
     <div class="icon" style="background:var(--amber)">⏸</div>
-    <h2>Ordering is paused</h2>
+    <h2 id="paused-title">Ordering is paused</h2>
     <p id="paused-message" data-i18n="customer.paused">Online ordering is temporarily paused. Please order with our staff.</p>
+  </div>
+</div>
+
+<!-- Shop QR mode: one poster for the whole shop, so the customer says which
+     card they are holding before they see the menu. -->
+<div id="card-view" style="display:none">
+  <div class="c-success">
+    <div class="icon">🎴</div>
+    <h2>What number is on your card?</h2>
+    <p>It is on the card our staff gave you at the counter.</p>
+    <input type="number" id="card-number-input" inputmode="numeric" min="1" aria-label="Card number" style="margin:14px 0 8px">
+    <div id="card-number-err" class="err" role="alert"></div>
+    <button class="btn primary-lg" data-action="set-card-number">Continue</button>
   </div>
 </div>
 

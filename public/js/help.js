@@ -25,7 +25,7 @@ const WALKTHROUGHS = {
     title: 'Taking an order',
     steps: [
       {
-        caption: 'Tap Tables, then the table the customer is sitting at.',
+        caption: 'Tap Cards, then the number on the customer’s card.',
         cells: [
           { t: 'T1', cls: 'tile free' }, { t: 'T2', cls: 'tile free' },
           { t: 'T3', cls: 'tile free' }, { t: 'T4', cls: 'tile free' },
@@ -72,7 +72,7 @@ const WALKTHROUGHS = {
         hit: -1,
       },
       {
-        caption: 'They want a roti. Open the same table again — do not start a new one.',
+        caption: 'They want a roti. Open the same card again — do not start a new one.',
         cells: [
           { t: 'T1 · Ready to pay', cls: 'tile busy' }, { t: 'T2', cls: 'tile free' },
           { t: 'T3', cls: 'tile free' }, { t: 'T4', cls: 'tile free' },
@@ -147,7 +147,7 @@ const WALKTHROUGHS = {
     title: 'Taking payment',
     steps: [
       {
-        caption: 'Open the table, then tap Take Payment at the bottom of the bill.',
+        caption: 'Open the card, then tap Take Payment at the bottom of the bill.',
         cells: [
           { t: 'Total RM 21.00', cls: 'total' },
           { t: '💵 Take Payment', cls: 'cta ok' },
@@ -214,7 +214,7 @@ const WALKTHROUGHS = {
     title: 'How Speak to Order works',
     steps: [
       {
-        caption: 'The customer scans the table QR and taps the microphone.',
+        caption: 'The customer scans the QR on their card and taps the microphone.',
         cells: [{ t: '🎙 Speak to Order', cls: 'cta' }],
         hit: 0,
       },
@@ -257,11 +257,11 @@ const TOPICS = [
       { h: 'Every shift', steps: [
         'Log in with your name and PIN.',
         'Tap 🕐 Shift → Open Shift, and type the cash already in the drawer.',
-        'Work the floor from 🍽 Tables.',
+        'Work the floor from 🍽 Cards.',
         'At the end: 🕐 Shift → Close Shift, count the drawer, confirm.',
       ] },
       { h: 'The main flow', steps: [
-        'Table → dish → 🍳 Send to Kitchen.',
+        'Card → dish → 🍳 Send to Kitchen.',
         'Kitchen cooks it and taps ✅ Ready.',
         'You serve it and tap 🍽 Served.',
         'Customer leaves → 💵 Take Payment.',
@@ -271,10 +271,10 @@ const TOPICS = [
   },
   {
     id: 'take-order', icon: '🍽', title: 'Taking an order', time: '1 min', roles: ['admin', 'staff'],
-    blurb: 'Table → food → kitchen.', walkthrough: 'takeOrder',
+    blurb: 'Card → food → kitchen.', walkthrough: 'takeOrder',
     body: [
       { steps: [
-        'Tap 🍽 Tables, then the customer’s table.',
+        'Tap 🍽 Cards, then the number on the customer’s card.',
         'Tap a category chip along the top, or type in the search box.',
         'Tap a dish — one tap adds it, no dialog.',
         'Tap 🍳 Send N new items when the order is complete.',
@@ -292,9 +292,9 @@ const TOPICS = [
     id: 'add-more', icon: '➕', title: 'Adding more items later', time: '1 min', roles: ['admin', 'staff'],
     blurb: 'One bill, many rounds. The thing worth reading twice.', walkthrough: 'addMore',
     body: [
-      { p: 'A table has one bill but can send food to the kitchen many times. Each send is a round.' },
+      { p: 'A card has one bill but can send food to the kitchen many times. Each send is a round.' },
       { steps: [
-        'Open the same table again. Never start a second one.',
+        'Open the same card again. Never start a second one.',
         'Tap the extra dishes. They appear under NEW — not sent yet.',
         'Tap 🍳 Send N new items.',
       ] },
@@ -319,7 +319,7 @@ const TOPICS = [
       ] },
       { p: 'Each ticket shows only its next action, so there is nothing to get wrong. The minutes on the ticket go amber after 5 and red after 10.' },
       { h: 'Other things on a ticket', list: [
-        'ADD-ON · ROUND 2 — extra food for a table that has already been served once.',
+        'ADD-ON · ROUND 2 — extra food for a card that has already been served once.',
         'QR — the customer ordered it themselves from their phone.',
         'A red flash and a struck-through line — a waiter voided that item. Stop making it.',
         '↶ Undo — appears for a few seconds after you advance a ticket by mistake.',
@@ -332,7 +332,7 @@ const TOPICS = [
     blurb: 'Cash, card, DuitNow, split.', walkthrough: 'payment',
     body: [
       { steps: [
-        'Open the table and tap 💵 Take Payment.',
+        'Open the card and tap 💵 Take Payment. If the card is on a combined bill, this takes payment for every card on it at once.',
         'For cash, type what they handed you — the change is worked out and shown.',
         'Tap 💵 Cash, 💳 Card or 📱 DuitNow / eWallet.',
       ] },
@@ -349,7 +349,7 @@ const TOPICS = [
     blurb: 'Void a line the kitchen already has.',
     body: [
       { steps: [
-        'Open the table.',
+        'Open the card.',
         'Find the line under ✅ Already sent and tap ❌ Void.',
         'Type why. This is recorded against your name.',
       ] },
@@ -372,26 +372,26 @@ const TOPICS = [
   },
   {
     id: 'takeaway', icon: '🥡', title: 'Takeaway', time: '30 sec', roles: ['admin', 'staff'],
-    blurb: 'An order with no table.',
+    blurb: 'An order with no card.',
     body: [
       { steps: [
-        'On 🍽 Tables, tap ➕ New Takeaway.',
+        'On 🍽 Cards, tap ➕ New Takeaway.',
         'Add the food and send it as usual.',
         'It appears in the Takeaway section with its own number, like Takeaway #128.',
       ] },
-      { p: 'Any number of takeaway orders can be open at once, and they never block a table.' },
+      { p: 'Any number of takeaway orders can be open at once, and they never use a card.' },
     ],
   },
   {
-    id: 'move-table', icon: '↔', title: 'Moving a table', time: '30 sec', roles: ['admin', 'staff'],
+    id: 'move-table', icon: '↔', title: 'Swapping a card', time: '30 sec', roles: ['admin', 'staff'],
     blurb: 'The customer moved. The food keeps cooking.',
     body: [
       { steps: [
-        'Open the table they are on now — the one they started at.',
+        'Open the card they started on.',
         'Tap ↔ Move at the top.',
-        'Pick the free table they moved to.',
+        'Pick the free card they have now.',
       ] },
-      { p: 'The whole bill moves. Nothing is re-entered, the kitchen keeps cooking, and the ticket updates to the new table.' },
+      { p: 'The whole bill moves. Nothing is re-entered, the kitchen keeps cooking, and the ticket updates to the new card. To let two cards pay together instead, open one and tap 🔗 Combine bills.' },
     ],
   },
   {
@@ -414,13 +414,13 @@ const TOPICS = [
   },
   {
     id: 'qr', icon: '📱', title: 'Customers ordering by QR', time: '1 min', roles: ['admin', 'staff'],
-    blurb: 'The sticker on the table.',
+    blurb: 'The QR on the card, or one shop poster.',
     body: [
-      { p: 'A customer scans the QR on their table, sees the live menu, and sends the order straight to the kitchen. It lands on the same bill you would have used, marked QR.' },
+      { p: 'A customer scans the QR on their card (or the shop poster, then types their card number), sees the live menu, and sends the order to the kitchen. It lands on that card’s bill, marked QR. With the shop poster, every order waits for staff to accept it.' },
       { h: 'Setting it up', steps: [
-        '⚙ Admin → 🍽 Tables & QR.',
+        '⚙ Admin → 🎴 Cards & QR.',
         'Check the address under the QR codes is one a phone can actually reach — not localhost.',
-        'Print a table’s QR with the Print button on its card.',
+        'Print the card faces (or the shop poster) with the Print button.',
       ] },
       { h: 'Holding orders for a staff member', list: [
         'QR handling → Require staff approval.',
@@ -488,7 +488,7 @@ const TOPICS = [
         'They choose their own PIN the first time they log in.',
       ] },
       { h: 'The three roles', list: [
-        'Staff — the floor: tables, orders, kitchen, payments.',
+        'Staff — the floor: cards, orders, kitchen, payments.',
         'Kitchen — the kitchen screen only.',
         'Admin — everything, including the menu, staff and the takings.',
       ] },
@@ -518,7 +518,7 @@ const TOPICS = [
       { h: 'The numbers along the top', list: [
         'Today sales — settled takings so far, against all of yesterday.',
         'Orders and Average order — how many bills and how big.',
-        'Open tables and Ready to pay — the floor right now. Ready to pay means go and collect.',
+        'Cards in use and Ready to pay — the floor right now. Ready to pay means go and collect.',
         'Late in kitchen — tickets over ten minutes old.',
       ] },
       { p: 'Below that: sales by hour with the busiest hour marked, what sold most, how people paid, and what the kitchen is doing.' },
@@ -540,13 +540,13 @@ const TOPICS = [
         'Check power, paper and the network cable before blaming the POS.',
       ] },
       { h: 'A customer says the QR does not work', list: [
-        '⚙ Admin → 🍽 Tables & QR shows a warning if the printed address cannot be reached from a phone.',
+        '⚙ Admin → 🎴 Cards & QR shows a warning if the printed address cannot be reached from a phone.',
         'Check Accept QR orders is on.',
         'Ask them to try mobile data instead of the restaurant wifi.',
         'Meanwhile, just take the order yourself.',
       ] },
       { h: 'Two of the same order', list: [
-        'Open the table and look at Order timeline — it shows every round and who sent it.',
+        'Open the card and look at Order timeline — it shows every round and who sent it.',
         'Void the duplicate lines with a reason. The kitchen is told at once.',
       ] },
     ],
@@ -556,12 +556,12 @@ const TOPICS = [
 const FAQS = [
   {
     q: 'The customer wants more food after the first lot was already served. What do I do?',
-    a: 'Open the same table again and add the new food. Tap Send. It goes to the kitchen as a new round, the earlier food stays served, and it is all still one bill.',
+    a: 'Open the same card again and add the new food. Tap Send. It goes to the kitchen as a new round, the earlier food stays served, and it is all still one bill.',
     topic: 'add-more',
   },
   {
     q: 'The kitchen says they never got an order.',
-    a: 'Open the table and check Order timeline. If the round is there, the kitchen screen has it — the printer may have failed, which Admin → Printers → Print jobs will show and can retry. If the round is not there, it was never sent: the items are still sitting under NEW on the bill.',
+    a: 'Open the card and check Order timeline. If the round is there, the kitchen screen has it — the printer may have failed, which Admin → Printers → Print jobs will show and can retry. If the round is not there, it was never sent: the items are still sitting under NEW on the bill.',
     topic: 'printing',
   },
   {
@@ -571,12 +571,12 @@ const FAQS = [
   },
   {
     q: 'I rang up the wrong thing and the kitchen already has it.',
-    a: 'Open the table, find the line under Already sent, tap Void and say why. The kitchen ticket flashes red and strikes it through so nobody keeps cooking.',
+    a: 'Open the card, find the line under Already sent, tap Void and say why. The kitchen ticket flashes red and strikes it through so nobody keeps cooking.',
     topic: 'void',
   },
   {
-    q: 'The customer moved to another table.',
-    a: 'Open the table they started at, tap Move at the top, and pick the free table. The whole bill moves and the kitchen keeps cooking.',
+    q: 'The customer lost or swapped their card.',
+    a: 'Open the card they started on, tap Move at the top, and pick the card they have now. The whole bill moves and the kitchen keeps cooking.',
     topic: 'move-table',
   },
   {
