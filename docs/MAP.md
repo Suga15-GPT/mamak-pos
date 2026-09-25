@@ -411,3 +411,15 @@ serve/accept `qr_mode` instead of `qr_ordering_enabled` · `/api/summary`'s
 | `public/js/pos.js` | held lines marked "⏳ Awaiting approval", off every total; combined-bill pay screen collects a cash part plus the rest by card/e-wallet and submits once; no part-payment row for a combined bill |
 | `public/js/admin.js` | "New QR" on each card face and on the shop poster, with a confirm |
 | `test/unit/card_review.test.js` | **New.** 16 regression tests, one or more per review finding; the races fire concurrently, several rounds each |
+
+### Card mode — PR #16 re-check fixes
+
+| File | Contains |
+|---|---|
+| `src/lib/billlock.js` | **New.** `lockBills(client)` — `pg_advisory_xact_lock` on one fixed key, taken first by every operation that changes group membership, settles a bill or changes a bill's total |
+| `src/services/bill_groups.js` | `lockGroupSet`/`lockGroup` take the bill lock, then read the group closure, then lock it (orders ascending, groups ascending). `combine` refuses a card that already has a payment (409). `leaveGroupIfClosedTx(client, …)` runs inside the caller's transaction and skips a card with a held round. Too little cash names the cash given and the amount due |
+| `src/services/billing.js` | `addPayment`, `addDiscount`, `removeDiscount`, `addRefund` take the bill lock and re-read under it; `addDiscount` is one transaction (409 once closed) and refuses a comp while a round is held; `settleIfMatchesPaid(client, …)` never settles an order with a held round |
+| `src/routes/orders.js` | The void route is one transaction under the bill lock (409 once closed); cancel and move take the bill lock |
+| `src/routes/kitchen.js` | Approve/reject take the bill lock; a reject that cancels a grouped card leaves its group in the same transaction |
+| `src/services/orders.js` | `appendSend` takes the bill lock before the order lock |
+| `test/unit/card_recheck.test.js` | **New.** 12 regression tests: the three deadlock scenarios, held-round survival (void, discount, comp, grouped), void/discount vs payment races, 40 concurrent runs each |

@@ -183,9 +183,16 @@ mamak; a table number never reliably named a bill.
   combined bill has a payment on it and can't be split apart."). Under the
   rule above that can only be a payment a card took on its own before it was
   combined. A group left with one card dissolves.
-- **One lock order**: every order involved by ascending id, then every group
-  by ascending id — combine, un-combine, pay and leave-on-close all take locks
-  this way, so they can't deadlock.
+- **The bill lock** (see "Payments and locking") is taken first by combine,
+  un-combine, dissolve, group pay and leave-on-close, which then read the
+  group's membership and lock its orders by ascending id and its groups by
+  ascending id. Per-path lock ordering alone was not enough: discovering a
+  group's other members while already holding row locks deadlocked.
+- **A card with a payment of its own can't be combined** (409 "This card has a
+  payment on it — pay or refund it before combining.") — combined bills are
+  paid all at once.
+- Too little cash on a combined bill says "Cash given RM x is less than the RM
+  y still due".
 - A grouped card is paid and split with its group: its own pay and split
   routes return 409. Per-card split keeps working for ungrouped cards.
 - A group prints one receipt: lines under "Card N", the money summed, one total.
@@ -213,10 +220,24 @@ mamak; a table number never reliably named a bill.
 
 ### Payments and locking
 
-- Taking a payment, adding a round (staff, QR or voice) and approving a round
-  all hold the order's row lock, and appendSend re-checks "still open, nothing
-  paid" *after* taking it and recomputes the bill inside the same transaction.
-  Items can no longer land on a bill that was paid in the same instant.
+- **One bill lock, taken first.** Every operation that can change which cards
+  share a bill, settle a bill, or change a bill's total takes one
+  transaction-scoped advisory lock with a single fixed key
+  (`pg_advisory_xact_lock`, `src/lib/billlock.js`) as its **first** lock:
+  combine, un-combine, dissolve, group pay, single-card pay, adding a round
+  (staff, QR, voice), void, discount/comp and its removal, refund, QR
+  approve/reject, move, cancel and leave-on-close. Only then does it lock
+  order rows, ascending id. They are serialised against each other, so they
+  cannot deadlock by construction, and each one reads the order *after*
+  locking it.
+- So **every** one of those is race-safe against a payment, not only adding
+  items: a void, discount or approval that loses the race to a payment finds
+  the bill closed and is refused (409); one that wins is included in the total
+  the payment then reads. Each recomputes the bill inside its own transaction.
+- **An order with any round awaiting approval is never auto-settled or
+  auto-closed** (a void or discount that takes the accepted lines to zero
+  leaves it open), and a grouped card with a held round never leaves its group
+  on its own. A comp is refused while a round is held, like payment.
 - A refund on a still-open bill only reduces what has been paid; only a paid
   (closed) order whose refunds equal its payments becomes `refunded`.
 
