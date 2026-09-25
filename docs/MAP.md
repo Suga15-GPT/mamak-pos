@@ -435,3 +435,14 @@ serve/accept `qr_mode` instead of `qr_ordering_enabled` · `/api/summary`'s
 | `src/services/shifts.js` | `close` and `addMovement` are transactions under the bill lock; `expectedCashCents` takes an optional client |
 | `src/services/bill_groups.js` | combine refuses only a card with net paid (payments − refunds) > 0 |
 | `test/unit/card_recheck2.test.js` | **New.** K1–K3 status-tap vs payment races, S1 shift close vs cash payment, X1 cancel vs kitchen tap (40 concurrent runs each), the trigger, and combining a fully refunded card |
+
+### Card mode — follow-ups
+
+| File | Contains |
+|---|---|
+| `migrations/017_closed_orders_frozen.sql` | **New.** Extends `orders_closed_stays_closed` (now `BEFORE UPDATE` on every column): a paid/cancelled/refunded order also can't change `card_id`, `table_id`, `order_type` or its money columns; paid → refunded still allowed |
+| `src/routes/orders.js` | Move re-reads status under the bill lock (409 once closed) and writes its audit row in the same transaction |
+| `src/services/billing.js` | `addRefund` reads the open shift under the bill lock; `hasPayments` means net paid > 0 |
+| `src/services/orders.js` / `src/services/bill_groups.js` | appendSend and un-combine check net paid, not any payment row |
+| `src/routes/cards.js` | `validIds`: a non-numeric bill-group or order id is 404 |
+| `test/unit/card_followups.test.js` | **New.** R1, M1, M2 races (40 concurrent runs each), the 017 trigger, net-paid add/un-combine, non-numeric ids |

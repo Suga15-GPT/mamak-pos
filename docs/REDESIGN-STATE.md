@@ -246,6 +246,9 @@ mamak; a table number never reliably named a bill.
   once wrote "served" over "paid" (PR #16 re-check 2, K). A ticket can still
   be advanced after its order is paid (food is often served after paying);
   only the order's status is left alone.
+- **Move re-checks under the lock** and refuses (409) a bill that closed while
+  it waited; a refund reads the open shift under the lock. "Has a payment" for
+  combine, un-combine and adding items always means paid net of refunds > 0.
 - **An order with any round awaiting approval is never auto-settled or
   auto-closed** (a void or discount that takes the accepted lines to zero
   leaves it open), and a grouped card with a held round never leaves its group
@@ -257,7 +260,11 @@ mamak; a table number never reliably named a bill.
 
 None in V2. Speak to Order needed no schema change — it produces the same rows
 the tap flow produces. Card mode added `014_card_mode.sql` and
-`015_closed_orders_stay_closed.sql` (the closed-status trigger).
+`015_closed_orders_stay_closed.sql` (the closed-status trigger). The
+follow-ups added `017_closed_orders_frozen.sql` (016 is reserved for the
+setup-wizard branch): the same trigger now also freezes a closed order's
+`card_id`, `table_id`, `order_type` and money columns; paid → refunded still
+works.
 
 ## Files materially changed in V2
 
