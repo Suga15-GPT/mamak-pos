@@ -395,3 +395,73 @@ serve/accept `qr_mode` instead of `qr_ordering_enabled` · `/api/summary`'s
 | `test/unit/cards.test.js` | 419 | **New.** Concurrent opens on one card, a card freeing on payment, lowering the count below an in-use card, combine → add → group cash payment (rows sum to the cash, rounding once, per-order tax), partial payment blocks un-combine, closed/takeaway can't combine, group merge, shop-mode forced approval, QR off 404, and a table order opened *before* migration 014 staying payable after it |
 | `test/e2e/journeys.spec.js` | 499 | Journeys open cards instead of tables; new journey: two cards, combine, pay once |
 
+
+## Feature modules and first-run setup
+
+Ten optional modules a shop can switch off, and the wizard that asks a new shop
+which it uses. Read the "Feature modules and first-run setup" section of
+`docs/REDESIGN-STATE.md` for the rules; this is where they live.
+
+**Schema (migration 015).** Settings rows only: `feature_kitchen`,
+`feature_stations`, `feature_printing`, `feature_shifts`, `feature_discounts`,
+`feature_refunds`, `feature_split_combine`, `feature_qr`, `feature_voice`,
+`feature_dashboard` (`'1'|'0'`; a **missing row reads as on**) and
+`setup_completed` (`'1'` = the wizard is done). 015 writes all eleven as `'1'`
+only when `orders` already has a row, so an upgraded shop keeps everything and
+never sees the wizard.
+
+**API.** Added: `GET /api/features` (any role: `{features:{kitchen:true,…},
+setup_completed}`) · `PATCH /api/features` (admin; `{features:{…}}`, any
+subset; returns `{features, switched_off}` — the children turned off with their
+parent; 409 turning off `split_combine` under an open bill group or `qr` under
+rounds awaiting approval; audits `features.update`) · `POST /api/setup` (admin;
+the wizard's Finish: `restaurant_name`, `restaurant_address`, `sst_number`,
+`tax_rate_bp`, `svc_rate_bp`, `features`, `card_count`, `qr_mode`
+`per_card|shop`; sets `setup_completed`; audits `setup.complete`).
+Changed: every route of a switched-off module returns
+`404 {error:'feature_disabled'}` —
+kitchen: `/api/kitchen/stations|tickets`, `PATCH /api/kitchen/tickets/:id`, and
+`PATCH /api/orders/:id` for any status but `cancelled` ·
+stations: `GET /api/admin/stations` ·
+printing: `/api/admin/printers*`, `/api/admin/print-jobs*`,
+`POST /api/orders/:id/reprint-receipt`, `POST /api/shift/:id/print-report` ·
+shifts: every `/api/shift/*` ·
+discounts: `POST|DELETE /api/orders/:id/discounts…` ·
+refunds: `POST /api/orders/:id/refunds` (`POST /api/discounts/authorize` stays
+while either discounts or refunds is on) ·
+split_combine: `GET /api/orders/:id/split`, every `/api/bill-groups*` ·
+qr: `GET /api/t/:token`, `POST /api/public/orders`, `GET /api/public/sends/:ref`,
+`/api/kitchen/pending`, `POST /api/kitchen/sends/:id/approve|reject`,
+`/api/admin/cards/:id/qr.png`, `/api/admin/qr-shop(.png)`, `/api/admin/qr-health` ·
+voice: `POST /api/public/voice/interpret` (needs qr too) ·
+dashboard: `GET /api/dashboard` (`/api/summary` stays — it feeds the simple
+"Today's sales" card and the till's favourites). `GET /api/t/:token` reports
+`voice.enabled` false when the voice module is off.
+
+| File | Lines | Contains |
+|---|---|---|
+| `migrations/015_features.sql` | 20 | **New.** The upgrade rows above, only where orders exist |
+| `src/services/features.js` | 120 | **New.** `MODULES`, `PARENT` (`stations→kitchen`, `voice→qr`), `PRESETS`; an in-memory cache of the flags (`state`/`all`/`isOn`, one shared in-flight load, `reload()` after every write); `save(client, changes)` merges, applies the parent rule, refuses the two money-stranding switch-offs, writes all ten rows in the caller's transaction; `requireFeature(...names)` middleware (404 `feature_disabled`); `moneyShift(client, refusal)` — the open shift a payment/refund/order belongs to, or NULL with no check when shifts are off |
+| `src/routes/features.js` | 93 | **New.** `GET|PATCH /api/features`, `POST /api/setup` (card count first through `cards.setCardCount`'s own guard, then settings + flags + `setup_completed` in one transaction); publishes `features.updated` |
+| `src/services/rounds.js` | — | `openTickets` inserts tickets already `served` (with `served_at`) when the kitchen is off; the station board skips a served ticket that never reached `ready` |
+| `src/services/orders.js` | — | `atStations()` snapshots every line to `kitchen` when stations are off; `insertOrder` re-derives status after opening tickets (a no-op with the kitchen on) and takes its shift from `features.moneyShift` |
+| `src/services/billing.js` | — | `addPayment`, `addRefund`, `settleIfMatchesPaid` take their shift from `features.moneyShift` (NULL, no check, with shifts off) |
+| `src/services/bill_groups.js` | — | `payGroup` likewise |
+| `src/services/printing.js` | — | `enqueueForRole` queues nothing with printing off; `enqueueRoundChits` and void slips queue nothing with the kitchen off |
+| `src/routes/*.js` | — | `requireFeature(...)` on the routes listed above; `kitchen.js`'s station list is just `kitchen` with stations off |
+| `public/js/features.js` | 45 | **New.** Client copy of the flags from `GET /api/features`; `on(name)`; `applyFlags` toggles `feat-off-<name>` on `<body>`; `fill()` for `{n}` placeholders |
+| `public/js/setup.js` | 298 | **New.** The wizard (shop → preset → modules → cards → QR style, only when QR is on → review; `mandatory` hides Cancel) and Admin → Features & setup (`renderFeaturesSection`, one `PATCH` per switch). One `moduleRows()` renders both; a "switched off too" note appears under the switch that caused it |
+| `public/js/main.js` | — | `loadApp()` loads the flags first and, for an admin with `setup_completed` false, opens the wizard instead of the app (`startApp` runs on Finish); reloads the flags on a `features.updated` stream event |
+| `public/js/nav.js` | — | Tabs carry an optional `feature` predicate: Shift needs shifts, Kitchen needs kitchen **or** qr (it hosts the approval queue); repaints on `features-changed` |
+| `public/js/kitchen.js` | — | With the kitchen off the tab is only the QR queue; with QR off no pending fetch |
+| `public/js/dashboard.js` | — | Dashboard off: one "Today's sales" KPI from `/api/summary` |
+| `public/js/admin.js` | — | New `features` section; printers and QR fetches skipped when those modules are off |
+| `public/js/pos.js` | — | "Send order" instead of "Send to Kitchen" with the kitchen off; the reprint button carries `data-feature="printing"` |
+| `public/js/i18n.js` | 207 | Every wizard, module and Features-screen string in English and Bahasa Malaysia (`features.*`, `module.*`, `setup.*`) |
+| `public/js/help.js` | 826 | New topic `features` — "Choosing what your POS does" (admin) |
+| `public/index.html` | 755 | `data-feature` on module-owned controls, the `#sec-features` admin section, `#setup-modal` |
+| `public/style.css` | 1437 | `body.feat-off-<name> [data-feature="<name>"]{display:none!important}` for all ten; wizard (`.setup-*`) and `.feature-row` styles on the existing tokens |
+| `public/sw.js` | — | Cache `v5`; precaches `features.js` and `setup.js` |
+| `public/customer/customer.js` | — | `404 feature_disabled` shows "Please order at the counter", same as QR mode off |
+| `test/unit/features.test.js` | 383 | **New.** Every module's routes 404 when off and not when on (each module off in turn, children following); kitchen off → served at once, add-on too, no chit, not on the board after re-enabling; stations off → one station; shifts off → payment and refund with `shift_id` NULL, shifts on → refused, nothing back-filled; parent/child rules; discount survives off→on; printing off queues nothing; split_combine refused under an open group; fresh DB → wizard + all on, then a Lite setup trades; upgrade with orders → all on, no wizard; upgrade without → nothing written |
+| `test/e2e/journeys.spec.js` | 610 | New first journey: wizard as a small stall (name required, child switched off with its parent and the owner told, no QR step), then an order paid with no Shift and no Kitchen tab. A `beforeEach` puts every other journey on Advanced with 50 cards |

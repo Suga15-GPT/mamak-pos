@@ -185,10 +185,56 @@ mamak; a table number never reliably named a bill.
   `qr_ordering_enabled`. The old 503 "paused" message is gone.
 - Voice changed only in how its token resolves to a card.
 
+## Feature modules and first-run setup
+
+A small stall runs a plain order-and-pay till; a full restaurant switches
+everything on. Built on card mode.
+
+- **Core, never switchable:** menu, cards, taking orders, cash/card/eWallet
+  payment, tax and service charge, staff login and PINs, the audit log, the
+  offline queue, Help, every money guard.
+- **Ten optional modules**, each a `settings` row `feature_<name>` = `'1'|'0'`:
+  `kitchen`, `stations` (needs kitchen), `printing`, `shifts`, `discounts`,
+  `refunds`, `split_combine`, `qr` (`qr_mode` still picks per_card/shop),
+  `voice` (needs qr), `dashboard`.
+- **A missing row means on.** Every existing test and shop behaves exactly as
+  before; the wizard writes all ten explicitly. Migration 015 writes `'1'` for
+  all ten plus `setup_completed = '1'` only when the database already has
+  orders; a fresh database gets neither, and the missing `setup_completed`
+  sends the first admin into the wizard.
+- **A child is only on while its parent is.** Parent off → child off (the
+  response names it in `switched_off`, and the UI says so under the switch).
+  Parent on → child left as it was.
+- **"Off" is enforced on the server.** `requireFeature()` returns
+  `404 {error:'feature_disabled'}` on every route a module owns, public QR and
+  voice included. Kitchen off: `rounds.openTickets` creates tickets already
+  `served` inside the caller's transaction, so the derived `orders.status` never
+  sits at `sent`; no chit or void slip is queued; a ticket that went straight to
+  served (no `ready_at`) never shows on the board if the kitchen comes back.
+  Stations off: every line is snapshotted to `kitchen` (the item keeps its own
+  `station_code`). Shifts off: `features.moneyShift()` skips the open-shift
+  check and payments, refunds, group payments, orders and `closed_shift_id` all
+  record NULL; switching shifts back on affects only later rows, nothing is
+  back-filled. Printing off: `enqueueForRole` queues nothing, not even a failed
+  job.
+- **Nothing is deleted or rewritten** when a module turns off. Two switches are
+  refused (409) while they would strand money: `split_combine` under an open
+  bill group, and `qr` under rounds still awaiting approval.
+- **Flags are cached in memory** (`services/features.js`) and reloaded after
+  every write through that service; a `features.updated` stream event makes
+  every open till reload its copy. A row changed by hand in SQL is not seen
+  until the next write or restart.
+- **UI hiding is declarative**: `data-feature="<name>"` on anything a module
+  owns, `feat-off-<name>` on `<body>`. The Kitchen tab stays while either the
+  kitchen or QR is on (it hosts the QR approval queue).
+- **Presets are wizard shortcuts only** — Lite: none; Medium: kitchen, printing,
+  shifts, discounts, split_combine; Advanced: all.
+
 ## Migrations added
 
 None in V2. Speak to Order needed no schema change — it produces the same rows
-the tap flow produces. Card mode added `014_card_mode.sql`.
+the tap flow produces. Card mode added `014_card_mode.sql`. Feature modules
+added `015_features.sql` (settings rows only).
 
 ## Files materially changed in V2
 
@@ -219,10 +265,20 @@ the tap flow produces. Card mode added `014_card_mode.sql`.
   corrections properly and replaces the draft outright.
 - Off-device backup is still prepared, not configured (`BACKUP_REMOTE_TARGET`).
 - Stations are still `kitchen` and `drinks` with no management UI.
+- **Help topics are filtered by role, not by module.** A shop with shifts off
+  still sees the "Opening and closing the shift" topic.
+- **Switching the kitchen off mid-service** leaves tickets already on the board
+  where they are (nothing is altered); those orders read as sent/preparing
+  until paid. Payment is not blocked by it.
 - `npm audit` reports three moderate advisories in express/qs. They predate this
   programme and were not touched by it.
 
 ## Latest test state
+
+After feature modules: `npm test` 131/131 (11 new in `test/unit/features.test.js`).
+Playwright 18/18: the first-run journey (wizard as a small stall, then order
+and pay with no shift and no kitchen) plus the 17 existing journeys, which now
+start from Advanced via `POST /api/setup` in a `beforeEach`.
 
 After card mode: `npm test` 120/120 (8 new in `test/unit/cards.test.js`).
 Playwright 17/17 (12 journeys, including "two cards, combine, pay once", + 5
