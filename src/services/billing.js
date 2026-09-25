@@ -336,16 +336,17 @@ async function addRefund(orderId, { paymentId, amountCents, reason, approvedBy, 
   const cleanReason = String(reason || '').trim();
   if (cleanReason.length < 3 || cleanReason.length > 200) throw AppError('reason must be 3-200 chars', 400);
 
-  // Same control as taking a payment: the shift a cash refund draws down (or a
-  // card/eWallet refund is attributed to) must be the open one.
-  const openShift = await pool.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
-  const shiftId = openShift.rows[0]?.id;
-  if (!shiftId) throw AppError('no shift is open — open a shift before issuing a refund', 400);
-
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await lockBills(client);
+    // Same control as taking a payment: the shift a cash refund draws down (or a
+    // card/eWallet refund is attributed to) must be the open one — read under
+    // the bill lock, which shift close also takes, so a refund can't land in a
+    // shift whose expected cash has just been frozen without it.
+    const openShift = await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
+    const shiftId = openShift.rows[0]?.id;
+    if (!shiftId) throw AppError('no shift is open — open a shift before issuing a refund', 400);
     await client.query('SELECT id FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
     const pay = await client.query('SELECT * FROM payments WHERE id = $1 AND order_id = $2 FOR UPDATE', [paymentId, orderId]);
     if (!pay.rows[0]) throw AppError('payment not found', 404);
