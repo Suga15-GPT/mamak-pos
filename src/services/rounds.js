@@ -213,11 +213,13 @@ async function listStationTickets(stationCode) {
             pu.name AS preparing_by_name, ru.name AS ready_by_name, su.name AS served_by_name,
             s.id AS send_id, s.seq_no, s.sent_at, s.source, s.approval_state,
             u.name AS sent_by_name,
-            o.id AS order_id, o.order_type, o.status AS order_status, tb.name AS table_name
+            o.id AS order_id, o.order_type, o.status AS order_status,
+            COALESCE('Card ' || cd.number, tb.name) AS table_name
        FROM order_send_tickets t
        JOIN order_sends s ON s.id = t.send_id
        JOIN orders o ON o.id = s.order_id
        LEFT JOIN tables tb ON tb.id = o.table_id
+       LEFT JOIN cards cd ON cd.id = o.card_id
        LEFT JOIN users u ON u.id = s.sent_by
        LEFT JOIN users pu ON pu.id = t.preparing_by
        LEFT JOIN users ru ON ru.id = t.ready_by
@@ -269,10 +271,12 @@ async function listStationTickets(stationCode) {
 /* Rounds still waiting for a staff decision, for the QR approval queue. */
 async function listPendingSends() {
   const r = await pool.query(
-    `SELECT s.id, s.seq_no, s.sent_at, s.source, s.order_id, o.order_type, tb.name AS table_name
+    `SELECT s.id, s.seq_no, s.sent_at, s.source, s.order_id, o.order_type,
+            COALESCE('Card ' || cd.number, tb.name) AS table_name
        FROM order_sends s
        JOIN orders o ON o.id = s.order_id
        LEFT JOIN tables tb ON tb.id = o.table_id
+       LEFT JOIN cards cd ON cd.id = o.card_id
       WHERE s.approval_state = 'pending' AND o.status NOT IN ('paid','cancelled','refunded')
       ORDER BY s.sent_at ASC LIMIT 100`);
   if (!r.rows.length) return [];

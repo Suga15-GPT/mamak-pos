@@ -67,19 +67,19 @@ async function setup(base) {
     method: 'POST', headers: auth(staffToken), body: JSON.stringify({ current_pin: '6284', new_pin: '4816' }),
   });
   const menu = await json(await fetch(`${base}/api/menu`, { headers: adminAuth }));
-  const tables = await json(await fetch(`${base}/api/tables`, { headers: adminAuth }));
+  const cards = await json(await fetch(`${base}/api/cards`, { headers: adminAuth }));
   return {
     adminAuth, staffAuth: auth(staffToken), staffId,
-    tableId: tables[0].id, tableId2: tables[1].id, tableId3: tables[2].id,
+    cardId: cards[0].id, cardId2: cards[1].id, cardId3: cards[2].id,
     itemA: menu.items.find(i => i.name === 'Roti Canai'),
     itemB: menu.items.find(i => i.name === 'Teh Tarik'),
   };
 }
 
-async function createOrder(base, s, tableId, itemId, qty = 1) {
+async function createOrder(base, s, cardId, itemId, qty = 1) {
   const r = await fetch(`${base}/api/orders`, {
     method: 'POST', headers: s.staffAuth,
-    body: JSON.stringify({ table_id: tableId, items: [{ item_id: itemId, qty }] }),
+    body: JSON.stringify({ card_id: cardId, items: [{ item_id: itemId, qty }] }),
   });
   return { status: r.status, body: await json(r) };
 }
@@ -106,7 +106,7 @@ test('two partial payments settling exactly -> order becomes paid, amountDue 0',
   await withDb(async db => {
     const base = await startApp();
     const s = await setup(base);
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 3); // subtotal 600, tax 600bp -> 36, total 636
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id, 3); // subtotal 600, tax 600bp -> 36, total 636
 
     const total = (await db.query('SELECT total_cents FROM orders WHERE id = $1', [orderId])).rows[0].total_cents;
     const half1 = Math.floor(total / 2);
@@ -139,7 +139,7 @@ test('payment exceeding due by cash -> change due correct; by card -> 400', asyn
     const s = await setup(base);
 
     // Cash: tender RM20 against a RM6.36 (unrounded) / RM6.35 (cash-rounded) due.
-    const { body: { id: cashOrder } } = await createOrder(base, s, s.tableId, s.itemA.id, 3);
+    const { body: { id: cashOrder } } = await createOrder(base, s, s.cardId, s.itemA.id, 3);
     const rCash = await fetch(`${base}/api/orders/${cashOrder}/pay`, {
       method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Cash', tendered: 20 }),
     });
@@ -151,7 +151,7 @@ test('payment exceeding due by cash -> change due correct; by card -> 400', asyn
 
     // Card: requesting to apply more than the due amount is rejected outright — a
     // card terminal can't "overpay" the way handing over cash notes can.
-    const { body: { id: cardOrder } } = await createOrder(base, s, s.tableId2, s.itemA.id, 1); // total 2.12
+    const { body: { id: cardOrder } } = await createOrder(base, s, s.cardId2, s.itemA.id, 1); // total 2.12
     const rCard = await fetch(`${base}/api/orders/${cardOrder}/pay`, {
       method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card', amount: 10 }),
     });
@@ -163,7 +163,7 @@ test('adding a line to an order with a payment -> 409', async () => {
   await withDb(async () => {
     const base = await startApp();
     const s = await setup(base);
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id, 1);
 
     const partial = await fetch(`${base}/api/orders/${orderId}/pay`, {
       method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card', amount: 1 }),
@@ -182,7 +182,7 @@ test('percent discount 10% on RM 20.00 -> 200 cents off; tax still computed per 
   await withDb(async db => {
     const base = await startApp();
     const s = await setup(base);
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 10); // subtotal 2000
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id, 10); // subtotal 2000
 
     const r = await fetch(`${base}/api/orders/${orderId}/discounts`, {
       method: 'POST', headers: s.adminAuth, body: JSON.stringify({ kind: 'percent', value: 10, reason: 'loyalty promo' }),
@@ -203,7 +203,7 @@ test('comp -> total 0, order closes with no payment row required, audit row writ
   await withDb(async db => {
     const base = await startApp();
     const s = await setup(base);
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id, 1);
 
     const r = await fetch(`${base}/api/orders/${orderId}/discounts`, {
       method: 'POST', headers: s.adminAuth, body: JSON.stringify({ kind: 'comp', value: 0, reason: 'burnt order, manager comp' }),
@@ -235,7 +235,7 @@ test('a void that would drop the total below what is already paid -> 409, nothin
     const s = await setup(base);
     // 10 x Roti Canai: subtotal 2000, 6% tax -> 120, total 2120 (RM21.20) — the
     // exact reproduction from the phase prompt.
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 10);
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id, 10);
     const lineId = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth })))
       .find(o => o.id === orderId).items[0].id;
 
@@ -266,7 +266,7 @@ test('a void that lands the total exactly on what is already paid -> order settl
 
     const created = await fetch(`${base}/api/orders`, {
       method: 'POST', headers: s.staffAuth,
-      body: JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.itemA.id, qty: 1 }, { item_id: s.itemB.id, qty: 1 }] }),
+      body: JSON.stringify({ card_id: s.cardId, items: [{ item_id: s.itemA.id, qty: 1 }, { item_id: s.itemB.id, qty: 1 }] }),
     });
     const { id: orderId } = await json(created);
     const lineA = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth })))
@@ -305,7 +305,7 @@ test('a void that leaves the total above what is already paid -> allowed, correc
 
     const created = await fetch(`${base}/api/orders`, {
       method: 'POST', headers: s.staffAuth,
-      body: JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.itemA.id, qty: 1 }, { item_id: s.itemB.id, qty: 1 }] }),
+      body: JSON.stringify({ card_id: s.cardId, items: [{ item_id: s.itemA.id, qty: 1 }, { item_id: s.itemB.id, qty: 1 }] }),
     });
     const { id: orderId } = await json(created);
     const lineA = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth })))
@@ -337,7 +337,7 @@ test('a discount that would drop the total below what is already paid -> 409, no
   await withDb(async db => {
     const base = await startApp();
     const s = await setup(base);
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 10); // total 2120
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id, 10); // total 2120
 
     const pay = await fetch(`${base}/api/orders/${orderId}/pay`, {
       method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card', amount: 15 }),
@@ -366,7 +366,7 @@ test('a discount that lands the total exactly on what is already paid -> order s
 
     const created = await fetch(`${base}/api/orders`, {
       method: 'POST', headers: s.staffAuth,
-      body: JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.itemA.id, qty: 1 }, { item_id: s.itemB.id, qty: 1 }] }),
+      body: JSON.stringify({ card_id: s.cardId, items: [{ item_id: s.itemA.id, qty: 1 }, { item_id: s.itemB.id, qty: 1 }] }),
     });
     const { id: orderId } = await json(created);
 
@@ -402,7 +402,7 @@ test('a discount that leaves the total above what is already paid -> allowed, co
   await withDb(async db => {
     const base = await startApp();
     const s = await setup(base);
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 10); // total 2120
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id, 10); // total 2120
 
     const pay = await fetch(`${base}/api/orders/${orderId}/pay`, {
       method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card', amount: 0.5 }),
@@ -430,7 +430,7 @@ test('refund exceeding its payment -> 400', async () => {
   await withDb(async () => {
     const base = await startApp();
     const s = await setup(base);
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id, 1);
     const payR = await fetch(`${base}/api/orders/${orderId}/pay`, {
       method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Cash' }),
     });
@@ -451,7 +451,7 @@ test('a cash refund reduces expected cash by exactly its amount; a card refund d
     const s = await setup(base);
     const shift = await json(await fetch(`${base}/api/shift/current`, { headers: s.adminAuth }));
 
-    const { body: { id: cashOrder } } = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    const { body: { id: cashOrder } } = await createOrder(base, s, s.cardId, s.itemA.id, 1);
     await fetch(`${base}/api/orders/${cashOrder}/pay`, { method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Cash' }) });
     const cashPaymentId = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth })))
       .find(o => o.id === cashOrder).payments[0].id;
@@ -464,7 +464,7 @@ test('a cash refund reduces expected cash by exactly its amount; a card refund d
     const repAfterCash = await json(await fetch(`${base}/api/shift/${shift.id}/report`, { headers: s.adminAuth }));
     assert.equal(repBeforeCash.cash.expected_cents - repAfterCash.cash.expected_cents, 100);
 
-    const { body: { id: cardOrder } } = await createOrder(base, s, s.tableId2, s.itemA.id, 1);
+    const { body: { id: cardOrder } } = await createOrder(base, s, s.cardId2, s.itemA.id, 1);
     await fetch(`${base}/api/orders/${cardOrder}/pay`, { method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card' }) });
     const cardPaymentId = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth })))
       .find(o => o.id === cardOrder).payments[0].id;
@@ -483,7 +483,7 @@ test('two partial refunds summing to the payment -> allowed; a third cent -> 400
   await withDb(async db => {
     const base = await startApp();
     const s = await setup(base);
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id, 1);
     await fetch(`${base}/api/orders/${orderId}/pay`, { method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card' }) });
     const order = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth }))).find(o => o.id === orderId);
     const paymentId = order.payments[0].id;
@@ -515,7 +515,7 @@ test('concurrent double-refund of the same payment does not over-refund', async 
   await withDb(async db => {
     const base = await startApp();
     const s = await setup(base);
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id, 1);
     await fetch(`${base}/api/orders/${orderId}/pay`, { method: 'POST', headers: s.staffAuth, body: JSON.stringify({ method: 'Card' }) });
     const order = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth }))).find(o => o.id === orderId);
     const paymentId = order.payments[0].id;
@@ -543,7 +543,7 @@ test('admin removes a discount before any payment -> total reverts, audit row wr
   await withDb(async db => {
     const base = await startApp();
     const s = await setup(base);
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id, 10); // total 2120
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id, 10); // total 2120
 
     const discounted = await fetch(`${base}/api/orders/${orderId}/discounts`, {
       method: 'POST', headers: s.adminAuth, body: JSON.stringify({ kind: 'percent', value: 10, reason: 'test discount' }),

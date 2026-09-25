@@ -100,12 +100,12 @@ test('a receipt\'s bytes contain the correct total and end with the cut sequence
     // Phase 09: a payment is refused unless a shift is open.
     await fetch(`${base}/api/shift/open`, { method: 'POST', headers: auth(adminToken), body: JSON.stringify({ float: 0 }) });
     const menu = await json(await fetch(`${base}/api/menu`, { headers: auth(adminToken) }));
-    const tables = await json(await fetch(`${base}/api/tables`, { headers: auth(adminToken) }));
+    const cards = await json(await fetch(`${base}/api/cards`, { headers: auth(adminToken) }));
     const item = menu.items.find(i => i.name === 'Roti Canai');
 
     const created = await json(await fetch(`${base}/api/orders`, {
       method: 'POST', headers: auth(adminToken),
-      body: JSON.stringify({ table_id: tables[0].id, items: [{ item_id: item.id, qty: 1 }] }),
+      body: JSON.stringify({ card_id: cards[0].id, items: [{ item_id: item.id, qty: 1 }] }),
     }));
     const pay = await json(await fetch(`${base}/api/orders/${created.id}/pay`, {
       method: 'POST', headers: auth(adminToken), body: JSON.stringify({ method: 'Cash' }),
@@ -125,7 +125,7 @@ test('enqueue with no printer configured -> job recorded failed, order unaffecte
     const base = await startApp();
     const adminToken = await login(base, 'Admin', '1234');
     const menu = await json(await fetch(`${base}/api/menu`, { headers: auth(adminToken) }));
-    const tables = await json(await fetch(`${base}/api/tables`, { headers: auth(adminToken) }));
+    const cards = await json(await fetch(`${base}/api/cards`, { headers: auth(adminToken) }));
     const item = menu.items.find(i => i.name === 'Roti Canai');
 
     // No row in `printers` at all. routes/orders.js's create handler calls
@@ -136,7 +136,7 @@ test('enqueue with no printer configured -> job recorded failed, order unaffecte
     // failed rather than silently dropped.
     const r = await fetch(`${base}/api/orders`, {
       method: 'POST', headers: auth(adminToken),
-      body: JSON.stringify({ table_id: tables[0].id, items: [{ item_id: item.id, qty: 1 }] }),
+      body: JSON.stringify({ card_id: cards[0].id, items: [{ item_id: item.id, qty: 1 }] }),
     });
     assert.equal(r.status, 201);
     const created = await json(r);

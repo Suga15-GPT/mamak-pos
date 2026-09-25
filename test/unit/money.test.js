@@ -140,11 +140,11 @@ test('pay by cash snapshots the bill; a later rate change does not alter the sto
 
     const menu = await (await fetch(`${base}/api/menu`, { headers: auth })).json();
     const roti = menu.items.find(i => i.name === 'Roti Canai');
-    const tables = await (await fetch(`${base}/api/tables`, { headers: auth })).json();
+    const cards = await (await fetch(`${base}/api/cards`, { headers: auth })).json();
 
     const created = await fetch(`${base}/api/orders`, {
       method: 'POST', headers: auth,
-      body: JSON.stringify({ table_id: tables[0].id, items: [{ item_id: roti.id, qty: 3 }] }),
+      body: JSON.stringify({ card_id: cards[0].id, items: [{ item_id: roti.id, qty: 3 }] }),
     });
     const { id: orderId } = await created.json();
 

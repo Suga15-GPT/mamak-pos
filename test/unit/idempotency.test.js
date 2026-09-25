@@ -53,14 +53,14 @@ function headers(session, idemKey) {
 }
 
 // Common fixture: the seeded admin (allowed to create orders directly, so no
-// separate staff user is needed for these tests), two tables, two menu items.
+// separate staff user is needed for these tests), two cards, two menu items.
 async function setup(base) {
   const adminToken = await login(base, 'Admin', '1234');
   const menu = await json(await fetch(`${base}/api/menu`, { headers: headers(adminToken) }));
-  const tables = await json(await fetch(`${base}/api/tables`, { headers: headers(adminToken) }));
+  const cards = await json(await fetch(`${base}/api/cards`, { headers: headers(adminToken) }));
   return {
     adminToken,
-    tableId: tables[0].id, tableId2: tables[1].id,
+    cardId: cards[0].id, cardId2: cards[1].id,
     itemA: menu.items.find(i => i.name === 'Roti Canai'),
     itemB: menu.items.find(i => i.name === 'Teh Tarik'),
   };
@@ -71,7 +71,7 @@ test('same Idempotency-Key on POST /api/orders twice -> one order row, both resp
     const base = await startApp();
     const s = await setup(base);
     const key = crypto.randomUUID();
-    const body = JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.itemA.id, qty: 1 }] });
+    const body = JSON.stringify({ card_id: s.cardId, items: [{ item_id: s.itemA.id, qty: 1 }] });
 
     const r1 = await fetch(`${base}/api/orders`, { method: 'POST', headers: headers(s.adminToken, key), body });
     const b1 = await json(r1);
@@ -93,7 +93,7 @@ test('concurrent POST /api/orders with the same Idempotency-Key -> one row, no 5
     const base = await startApp();
     const s = await setup(base);
     const key = crypto.randomUUID();
-    const body = JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.itemA.id, qty: 1 }] });
+    const body = JSON.stringify({ card_id: s.cardId, items: [{ item_id: s.itemA.id, qty: 1 }] });
 
     const [r1, r2] = await Promise.all([
       fetch(`${base}/api/orders`, { method: 'POST', headers: headers(s.adminToken, key), body }),
@@ -115,7 +115,7 @@ test('POST /api/orders/:id/items with a repeated Idempotency-Key does not duplic
     const s = await setup(base);
     const created = await json(await fetch(`${base}/api/orders`, {
       method: 'POST', headers: headers(s.adminToken),
-      body: JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.itemA.id, qty: 1 }] }),
+      body: JSON.stringify({ card_id: s.cardId, items: [{ item_id: s.itemA.id, qty: 1 }] }),
     }));
 
     const key = crypto.randomUUID();
@@ -140,11 +140,11 @@ test('an Idempotency-Key is scoped to its route: reusing a create key on an unre
 
     await json(await fetch(`${base}/api/orders`, {
       method: 'POST', headers: headers(s.adminToken, key),
-      body: JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.itemA.id, qty: 1 }] }),
+      body: JSON.stringify({ card_id: s.cardId, items: [{ item_id: s.itemA.id, qty: 1 }] }),
     }));
     const other = await json(await fetch(`${base}/api/orders`, {
       method: 'POST', headers: headers(s.adminToken),
-      body: JSON.stringify({ table_id: s.tableId2, items: [{ item_id: s.itemA.id, qty: 1 }] }),
+      body: JSON.stringify({ card_id: s.cardId2, items: [{ item_id: s.itemA.id, qty: 1 }] }),
     }));
 
     // Reusing the CREATE key as the APPEND key on a different order must not

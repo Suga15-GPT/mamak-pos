@@ -94,9 +94,9 @@ test('menu item: create, edit, sold out today, restore, deactivate, safe delete'
     await api.patch(base, h, `/api/admin/items/${id}`, { available: true });
 
     // Safe delete: refused while it sits on a live order…
-    const tables = await api.get(base, h, '/api/tables');
+    const cards = await api.get(base, h, '/api/cards');
     const order = await json(await api.post(base, h, '/api/orders',
-      { table_id: tables[0].id, items: [{ item_id: id, qty: 1 }] }));
+      { card_id: cards[0].id, items: [{ item_id: id, qty: 1 }] }));
     const refused = await api.del(base, h, `/api/admin/items/${id}`);
     assert.equal(refused.status, 409);
     assert.match((await json(refused)).error, /still open/i);
@@ -178,9 +178,9 @@ test('modifier option: create, rename, price, availability, reorder, delete — 
     // Order it once, so there is history to protect.
     const kuah = before.modifier_groups.find(g => g.name === 'Kuah');
     const kuahOpt = before.modifier_options.find(o => o.group_id === kuah.id);
-    const tables = await api.get(base, h, '/api/tables');
+    const cards = await api.get(base, h, '/api/cards');
     const order = await json(await api.post(base, h, '/api/orders', {
-      table_id: tables[0].id,
+      card_id: cards[0].id,
       items: [{ item_id: item.id, qty: 1, modifier_option_ids: [kuahOpt.id, existing.id] }],
     }));
 

@@ -52,18 +52,18 @@ async function setup(base) {
   const adminToken = await login(base, 'Admin', '1234');
   const adminAuth = auth(adminToken);
   const menu = await json(await fetch(`${base}/api/menu`, { headers: adminAuth }));
-  const tables = await json(await fetch(`${base}/api/tables`, { headers: adminAuth }));
+  const cards = await json(await fetch(`${base}/api/cards`, { headers: adminAuth }));
   return {
     adminAuth,
-    tableId: tables[0].id, tableId2: tables[1].id,
+    cardId: cards[0].id, cardId2: cards[1].id,
     itemA: menu.items.find(i => i.name === 'Roti Canai'),
   };
 }
 
-async function createOrder(base, s, tableId, itemId, qty = 1) {
+async function createOrder(base, s, cardId, itemId, qty = 1) {
   const r = await fetch(`${base}/api/orders`, {
     method: 'POST', headers: s.adminAuth,
-    body: JSON.stringify({ table_id: tableId, items: [{ item_id: itemId, qty }] }),
+    body: JSON.stringify({ card_id: cardId, items: [{ item_id: itemId, qty }] }),
   });
   return json(r);
 }
@@ -98,7 +98,7 @@ test('payment with no open shift -> 400', async () => {
   await withDb(async () => {
     const base = await startApp();
     const s = await setup(base);
-    const order = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    const order = await createOrder(base, s, s.cardId, s.itemA.id, 1);
     const r = await pay(base, s, order.id, { method: 'Cash' });
     assert.equal(r.status, 400);
   });
@@ -112,13 +112,13 @@ test('expected cash = float + cash sales + payins - payouts; card sales excluded
     const shiftId = opened.body.id;
 
     // Cash sale: 3x Roti Canai (200 each) -> subtotal 600, tax 6% -> 636, cash-rounded to 635.
-    const cashOrder = await createOrder(base, s, s.tableId, s.itemA.id, 3);
+    const cashOrder = await createOrder(base, s, s.cardId, s.itemA.id, 3);
     const cashPay = await pay(base, s, cashOrder.id, { method: 'Cash' });
     assert.equal(cashPay.status, 200);
     assert.equal(cashPay.body.bill.total, 6.35);
 
     // Card sale: 1x Roti Canai -> subtotal 200, tax 12, total 212. Must not count as cash.
-    const cardOrder = await createOrder(base, s, s.tableId2, s.itemA.id, 1);
+    const cardOrder = await createOrder(base, s, s.cardId2, s.itemA.id, 1);
     const cardPay = await pay(base, s, cardOrder.id, { method: 'Card' });
     assert.equal(cardPay.status, 200);
 
@@ -167,7 +167,7 @@ test("a closed shift's stored figures do not change when later orders are added"
     const opened = await openShift(base, s, 0);
     const shiftId = opened.body.id;
 
-    const order1 = await createOrder(base, s, s.tableId, s.itemA.id, 1);
+    const order1 = await createOrder(base, s, s.cardId, s.itemA.id, 1);
     await pay(base, s, order1.id, { method: 'Cash' });
 
     const before = await report(base, s, shiftId);
@@ -178,10 +178,10 @@ test("a closed shift's stored figures do not change when later orders are added"
 
     const snapshot = await report(base, s, shiftId, true);
 
-    // A second shift transacts more sales against the *same* table/item.
+    // A second shift transacts more sales against the *same* card/item.
     const reopened = await openShift(base, s, 0);
     assert.equal(reopened.status, 201);
-    const order2 = await createOrder(base, s, s.tableId2, s.itemA.id, 5);
+    const order2 = await createOrder(base, s, s.cardId2, s.itemA.id, 5);
     await pay(base, s, order2.id, { method: 'Cash' });
 
     const again = await report(base, s, shiftId, true);
@@ -203,7 +203,7 @@ test('revenue recognition at settlement: an order opened in shift A but paid in 
 
     const openedA = await openShift(base, s, 0);
     const shiftA = openedA.body.id;
-    const order = await createOrder(base, s, s.tableId, s.itemA.id, 1); // Roti Canai, RM2.00
+    const order = await createOrder(base, s, s.cardId, s.itemA.id, 1); // Roti Canai, RM2.00
 
     const closeA = await fetch(`${base}/api/shift/close`, {
       method: 'POST', headers: s.adminAuth, body: JSON.stringify({ counted: 0 }),

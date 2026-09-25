@@ -132,12 +132,12 @@ test('deactivating a user mid-shift kills their live session immediately', async
       method: 'POST', headers: auth(staffSession), body: JSON.stringify({ current_pin: '7392', new_pin: '5273' }),
     });
 
-    const before = await fetch(`${base}/api/tables`, { headers: auth(staffSession) });
+    const before = await fetch(`${base}/api/cards`, { headers: auth(staffSession) });
     assert.equal(before.status, 200);
 
     await fetch(`${base}/api/admin/users/${staff.id}`, { method: 'PATCH', headers: auth(admin), body: JSON.stringify({ active: false }) });
 
-    const after = await fetch(`${base}/api/tables`, { headers: auth(staffSession) });
+    const after = await fetch(`${base}/api/cards`, { headers: auth(staffSession) });
     assert.equal(after.status, 401);
   });
 });
@@ -163,9 +163,9 @@ test('own PIN change with the wrong current PIN -> 401; correct change works and
     assert.equal(good.status, 200);
 
     // session1 (the one that made the change) survives; session2 is killed.
-    const stillGood = await fetch(`${base}/api/tables`, { headers: auth(session1) });
+    const stillGood = await fetch(`${base}/api/cards`, { headers: auth(session1) });
     assert.equal(stillGood.status, 200);
-    const killed = await fetch(`${base}/api/tables`, { headers: auth(session2) });
+    const killed = await fetch(`${base}/api/cards`, { headers: auth(session2) });
     assert.equal(killed.status, 401);
 
     // The old PIN no longer works; the new one does.
@@ -189,7 +189,7 @@ test('admin reset-pin clears that user\'s sessions and sets must_change_pin', as
     await fetch(`${base}/api/me/pin`, {
       method: 'POST', headers: auth(staffSession), body: JSON.stringify({ current_pin: '7392', new_pin: '5273' }),
     });
-    assert.equal((await fetch(`${base}/api/tables`, { headers: auth(staffSession) })).status, 200);
+    assert.equal((await fetch(`${base}/api/cards`, { headers: auth(staffSession) })).status, 200);
 
     const reset = await fetch(`${base}/api/admin/users/${staff.id}/reset-pin`, {
       method: 'POST', headers: auth(admin), body: JSON.stringify({ new_pin: '4568' }),
@@ -197,7 +197,7 @@ test('admin reset-pin clears that user\'s sessions and sets must_change_pin', as
     assert.equal(reset.status, 200);
 
     // Old session is dead.
-    assert.equal((await fetch(`${base}/api/tables`, { headers: auth(staffSession) })).status, 401);
+    assert.equal((await fetch(`${base}/api/cards`, { headers: auth(staffSession) })).status, 401);
 
     // must_change_pin came back true on the fresh login, and every route but
     // /api/me/pin and /api/logout is blocked until it's changed.
@@ -218,7 +218,7 @@ test('must_change_pin blocks every route except POST /api/me/pin and POST /api/l
     const session = await login(base, 'Ellie', '7392');
     assert.equal(session.body.must_change_pin, true);
 
-    const blocked = await fetch(`${base}/api/tables`, { headers: auth(session) });
+    const blocked = await fetch(`${base}/api/cards`, { headers: auth(session) });
     assert.equal(blocked.status, 403);
     assert.equal((await blocked.json()).error, 'pin_change_required');
 
@@ -227,7 +227,7 @@ test('must_change_pin blocks every route except POST /api/me/pin and POST /api/l
     });
     assert.equal(changed.status, 200);
 
-    const nowAllowed = await fetch(`${base}/api/tables`, { headers: auth(session) });
+    const nowAllowed = await fetch(`${base}/api/cards`, { headers: auth(session) });
     assert.equal(nowAllowed.status, 200);
   });
 });

@@ -90,21 +90,28 @@ async function insertSendLines(client, orderId, sendId, parsed, userId, idemKey 
 }
 
 /* Creates a dining order and its first kitchen round in one transaction.
-   `tableId` is null for a takeaway order — the bill exists without a table. */
-async function insertOrder(tableId, parsed, note, source, userId = null, idemKey = null, opts = {}) {
+   `cardId` is null for a takeaway order — the bill exists without a card. A new
+   order never names a table: tables are history from before card mode. */
+async function insertOrder(cardId, parsed, note, source, userId = null, idemKey = null, opts = {}) {
   const { orderType = 'dine_in', approvalState = 'approved', publicRef = null } = opts;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // FOR SHARE: lowering the card count locks the cards it retires, so a card
+    // can't be opened in the instant it is being taken out of use.
+    if (cardId != null) {
+      const card = await client.query('SELECT id FROM cards WHERE id = $1 AND active FOR SHARE', [cardId]);
+      if (!card.rows[0]) throw AppError('card not found or not in use at this shop', 400);
+    }
     // Stamps whichever shift is open right now, if any — orders may still be
     // taken with no shift open (only payment is refused for that), so this is
     // nullable.
     const openShift = await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
     const shiftId = openShift.rows[0]?.id || null;
     const o = await client.query(
-      `INSERT INTO orders (table_id, status, source, note, opened_by, idempotency_key, shift_id, order_type)
+      `INSERT INTO orders (card_id, status, source, note, opened_by, idempotency_key, shift_id, order_type)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-      [tableId, 'sent', source, note || null, userId, idemKey, shiftId, orderType]);
+      [cardId, 'sent', source, note || null, userId, idemKey, shiftId, orderType]);
     const orderId = o.rows[0].id;
 
     const send = await rounds.createSend(client, orderId, { source, userId, approvalState, publicRef });
@@ -147,9 +154,12 @@ async function writeAudit(client, { userId, action, entityType, entityId, detail
 }
 
 async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at ASC') {
-  // LEFT JOIN: a takeaway order has no table at all (migration 012).
+  // LEFT JOINs: a takeaway order has neither; a card order has no table, and
+  // a pre-card-mode table order has no card (migration 014).
   const oq = await pool.query(
-    `SELECT o.*, t.name AS table_name FROM orders o LEFT JOIN tables t ON t.id = o.table_id ${where} ${orderBy}`, params);
+    `SELECT o.*, t.name AS table_name, cd.number AS card_number
+       FROM orders o LEFT JOIN tables t ON t.id = o.table_id LEFT JOIN cards cd ON cd.id = o.card_id
+     ${where} ${orderBy}`, params);
   const orders = oq.rows;
   if (!orders.length) return [];
   const ids = orders.map(o => o.id);
@@ -166,10 +176,10 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
     s + (i.price_cents + i.mods.reduce((a, m) => a + m.price_cents, 0)) * i.qty, 0);
   const shaped = orders.map(o => ({
     id: o.id, table: o.table_name, table_id: o.table_id, status: o.status, source: o.source,
-    order_type: o.order_type,
-    // A takeaway order has no table; the floor still needs something to read on
-    // a tile, and "Takeaway #128" is what staff call it out as.
-    label: o.table_name || `Takeaway #${o.id}`,
+    order_type: o.order_type, card_id: o.card_id, card_number: o.card_number, bill_group_id: o.bill_group_id,
+    // What staff call the order out as: "Card 7"; a table order from before
+    // card mode keeps its table's name; "Takeaway #128" has neither.
+    label: o.card_number != null ? `Card ${o.card_number}` : (o.table_name || `Takeaway #${o.id}`),
     note: o.note, created_at: o.created_at, updated_at: o.updated_at, paid_at: o.paid_at,
     total: cents2rm(totalCents(o)),
     // Bill breakdown is only meaningful once paid (snapshotted at payment time);

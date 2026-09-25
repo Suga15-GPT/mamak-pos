@@ -51,7 +51,7 @@ function auth(session) {
   return { cookie: session.cookie, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' };
 }
 
-// Common fixture: an admin (seeded), a staff and a kitchen user, one table, two menu items.
+// Common fixture: an admin (seeded), a staff and a kitchen user, two cards, two menu items.
 async function setup(base) {
   const adminToken = await login(base, 'Admin', '1234');
   const adminAuth = auth(adminToken);
@@ -80,33 +80,33 @@ async function setup(base) {
   });
 
   const menu = await json(await fetch(`${base}/api/menu`, { headers: adminAuth }));
-  const tables = await json(await fetch(`${base}/api/tables`, { headers: adminAuth }));
+  const cards = await json(await fetch(`${base}/api/cards`, { headers: adminAuth }));
 
   return {
     adminToken, staffToken, kitchenToken, adminId, staffId, kitchenId,
     adminAuth, staffAuth: auth(staffToken), kitchenAuth: auth(kitchenToken),
-    tableId: tables[0].id, tableId2: tables[1].id,
+    cardId: cards[0].id, cardId2: cards[1].id,
     itemA: menu.items.find(i => i.name === 'Roti Canai'),
     itemB: menu.items.find(i => i.name === 'Teh Tarik'),
   };
 }
 
-async function createOrder(base, s, tableId, itemId, qty = 1) {
+async function createOrder(base, s, cardId, itemId, qty = 1) {
   const r = await fetch(`${base}/api/orders`, {
     method: 'POST', headers: s.staffAuth,
-    body: JSON.stringify({ table_id: tableId, items: [{ item_id: itemId, qty }] }),
+    body: JSON.stringify({ card_id: cardId, items: [{ item_id: itemId, qty }] }),
   });
   return { status: r.status, body: await json(r) };
 }
 
-test('two concurrent POST /api/orders for one table -> one 201, one 409, one row', async () => {
+test('two concurrent POST /api/orders for one card -> one 201, one 409, one row', async () => {
   await withDb(async db => {
     const base = await startApp();
     const s = await setup(base);
 
     const [a, b] = await Promise.all([
-      createOrder(base, s, s.tableId, s.itemA.id),
-      createOrder(base, s, s.tableId, s.itemA.id),
+      createOrder(base, s, s.cardId, s.itemA.id),
+      createOrder(base, s, s.cardId, s.itemA.id),
     ]);
 
     const statuses = [a.status, b.status].sort();
@@ -117,7 +117,7 @@ test('two concurrent POST /api/orders for one table -> one 201, one 409, one row
     assert.equal(loser.body.order_id, winner.body.id);
 
     const rows = await db.query(
-      "SELECT id FROM orders WHERE table_id = $1 AND status NOT IN ('paid','cancelled')", [s.tableId]);
+      "SELECT id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled')", [s.cardId]);
     assert.equal(rows.rows.length, 1);
     assert.equal(rows.rows[0].id, winner.body.id);
   });
@@ -130,7 +130,7 @@ test('voided line is excluded from the total but still returned by the API', asy
 
     const created = await fetch(`${base}/api/orders`, {
       method: 'POST', headers: s.staffAuth,
-      body: JSON.stringify({ table_id: s.tableId, items: [{ item_id: s.itemA.id, qty: 1 }, { item_id: s.itemB.id, qty: 1 }] }),
+      body: JSON.stringify({ card_id: s.cardId, items: [{ item_id: s.itemA.id, qty: 1 }, { item_id: s.itemB.id, qty: 1 }] }),
     });
     const { id: orderId } = await json(created);
 
@@ -157,7 +157,7 @@ test('void without a reason -> 400; void by kitchen role -> 403', async () => {
   await withDb(async () => {
     const base = await startApp();
     const s = await setup(base);
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id);
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id);
     const items = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth }))).find(o => o.id === orderId).items;
     const lineId = items[0].id;
 
@@ -179,7 +179,7 @@ test('staff voids a sent line (200); staff voids a preparing line (403); admin v
     const s = await setup(base);
 
     // staff voids a still-'sent' line -> 200
-    const { body: { id: order1 } } = await createOrder(base, s, s.tableId, s.itemA.id);
+    const { body: { id: order1 } } = await createOrder(base, s, s.cardId, s.itemA.id);
     const line1 = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth }))).find(o => o.id === order1).items[0].id;
     const r1 = await fetch(`${base}/api/orders/${order1}/items/${line1}/void`, {
       method: 'POST', headers: s.staffAuth, body: JSON.stringify({ reason: 'made a mistake' }),
@@ -187,7 +187,7 @@ test('staff voids a sent line (200); staff voids a preparing line (403); admin v
     assert.equal(r1.status, 200);
 
     // move a second order past 'sent', then staff may no longer void it
-    const { body: { id: order2 } } = await createOrder(base, s, s.tableId2, s.itemA.id);
+    const { body: { id: order2 } } = await createOrder(base, s, s.cardId2, s.itemA.id);
     const line2 = (await json(await fetch(`${base}/api/orders?mode=recent`, { headers: s.staffAuth }))).find(o => o.id === order2).items[0].id;
     const advanced = await fetch(`${base}/api/orders/${order2}`, {
       method: 'PATCH', headers: s.kitchenAuth, body: JSON.stringify({ status: 'preparing' }),
@@ -211,7 +211,7 @@ test('every mutation writes exactly one audit_log row with the right user_id', a
     const base = await startApp();
     const s = await setup(base);
 
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id);
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id);
     let rows = await db.query("SELECT * FROM audit_log WHERE action = 'order.create' AND entity_id = $1", [orderId]);
     assert.equal(rows.rows.length, 1);
     assert.equal(rows.rows[0].user_id, s.staffId);
@@ -247,7 +247,7 @@ test('every mutation writes exactly one audit_log row with the right user_id', a
     assert.equal(rows.rows.length, 1);
     assert.equal(rows.rows[0].user_id, s.adminId);
 
-    const { body: { id: order2 } } = await createOrder(base, s, s.tableId2, s.itemA.id);
+    const { body: { id: order2 } } = await createOrder(base, s, s.cardId2, s.itemA.id);
     const cancelled = await fetch(`${base}/api/orders/${order2}`, {
       method: 'PATCH', headers: s.adminAuth, body: JSON.stringify({ status: 'cancelled' }),
     });
@@ -262,7 +262,7 @@ test('backward transition by kitchen -> 403; by staff -> 200', async () => {
     const base = await startApp();
     const s = await setup(base);
 
-    const { body: { id: orderId } } = await createOrder(base, s, s.tableId, s.itemA.id);
+    const { body: { id: orderId } } = await createOrder(base, s, s.cardId, s.itemA.id);
     const toPreparing = await fetch(`${base}/api/orders/${orderId}`, {
       method: 'PATCH', headers: s.staffAuth, body: JSON.stringify({ status: 'preparing' }),
     });
