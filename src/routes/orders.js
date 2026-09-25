@@ -71,7 +71,7 @@ router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async
    duplicate order. A duplicate key returns the original result with 200
    instead of erroring or creating a second row — checked up front for the
    common (sequential) retry, and again by catching the unique-index violation
-   for the concurrent-retry race, the same pattern one_open_order_per_table
+   for the concurrent-retry race, the same pattern one_open_order_per_card
    already uses below. */
 router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res) => {
   const { card_id, items, note } = req.body || {};
