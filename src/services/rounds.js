@@ -1,5 +1,6 @@
 const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
+const features = require('./features');
 
 /* ===== kitchen rounds =====
    A "round" (order_sends) is one batch of items sent to preparation. Every
@@ -58,12 +59,19 @@ async function createSend(client, orderId, opts = {}) {
 
 /* One ticket per distinct station in the round. A round awaiting staff approval
    deliberately gets no tickets at all — nothing reaches a station display or a
-   printer until someone accepts it. */
+   printer until someone accepts it.
+
+   With the kitchen screen switched off nobody will ever tap these along, so
+   they are born served, in the caller's transaction, and the derived
+   orders.status never sits at 'sent' waiting for a screen that isn't there. */
 async function openTickets(client, sendId, stationCodes) {
   const codes = [...new Set(stationCodes)].filter(Boolean);
+  const served = !(await features.isOn('kitchen'));
   for (const code of codes) {
     await client.query(
-      'INSERT INTO order_send_tickets (send_id, station_code) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      served
+        ? "INSERT INTO order_send_tickets (send_id, station_code, status, served_at) VALUES ($1, $2, 'served', now()) ON CONFLICT DO NOTHING"
+        : 'INSERT INTO order_send_tickets (send_id, station_code) VALUES ($1, $2) ON CONFLICT DO NOTHING',
       [sendId, code]);
   }
   const r = await client.query('SELECT * FROM order_send_tickets WHERE send_id = $1 ORDER BY station_code', [sendId]);
@@ -229,6 +237,9 @@ async function listStationTickets(stationCode) {
         AND t.status <> 'cancelled'
         AND o.status NOT IN ('cancelled','refunded')
         AND (t.status <> 'served' OR t.served_at > now() - interval '2 hours')
+        -- A ticket that went straight to served (the kitchen screen was off
+        -- when it was sent) was never kitchen work, so it is not shown as such.
+        AND (t.status <> 'served' OR t.ready_at IS NOT NULL)
       ORDER BY s.sent_at ASC`, [stationCode]);
   if (!r.rows.length) return [];
 

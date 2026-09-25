@@ -7,18 +7,26 @@ const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const rounds = require('../services/rounds');
 const { recomputeOrderBill } = require('../services/billing');
+const { requireFeature, isOn } = require('../services/features');
 
 const router = express.Router();
 
 /* The kitchen and drinks displays work station tickets, not dining orders: one
    ticket is "what this station has to make for this round of this table". */
 
-router.get('/api/kitchen/stations', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
-  res.json((await rounds.listStations()).filter(s => s.active));
+// With one station (stations switched off) every line is snapshotted to
+// 'kitchen', so that is the only display there is.
+async function activeStations() {
+  const all = (await rounds.listStations()).filter(s => s.active);
+  return (await isOn('stations')) ? all : all.filter(s => s.code === 'kitchen');
+}
+
+router.get('/api/kitchen/stations', requireRole('admin', 'staff', 'kitchen'), requireFeature('kitchen'), awaitH(async (req, res) => {
+  res.json(await activeStations());
 }));
 
-router.get('/api/kitchen/tickets', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
-  const stations = (await rounds.listStations()).filter(s => s.active).map(s => s.code);
+router.get('/api/kitchen/tickets', requireRole('admin', 'staff', 'kitchen'), requireFeature('kitchen'), awaitH(async (req, res) => {
+  const stations = (await activeStations()).map(s => s.code);
   const station = stations.includes(req.query.station) ? req.query.station : stations[0];
   if (!station) return res.json({ station: null, tickets: [] });
   const tickets = await rounds.listStationTickets(station);
@@ -31,7 +39,7 @@ router.get('/api/kitchen/tickets', requireRole('admin', 'staff', 'kitchen'), awa
   });
 }));
 
-router.patch('/api/kitchen/tickets/:id', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
+router.patch('/api/kitchen/tickets/:id', requireRole('admin', 'staff', 'kitchen'), requireFeature('kitchen'), awaitH(async (req, res) => {
   const r = await rounds.advanceTicket(Number(req.params.id), req.body?.status, {
     userId: req.user.id, role: req.user.role,
   });
@@ -48,11 +56,11 @@ router.patch('/api/kitchen/tickets/:id', requireRole('admin', 'staff', 'kitchen'
    Only reachable when an admin has turned on "Require staff approval"; with the
    default "Send directly to kitchen" this list is simply always empty. */
 
-router.get('/api/kitchen/pending', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.get('/api/kitchen/pending', requireRole('admin', 'staff'), requireFeature('qr'), awaitH(async (req, res) => {
   res.json(await rounds.listPendingSends());
 }));
 
-router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), requireFeature('qr'), awaitH(async (req, res) => {
   const s = (await pool.query('SELECT * FROM order_sends WHERE id = $1', [req.params.id])).rows[0];
   if (!s) return res.status(404).json({ error: 'round not found' });
   if (s.approval_state !== 'pending') return res.status(400).json({ error: `round is already ${s.approval_state}` });
@@ -83,7 +91,7 @@ router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), awa
 
 /* Rejecting voids the round's lines rather than deleting them: the customer
    did ask for these, and a bill that silently loses lines is unauditable. */
-router.post('/api/kitchen/sends/:id/reject', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/kitchen/sends/:id/reject', requireRole('admin', 'staff'), requireFeature('qr'), awaitH(async (req, res) => {
   const reason = String(req.body?.reason || '').trim() || 'rejected by staff';
   const s = (await pool.query('SELECT * FROM order_sends WHERE id = $1', [req.params.id])).rows[0];
   if (!s) return res.status(404).json({ error: 'round not found' });

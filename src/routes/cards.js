@@ -9,6 +9,7 @@ const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const cards = require('../services/cards');
 const groups = require('../services/bill_groups');
+const { requireFeature } = require('../services/features');
 
 const router = express.Router();
 
@@ -33,7 +34,7 @@ router.get('/api/admin/cards', requireRole('admin'), awaitH(async (req, res) => 
   res.json(r.rows.map(c => ({ ...c, url: `${base}/t/${c.qr_token}` })));
 }));
 
-router.get('/api/admin/cards/:id/qr.png', requireRole('admin'), awaitH(async (req, res) => {
+router.get('/api/admin/cards/:id/qr.png', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
   const r = await pool.query('SELECT qr_token FROM cards WHERE id = $1', [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   const buf = await QRCode.toBuffer(`${publicBaseUrl(req)}/t/${r.rows[0].qr_token}`, { width: 512, margin: 1 });
@@ -41,12 +42,12 @@ router.get('/api/admin/cards/:id/qr.png', requireRole('admin'), awaitH(async (re
 }));
 
 // Shop mode's one poster.
-router.get('/api/admin/qr-shop', requireRole('admin'), awaitH(async (req, res) => {
+router.get('/api/admin/qr-shop', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
   const { shop_token: token } = await cards.qrSettings();
   res.json({ url: token ? `${publicBaseUrl(req)}/t/${token}` : null });
 }));
 
-router.get('/api/admin/qr-shop.png', requireRole('admin'), awaitH(async (req, res) => {
+router.get('/api/admin/qr-shop.png', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
   const { shop_token: token } = await cards.qrSettings();
   if (!token) return res.status(404).json({ error: 'not found' });
   const buf = await QRCode.toBuffer(`${publicBaseUrl(req)}/t/${token}`, { width: 768, margin: 1 });
@@ -55,7 +56,7 @@ router.get('/api/admin/qr-shop.png', requireRole('admin'), awaitH(async (req, re
 
 /* ===== combined bills ===== */
 
-const staff = requireRole('admin', 'staff');
+const staff = [requireRole('admin', 'staff'), requireFeature('split_combine')];
 const touched = ids => ids.forEach(id => publish('order.updated', { order_id: id }));
 
 router.post('/api/bill-groups', staff, awaitH(async (req, res) => {

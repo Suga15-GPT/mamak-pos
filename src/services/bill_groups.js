@@ -2,6 +2,7 @@ const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { cents2rm, roundCashCents } = require('../lib/money');
 const { writeAudit, ordersWithItems } = require('./orders');
+const features = require('./features');
 
 /* ===== combined bills =====
    A bill group settles several card orders together. Nothing moves between
@@ -168,9 +169,9 @@ async function payGroup(groupId, { method, amountCents, tenderedCents, userId })
     const groupDue = dues.reduce((s, d) => s + d.due, 0);
     if (groupDue <= 0) throw AppError('combined bill already settled', 400);
 
-    // Same control as a single order's payment: no open shift, no payment.
-    const shiftId = (await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1')).rows[0]?.id;
-    if (!shiftId) throw AppError('no shift is open — open a shift before taking payment', 400);
+    // Same control as a single order's payment: no open shift, no payment
+    // (and with shifts switched off, no check and shift_id NULL).
+    const shiftId = await features.moneyShift(client, 'no shift is open — open a shift before taking payment');
 
     let apply = amountCents == null ? groupDue : Number(amountCents);
     if (!(Number.isInteger(apply) && apply > 0)) throw AppError('amount must be positive', 400);

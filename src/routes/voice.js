@@ -3,6 +3,7 @@ const { publicH } = require('../lib/errors');
 const { rateLimit } = require('../lib/auth');
 const voice = require('../services/voice');
 const { resolveQr } = require('../services/cards');
+const { requireFeature } = require('../services/features');
 
 const router = express.Router();
 
@@ -25,7 +26,7 @@ const FRIENDLY = {
   failed: 'Sorry, we could not hear that clearly. Please try again.',
 };
 
-router.post('/api/public/voice/interpret', publicH(async (req, res) => {
+router.post('/api/public/voice/interpret', requireFeature('qr', 'voice'), publicH(async (req, res) => {
   const { table_token: tableToken, card_number: cardNumber, audio_base64: audioB64, mime_type: mimeType, draft } = req.body || {};
   // The card's own QR token (or, in shop mode, the shop token plus the typed
   // card number) is the entire identity, exactly as it is for a typed QR

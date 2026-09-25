@@ -5,6 +5,7 @@ const { awaitH } = require('../lib/errors');
 const { cents2rm, rm2cents } = require('../lib/money');
 const shifts = require('../services/shifts');
 const printing = require('../services/printing');
+const { requireFeature } = require('../services/features');
 
 const router = express.Router();
 
@@ -50,7 +51,7 @@ router.get('/api/summary', requireRole('admin', 'staff'), awaitH(async (req, res
    Postgres off rows that already exist — no metric is invented, and anything
    the data cannot support honestly is simply absent rather than zero-filled.
    All money stays integer cents until the JSON boundary. */
-router.get('/api/dashboard', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.get('/api/dashboard', requireRole('admin', 'staff'), requireFeature('dashboard'), awaitH(async (req, res) => {
   const today = `(now() AT TIME ZONE '${KL}')::date`;
   const paidLocal = `(o.paid_at AT TIME ZONE '${KL}')`;
 
@@ -215,31 +216,31 @@ router.patch('/api/settings', requireRole('admin'), awaitH(async (req, res) => {
 
 /* ===== Shifts, cash drawer, X/Z reports (phase 09) ===== */
 
-router.get('/api/shift/current', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.get('/api/shift/current', requireRole('admin', 'staff'), requireFeature('shifts'), awaitH(async (req, res) => {
   res.json(await shifts.current());
 }));
 
-router.post('/api/shift/open', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/shift/open', requireRole('admin', 'staff'), requireFeature('shifts'), awaitH(async (req, res) => {
   const floatCents = rm2cents(req.body?.float || 0);
   res.status(201).json(await shifts.open({ userId: req.user.id, floatCents }));
 }));
 
-router.post('/api/shift/movements', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/shift/movements', requireRole('admin', 'staff'), requireFeature('shifts'), awaitH(async (req, res) => {
   const { kind, amount, reason } = req.body || {};
   res.status(201).json(await shifts.addMovement({ kind, amountCents: rm2cents(amount), reason, userId: req.user.id }));
 }));
 
-router.post('/api/shift/close', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/shift/close', requireRole('admin', 'staff'), requireFeature('shifts'), awaitH(async (req, res) => {
   const countedCents = rm2cents(req.body?.counted || 0);
   const note = req.body?.note;
   res.json(await shifts.close({ userId: req.user.id, countedCents, note }));
 }));
 
-router.get('/api/shift/:id/report', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.get('/api/shift/:id/report', requireRole('admin', 'staff'), requireFeature('shifts'), awaitH(async (req, res) => {
   res.json(await shifts.report(Number(req.params.id), { final: req.query.final === '1' || req.query.final === 'true' }));
 }));
 
-router.post('/api/shift/:id/print-report', requireRole('admin'), awaitH(async (req, res) => {
+router.post('/api/shift/:id/print-report', requireRole('admin'), requireFeature('shifts', 'printing'), awaitH(async (req, res) => {
   const final = req.query.final === '1' || req.query.final === 'true';
   const data = await shifts.report(Number(req.params.id), { final });
   await printing.printShiftReport(Number(req.params.id), data);
