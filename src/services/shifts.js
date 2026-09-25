@@ -1,6 +1,7 @@
 const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { writeAudit } = require('./orders');
+const { lockBills } = require('../lib/billlock');
 
 // The single currently-open shift, or null. The `one_open_shift` partial
 // unique index (migration 008) is what actually enforces there's ever at
@@ -8,12 +9,6 @@ const { writeAudit } = require('./orders');
 async function current() {
   const r = await pool.query('SELECT * FROM shifts WHERE closed_at IS NULL LIMIT 1');
   return r.rows[0] || null;
-}
-
-async function requireOpenShift() {
-  const shift = await current();
-  if (!shift) throw AppError('no shift is open', 400);
-  return shift;
 }
 
 async function open({ userId, floatCents }) {
@@ -37,28 +32,37 @@ async function addMovement({ kind, amountCents, reason, userId }) {
   const cleanReason = String(reason || '').trim();
   if (cleanReason.length < 3 || cleanReason.length > 200) throw AppError('reason must be 3-200 chars', 400);
 
-  const shift = await requireOpenShift();
-  const r = await pool.query(
-    'INSERT INTO cash_movements (shift_id, kind, amount_cents, reason, user_id) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-    [shift.id, kind, amountCents, cleanReason, userId]);
-  await writeAudit(pool, {
-    userId, action: `shift.${kind}`, entityType: 'shift', entityId: shift.id,
-    detail: { amount_cents: amountCents, reason: cleanReason },
-  });
-  return r.rows[0];
+  // Under the bill lock, like close: a movement can't land in a shift whose
+  // expected cash has just been frozen without it.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await lockBills(client);
+    const shift = (await client.query('SELECT * FROM shifts WHERE closed_at IS NULL LIMIT 1 FOR UPDATE')).rows[0];
+    if (!shift) throw AppError('no shift is open', 400);
+    const r = await client.query(
+      'INSERT INTO cash_movements (shift_id, kind, amount_cents, reason, user_id) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+      [shift.id, kind, amountCents, cleanReason, userId]);
+    await writeAudit(client, {
+      userId, action: `shift.${kind}`, entityType: 'shift', entityId: shift.id,
+      detail: { amount_cents: amountCents, reason: cleanReason },
+    });
+    await client.query('COMMIT');
+    return r.rows[0];
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
 
 // float + cash sales taken during this shift + payins - payouts - cash refunds
 // given during this shift. Card/eWallet sales and refunds never touch the
 // physical drawer, so they're excluded.
-async function expectedCashCents(shiftId, floatCents) {
-  const cash = await pool.query(
+async function expectedCashCents(shiftId, floatCents, client = pool) {
+  const cash = await client.query(
     "SELECT COALESCE(SUM(amount_cents), 0) s FROM payments WHERE shift_id = $1 AND method = 'Cash'", [shiftId]);
-  const movements = await pool.query(
+  const movements = await client.query(
     'SELECT kind, COALESCE(SUM(amount_cents), 0) s FROM cash_movements WHERE shift_id = $1 GROUP BY kind', [shiftId]);
   let payins = 0, payouts = 0;
   movements.rows.forEach(m => { if (m.kind === 'payin') payins = Number(m.s); else payouts = Number(m.s); });
-  const cashRefunds = await pool.query(
+  const cashRefunds = await client.query(
     `SELECT COALESCE(SUM(r.amount_cents), 0) s FROM refunds r JOIN payments p ON p.id = r.payment_id
      WHERE r.shift_id = $1 AND p.method = 'Cash'`, [shiftId]);
   return floatCents + Number(cash.rows[0].s) + payins - payouts - Number(cashRefunds.rows[0].s);
@@ -68,28 +72,38 @@ async function expectedCashCents(shiftId, floatCents) {
 // never recomputed again on read, so a later order can't change a past Z report.
 async function close({ userId, countedCents, note }) {
   if (!(Number.isInteger(countedCents) && countedCents >= 0)) throw AppError('counted amount must be a non-negative amount', 400);
-  const shift = await requireOpenShift();
-  const expected = await expectedCashCents(shift.id, shift.float_cents);
-  const variance = countedCents - expected;
-  const cleanNote = String(note || '').trim();
-  if (variance !== 0 && !cleanNote) throw AppError('a note is required when variance is non-zero', 400);
+  // Under the bill lock: every payment, refund and movement takes it too, so
+  // none can commit into this shift after its expected cash is computed and
+  // before it is frozen (re-check 2, S1).
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await lockBills(client);
+    const shift = (await client.query('SELECT * FROM shifts WHERE closed_at IS NULL LIMIT 1 FOR UPDATE')).rows[0];
+    if (!shift) throw AppError('no shift is open', 400);
+    const expected = await expectedCashCents(shift.id, shift.float_cents, client);
+    const variance = countedCents - expected;
+    const cleanNote = String(note || '').trim();
+    if (variance !== 0 && !cleanNote) throw AppError('a note is required when variance is non-zero', 400);
 
-  // Snapshot "open orders carried forward" right now, same reasoning as
-  // expected/counted/variance above — one of those orders settling in a later
-  // shift must never change what this shift's own Z report already said.
-  const carried = await pool.query(
-    `SELECT COUNT(*)::int n, COALESCE(SUM(total_cents), 0)::int cents
-     FROM orders WHERE shift_id = $1 AND status NOT IN ('paid', 'cancelled', 'refunded')`, [shift.id]);
+    // Snapshot "open orders carried forward" right now, same reasoning as
+    // expected/counted/variance above — one of those orders settling in a later
+    // shift must never change what this shift's own Z report already said.
+    const carried = await client.query(
+      `SELECT COUNT(*)::int n, COALESCE(SUM(total_cents), 0)::int cents
+       FROM orders WHERE shift_id = $1 AND status NOT IN ('paid', 'cancelled', 'refunded')`, [shift.id]);
 
-  const r = await pool.query(
-    `UPDATE shifts SET closed_at = now(), closed_by = $1, counted_cents = $2, expected_cents = $3,
-       variance_cents = $4, note = $5, carried_forward_count = $6, carried_forward_cents = $7 WHERE id = $8 RETURNING *`,
-    [userId, countedCents, expected, variance, cleanNote || null, carried.rows[0].n, carried.rows[0].cents, shift.id]);
-  await writeAudit(pool, {
-    userId, action: 'shift.close', entityType: 'shift', entityId: shift.id,
-    detail: { counted_cents: countedCents, expected_cents: expected, variance_cents: variance },
-  });
-  return r.rows[0];
+    const r = await client.query(
+      `UPDATE shifts SET closed_at = now(), closed_by = $1, counted_cents = $2, expected_cents = $3,
+         variance_cents = $4, note = $5, carried_forward_count = $6, carried_forward_cents = $7 WHERE id = $8 RETURNING *`,
+      [userId, countedCents, expected, variance, cleanNote || null, carried.rows[0].n, carried.rows[0].cents, shift.id]);
+    await writeAudit(client, {
+      userId, action: 'shift.close', entityType: 'shift', entityId: shift.id,
+      detail: { counted_cents: countedCents, expected_cents: expected, variance_cents: variance },
+    });
+    await client.query('COMMIT');
+    return r.rows[0];
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
 
 // X (interim, final=false) or Z (final=true, written once at close) report.

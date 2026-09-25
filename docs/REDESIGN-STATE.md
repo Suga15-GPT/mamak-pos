@@ -159,17 +159,40 @@ mamak; a table number never reliably named a bill.
 - **Group total = sum of member `total_cents`.** Tax is each order's own,
   computed as it always was. It is never recomputed on the combined subtotal
   (asserted by a test where the two would differ by a sen).
-- **Paying a group writes one `payments` row per member** (same method,
-  taken_by, shift), allocated in ascending card number, so the rows always sum
-  exactly to what was taken. Cash 5-sen rounding is applied once, on the leg
-  that settles the group, to the group's remaining due; the adjustment goes on
-  the last member settled. Change is the group's. Partial group payments are
-  allocated the same way. When the group's due reaches zero every member is
-  paid and the group closed in one transaction. Because payments stay one row
-  per order, shifts, Z reports and refunds did not change.
+- **A combined bill is paid in full, in one go.** `POST
+  /api/bill-groups/:id/pay {legs:[{method, amount, tendered?}, ...]}` takes
+  every leg together (say RM20 cash and the rest by card) and writes them all
+  in one transaction. At most one cash leg; card/e-wallet legs name their
+  amounts and together may not exceed the group's due; the cash leg covers the
+  remainder after 5-sen rounding, applied once to that remainder; change =
+  tendered − rounded remainder. Legs that don't settle the group exactly are
+  refused (400 "A combined bill has to be paid in full in one go.") and write
+  nothing. There is no part-paid combined bill — that state is what stranded
+  cards and blocked every correction in review (PR #16, findings #1 and #3).
+- **Each leg becomes ordinary per-order `payments` rows** (same taken_by,
+  shift), allocated in ascending card number, legs in the order given and cash
+  last, so the rows always sum exactly to what was taken. The rounding goes on
+  the last member settled in cash; a 1–2 sen cash remainder that rounds to
+  nothing settles on the rounding alone with no zero-sen row. Every member is
+  paid and the group closed in the same transaction. Because payments stay one
+  row per order, shifts, Z reports and refunds did not change.
+- **A grouped card that closes on its own** (voided to zero, comped, cancelled
+  because its QR round was rejected, or cancelled by an admin) leaves its group
+  automatically; a group left with one card dissolves. Each step is audited.
 - **Un-combining is allowed only while no member has a payment** (409 "This
-  combined bill has a payment on it and can't be split apart."). A group left
-  with one card dissolves.
+  combined bill has a payment on it and can't be split apart."). Under the
+  rule above that can only be a payment a card took on its own before it was
+  combined. A group left with one card dissolves.
+- **The bill lock** (see "Payments and locking") is taken first by combine,
+  un-combine, dissolve, group pay and leave-on-close, which then read the
+  group's membership and lock its orders by ascending id and its groups by
+  ascending id. Per-path lock ordering alone was not enough: discovering a
+  group's other members while already holding row locks deadlocked.
+- **A card with a payment of its own can't be combined** (409 "This card has a
+  payment on it — pay or refund it before combining.") — combined bills are
+  paid all at once.
+- Too little cash on a combined bill says "Cash given RM x is less than the RM
+  y still due".
 - A grouped card is paid and split with its group: its own pay and split
   routes return 409. Per-card split keeps working for ungrouped cards.
 - A group prints one receipt: lines under "Card N", the money summed, one total.
@@ -184,6 +207,51 @@ mamak; a table number never reliably named a bill.
   404; the customer page says "Please order at the counter"). Migrated from
   `qr_ordering_enabled`. The old 503 "paused" message is gone.
 - Voice changed only in how its token resolves to a card.
+- **Approval rule.** A round awaiting approval (always, in shop mode) is not on
+  the bill: its lines show "awaiting approval" and count in no total — card
+  bill, combined bill, POS cart or receipt. The till refuses payment, single
+  card or combined, while any round on it awaits approval (409 "A customer
+  order is waiting for approval — approve or reject it first."). Approve and
+  reject lock the order and return 409 once it is no longer open; they never
+  recompute a closed bill. Approving recomputes the bill in the same
+  transaction, so no payment can be taken against the pre-approval total.
+- Admin can regenerate one card's QR token or the shop poster's; printed copies
+  of the old one stop working. Audited.
+
+### Payments and locking
+
+- **One bill lock, taken first.** Every operation that can change which cards
+  share a bill, settle a bill, or change a bill's total takes one
+  transaction-scoped advisory lock with a single fixed key
+  (`pg_advisory_xact_lock`, `src/lib/billlock.js`) as its **first** lock:
+  opening an order (with its first total), combine, un-combine, dissolve,
+  group pay, single-card pay, adding a round (staff, QR, voice), void,
+  discount/comp and its removal, refund, QR approve/reject, move, cancel,
+  leave-on-close, **every status tap** (kitchen ticket and order-level),
+  shift close and cash pay-in/pay-out. Only then does it lock order rows,
+  ascending id. Rule of thumb: anything that writes an order's status,
+  lines, totals, payments, refunds, tickets or bill-group membership, or
+  closes a shift, takes the lock first. They are serialised against each other, so they
+  cannot deadlock by construction, and each one reads the order *after*
+  locking it.
+- So **every** one of those is race-safe against a payment, not only adding
+  items: a void, discount or approval that loses the race to a payment finds
+  the bill closed and is refused (409); one that wins is included in the total
+  the payment then reads. Each recomputes the bill inside its own transaction.
+- **Closed bills stay closed, three ways.** The bill lock serialises status
+  taps with payment; `deriveOrderStatus` writes only
+  `WHERE status NOT IN ('paid','cancelled','refunded')`; and migration 015's
+  trigger rejects any status change out of `paid`, `cancelled` or `refunded`
+  except paid → refunded. A kitchen tap that read "ready" before a payment
+  once wrote "served" over "paid" (PR #16 re-check 2, K). A ticket can still
+  be advanced after its order is paid (food is often served after paying);
+  only the order's status is left alone.
+- **An order with any round awaiting approval is never auto-settled or
+  auto-closed** (a void or discount that takes the accepted lines to zero
+  leaves it open), and a grouped card with a held round never leaves its group
+  on its own. A comp is refused while a round is held, like payment.
+- A refund on a still-open bill only reduces what has been paid; only a paid
+  (closed) order whose refunds equal its payments becomes `refunded`.
 
 ## Feature modules and first-run setup
 
@@ -198,7 +266,7 @@ everything on. Built on card mode.
   `refunds`, `split_combine`, `qr` (`qr_mode` still picks per_card/shop),
   `voice` (needs qr), `dashboard`.
 - **A missing row means on.** Every existing test and shop behaves exactly as
-  before; the wizard writes all ten explicitly. Migration 015 writes `'1'` for
+  before; the wizard writes all ten explicitly. Migration 016 writes `'1'` for
   all ten plus `setup_completed = '1'` only when the database already has
   orders; a fresh database gets neither, and the missing `setup_completed`
   sends the first admin into the wizard.
@@ -208,22 +276,49 @@ everything on. Built on card mode.
 - **"Off" is enforced on the server.** `requireFeature()` returns
   `404 {error:'feature_disabled'}` on every route a module owns, public QR and
   voice included. Kitchen off: `rounds.openTickets` creates tickets already
-  `served` inside the caller's transaction, so the derived `orders.status` never
-  sits at `sent`; no chit or void slip is queued; a ticket that went straight to
+  `served`; no chit or void slip is queued; a ticket that went straight to
   served (no `ready_at`) never shows on the board if the kitchen comes back.
   Stations off: every line is snapshotted to `kitchen` (the item keeps its own
   `station_code`). Shifts off: `features.moneyShift()` skips the open-shift
-  check and payments, refunds, group payments, orders and `closed_shift_id` all
-  record NULL; switching shifts back on affects only later rows, nothing is
-  back-filled. Printing off: `enqueueForRole` queues nothing, not even a failed
-  job.
+  check and payments, refunds, combined-bill legs, orders and
+  `closed_shift_id` all record NULL; switching shifts back on affects only
+  later rows, nothing is back-filled. Printing off: `enqueueForRole` queues
+  nothing, not even a failed job.
 - **Nothing is deleted or rewritten** when a module turns off. Two switches are
   refused (409) while they would strand money: `split_combine` under an open
   bill group, and `qr` under rounds still awaiting approval.
-- **Flags are cached in memory** (`services/features.js`) and reloaded after
-  every write through that service; a `features.updated` stream event makes
-  every open till reload its copy. A row changed by hand in SQL is not seen
-  until the next write or restart.
+- **Under card mode's bill lock** (see "Payments and locking"):
+  - **A switch takes the bill lock first** (`features.save`, for
+    `PATCH /api/features` and `POST /api/setup`), and reads the current
+    flags from the database under it. So the two refusals above are
+    serialised with what they guard: a combine or a customer round that
+    committed first is seen and the switch is refused; one that comes after
+    is refused itself.
+  - **A bill write reads the flag it depends on under the bill lock**, from
+    the database (`features.flagsTx`), not the cache: the shift a payment,
+    refund, combined-bill leg, settle or new order lands in
+    (`moneyShift` — inside the lock, never before it; `addRefund` used to read
+    the open shift before taking the lock), whether tickets are born served
+    (`openTickets`), which station a line goes to (`atStations`), and whether
+    a combine (`bill_groups.combine`) or a customer round
+    (`insertOrder`/`appendSend`, source `qr`) may still happen at all — the
+    latter two answer `404 feature_disabled` under the lock, as the route
+    would have. A switch therefore lands wholly before or wholly after each
+    bill write.
+  - **Kitchen off never writes onto a closed bill.** Tickets are born served
+    only by the three callers that open them — opening an order, adding a
+    round, approving a customer's round — each under the bill lock, each
+    after knowing the order is open (new, or re-read and a closed one
+    refused), and each re-deriving the status through the same conditional
+    `deriveOrderStatus` a kitchen tap uses; migration 015's trigger backs it.
+  - Payment and comp are still refused while a round awaits approval; with
+    QR off none can exist, because the switch waits until none does.
+- **Flags are cached in memory** (`services/features.js`) for the route gates
+  and the screens, and reloaded after every write through that service; a
+  `features.updated` stream event makes every open till reload its copy. A
+  row changed by hand in SQL is seen at once by the bill writes that read
+  their flag under the lock (shifts, kitchen, stations, split_combine, qr),
+  but by the route gates and screens only after the next write or restart.
 - **UI hiding is declarative**: `data-feature="<name>"` on anything a module
   owns, `feat-off-<name>` on `<body>`. The Kitchen tab stays while either the
   kitchen or QR is on (it hosts the QR approval queue).
@@ -233,8 +328,9 @@ everything on. Built on card mode.
 ## Migrations added
 
 None in V2. Speak to Order needed no schema change — it produces the same rows
-the tap flow produces. Card mode added `014_card_mode.sql`. Feature modules
-added `015_features.sql` (settings rows only).
+the tap flow produces. Card mode added `014_card_mode.sql` and
+`015_closed_orders_stay_closed.sql` (the closed-status trigger). Feature
+modules added `016_features.sql` (settings rows only).
 
 ## Files materially changed in V2
 
@@ -275,10 +371,20 @@ added `015_features.sql` (settings rows only).
 
 ## Latest test state
 
-After feature modules: `npm test` 131/131 (11 new in `test/unit/features.test.js`).
+After feature modules, merged onto card mode as reviewed (PR #16 at
+`5d7b3ab`): `npm test` 171/171 (`test/unit/features.test.js` 16: the 11
+module tests, plus 5 that queue a request behind the bill lock while the
+payment, shift close, switch or cancel that got there first commits).
 Playwright 18/18: the first-run journey (wizard as a small stall, then order
-and pay with no shift and no kitchen) plus the 17 existing journeys, which now
-start from Advanced via `POST /api/setup` in a `beforeEach`.
+and pay with no shift and no kitchen) plus card mode's 17 (12 journeys, "two
+cards, combine, pay once" paying in legs among them, and 5 viewport checks),
+which start from Advanced via `POST /api/setup` in a `beforeEach`.
+
+After PR #16 re-check 2: `npm test` 155/155 (`test/unit/card_recheck.test.js`
+12, `test/unit/card_recheck2.test.js` 7). Playwright 17/17.
+
+After the PR #16 review fixes: `npm test` 136/136 (16 regression tests in
+`test/unit/card_review.test.js`, one or more per finding). Playwright 17/17.
 
 After card mode: `npm test` 120/120 (8 new in `test/unit/cards.test.js`).
 Playwright 17/17 (12 journeys, including "two cards, combine, pay once", + 5

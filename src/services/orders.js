@@ -2,6 +2,7 @@ const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
 const rounds = require('./rounds');
+const { lockBills } = require('../lib/billlock');
 const features = require('./features');
 
 // "Orderable" = available and not sold out today (sold_out_until resets itself
@@ -72,10 +73,21 @@ async function buildOrderItems(client, rawItems) {
 
 /* With one preparation station (stations switched off) every line goes to the
    kitchen. The item keeps its own station_code, so switching stations back on
-   routes tomorrow's orders exactly as before. */
-async function atStations(parsed) {
-  if (await features.isOn('stations')) return parsed;
+   routes tomorrow's orders exactly as before. Read under the caller's bill
+   lock, like every flag a bill write depends on (features.flagsTx). */
+async function atStations(client, parsed) {
+  if (await features.isOnTx(client, 'stations')) return parsed;
   return parsed.map(l => ({ ...l, item: { ...l.item, station_code: 'kitchen' } }));
+}
+
+/* A customer's round (source 'qr': typed, or spoken and confirmed) is refused
+   once QR ordering is switched off. Checked here, under the bill lock, as well
+   as by the route: switching QR off takes the same lock and is refused while a
+   round awaits approval, so a round the route let through a moment before the
+   switch is either in place before that check or refused here — never left
+   awaiting approval with no queue to decide it in. */
+async function refuseQrIfOff(client, source) {
+  if (source === 'qr') await features.requireOnTx(client, 'qr');
 }
 
 /* Writes one round's worth of lines. Every line carries the round it was sent
@@ -103,10 +115,14 @@ async function insertSendLines(client, orderId, sendId, parsed, userId, idemKey 
    order never names a table: tables are history from before card mode. */
 async function insertOrder(cardId, parsed, note, source, userId = null, idemKey = null, opts = {}) {
   const { orderType = 'dine_in', approvalState = 'approved', publicRef = null } = opts;
-  parsed = await atStations(parsed);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Opening a bill writes an order, its lines and its first total: bill
+    // lock first, like every other bill write (lib/billlock).
+    await lockBills(client);
+    await refuseQrIfOff(client, source);
+    parsed = await atStations(client, parsed);
     // FOR SHARE: lowering the card count locks the cards it retires, so a card
     // can't be opened in the instant it is being taken out of use.
     if (cardId != null) {
@@ -131,20 +147,37 @@ async function insertOrder(cardId, parsed, note, source, userId = null, idemKey 
       // off the tickets were born served and the order must say so.
       await rounds.deriveOrderStatus(client, orderId);
     }
+    // The first total is written in the same transaction as the lines.
+    await require('./billing').recomputeOrderBill(orderId, client);
     await client.query('COMMIT');
     return { orderId, sendId: send.id, seqNo: send.seq_no };
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
 
 /* Appends a new round to an order that is already open. Returns the new round
-   and the ids of the lines it holds, so the caller can print exactly those. */
+   and the ids of the lines it holds, so the caller can print exactly those.
+
+   The "still open, nothing paid" check is made here, after createSend has taken
+   the order's row lock — the same lock a payment takes. Checked any earlier,
+   a payment landing in between let the lines join a bill that was already
+   paid, and the kitchen cooked them for free (staff, QR and voice all come
+   through here). The bill is recomputed inside the same transaction, so a
+   payment that waits on this lock sees the new total, never the old one. */
 async function appendSend(orderId, parsed, source, userId = null, idemKey = null, opts = {}) {
   const { approvalState = 'approved', publicRef = null, audit = null } = opts;
-  parsed = await atStations(parsed);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Adding a round changes a bill's total: bill lock first (lib/billlock).
+    await lockBills(client);
+    await refuseQrIfOff(client, source);
+    parsed = await atStations(client, parsed);
     const send = await rounds.createSend(client, orderId, { source, userId, approvalState, publicRef });
+    const cur = (await client.query(
+      `SELECT status, EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id) AS has_payment
+         FROM orders o WHERE o.id = $1`, [orderId])).rows[0];
+    if (rounds.TERMINAL_ORDER_STATUSES.includes(cur.status)) throw Object.assign(AppError('order closed', 400), { code: 'order_closed' });
+    if (cur.has_payment) throw Object.assign(AppError('order has a payment recorded; cannot add items', 409), { code: 'has_payment' });
     const insertedIds = await insertSendLines(client, orderId, send.id, parsed, userId, idemKey);
     if (audit) await writeAudit(client, audit);
     if (approvalState === 'approved') {
@@ -154,6 +187,8 @@ async function appendSend(orderId, parsed, source, userId = null, idemKey = null
       await rounds.deriveOrderStatus(client, orderId);
     }
     await client.query('UPDATE orders SET updated_at = now() WHERE id = $1', [orderId]);
+    // Required lazily: billing requires this module.
+    await require('./billing').recomputeOrderBill(orderId, client);
     await client.query('COMMIT');
     return { sendId: send.id, seqNo: send.seq_no, insertedIds };
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
@@ -176,7 +211,12 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
   const orders = oq.rows;
   if (!orders.length) return [];
   const ids = orders.map(o => o.id);
-  const iq = await pool.query('SELECT * FROM order_items WHERE order_id = ANY($1::int[]) ORDER BY id', [ids]);
+  // held: the line's round is awaiting approval (shop-mode QR). It is shown,
+  // marked "awaiting approval", and counts in no total until it is accepted.
+  const iq = await pool.query(
+    `SELECT oi.*, (s.approval_state = 'pending') AS held
+       FROM order_items oi LEFT JOIN order_sends s ON s.id = oi.send_id
+      WHERE oi.order_id = ANY($1::int[]) ORDER BY oi.id`, [ids]);
   const itemIds = iq.rows.map(i => i.id);
   const mq = itemIds.length
     ? await pool.query('SELECT * FROM order_item_mods WHERE order_item_id = ANY($1::int[]) ORDER BY id', [itemIds])
@@ -184,8 +224,8 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
   const byOrder = {}; orders.forEach(o => { o.items = []; byOrder[o.id] = o; });
   const byItem = {}; iq.rows.forEach(i => { i.mods = []; byItem[i.id] = i; byOrder[i.order_id].items.push(i); });
   mq.rows.forEach(m => byItem[m.order_item_id]?.mods.push(m));
-  // Voided lines never count toward a total — paid or still open.
-  const totalCents = o => o.items.filter(i => !i.voided_at).reduce((s, i) =>
+  // Voided and held lines never count toward a total — paid or still open.
+  const totalCents = o => o.items.filter(i => !i.voided_at && !i.held).reduce((s, i) =>
     s + (i.price_cents + i.mods.reduce((a, m) => a + m.price_cents, 0)) * i.qty, 0);
   const shaped = orders.map(o => ({
     id: o.id, table: o.table_name, table_id: o.table_id, status: o.status, source: o.source,
@@ -208,7 +248,7 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
       id: i.id, item_id: i.item_id, name: i.name, qty: i.qty, price: cents2rm(i.price_cents), note: i.note, seat: i.seat,
       send_id: i.send_id, station: i.station_code,
       mods: i.mods.map(m => ({ name: m.name, price: cents2rm(m.price_cents) })),
-      voided: !!i.voided_at, void_reason: i.void_reason || null,
+      voided: !!i.voided_at, void_reason: i.void_reason || null, held: !!i.held,
     })),
   }));
   // Rounds carry the preparation state now, so every order ships with them:

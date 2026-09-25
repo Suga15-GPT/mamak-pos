@@ -396,25 +396,71 @@ serve/accept `qr_mode` instead of `qr_ordering_enabled` · `/api/summary`'s
 | `test/e2e/journeys.spec.js` | 499 | Journeys open cards instead of tables; new journey: two cards, combine, pay once |
 
 
+### Card mode — PR #16 review fixes
+
+| File | Contains |
+|---|---|
+| `src/services/bill_groups.js` | `lockGroupSet()` — the one lock order (orders by ascending id, then groups by ascending id) used by `combine`, `uncombine`, `payGroup` and `leaveGroupIfClosed`. `payGroup(id, {legs})` pays the whole group in one transaction or refuses (400 "A combined bill has to be paid in full in one go."); partial group payments no longer exist. `leaveGroupIfClosed(orderId, userId, reason)` — a card that closes on its own leaves its group; a group of one dissolves; both audited. `getGroup` adds `awaiting_approval` |
+| `src/routes/cards.js` | `POST /api/bill-groups/:id/pay {legs:[{method, amount, tendered?}]}` (RM); `POST /api/admin/cards/:id/regenerate-qr`, `POST /api/admin/qr-shop/regenerate` (audited `card.qr_regenerate` / `qr_shop.regenerate`) |
+| `src/services/billing.js` | `addPayment` is one transaction under the order's row lock, refuses a grouped card and a held round (409), and settles a 1–2 sen cash remainder on rounding alone. `computeLiveBill`/`recomputeOrderBill`/`amountDue`/`paidCentsFor` take an optional client; held (unapproved) lines are off the bill; paid is net of refunds. `settleIfMatchesPaid` calls `leaveGroupIfClosed`. `addRefund` marks `refunded` only on a paid order |
+| `src/services/orders.js` | `appendSend` re-checks open/unpaid after taking the order lock and recomputes the bill in the same transaction. `ordersWithItems` items carry `held` and held lines are out of `total` |
+| `src/services/rounds.js` | `HELD_MESSAGE`, `refuseWhileHeld(client, orderIds)` |
+| `src/routes/kitchen.js` | approve/reject lock the order, 409 on a closed order, recompute inside the transaction; a reject that cancels a grouped card makes it leave its group |
+| `src/routes/orders.js` | move locks the target card `FOR SHARE` and re-checks `active`; cancel makes a grouped card leave its group; no recompute after append |
+| `src/services/printing.js` | receipts leave out held lines |
+| `public/js/pos.js` | held lines marked "⏳ Awaiting approval", off every total; combined-bill pay screen collects a cash part plus the rest by card/e-wallet and submits once; no part-payment row for a combined bill |
+| `public/js/admin.js` | "New QR" on each card face and on the shop poster, with a confirm |
+| `test/unit/card_review.test.js` | **New.** 16 regression tests, one or more per review finding; the races fire concurrently, several rounds each |
+
+### Card mode — PR #16 re-check fixes
+
+| File | Contains |
+|---|---|
+| `src/lib/billlock.js` | **New.** `lockBills(client)` — `pg_advisory_xact_lock` on one fixed key, taken first by every operation that changes group membership, settles a bill or changes a bill's total |
+| `src/services/bill_groups.js` | `lockGroupSet`/`lockGroup` take the bill lock, then read the group closure, then lock it (orders ascending, groups ascending). `combine` refuses a card that already has a payment (409). `leaveGroupIfClosedTx(client, …)` runs inside the caller's transaction and skips a card with a held round. Too little cash names the cash given and the amount due |
+| `src/services/billing.js` | `addPayment`, `addDiscount`, `removeDiscount`, `addRefund` take the bill lock and re-read under it; `addDiscount` is one transaction (409 once closed) and refuses a comp while a round is held; `settleIfMatchesPaid(client, …)` never settles an order with a held round |
+| `src/routes/orders.js` | The void route is one transaction under the bill lock (409 once closed); cancel and move take the bill lock |
+| `src/routes/kitchen.js` | Approve/reject take the bill lock; a reject that cancels a grouped card leaves its group in the same transaction |
+| `src/services/orders.js` | `appendSend` takes the bill lock before the order lock |
+| `test/unit/card_recheck.test.js` | **New.** 12 regression tests: the three deadlock scenarios, held-round survival (void, discount, comp, grouped), void/discount vs payment races, 40 concurrent runs each |
+
+### Card mode — PR #16 re-check 2 fixes
+
+| File | Contains |
+|---|---|
+| `migrations/015_closed_orders_stay_closed.sql` | **New.** Trigger `orders_closed_stays_closed`: rejects any `orders.status` change out of `paid`/`cancelled`/`refunded` except paid → refunded |
+| `src/services/rounds.js` | `deriveOrderStatus` writes only while the order is open; `advanceTicket` takes the bill lock first |
+| `src/routes/orders.js` | Order-level status taps take the bill lock and re-read status under it (409 if the move is no longer allowed); a new order's first total is written inside `insertOrder` |
+| `src/services/orders.js` | `insertOrder` takes the bill lock and writes the first total in its own transaction |
+| `src/services/shifts.js` | `close` and `addMovement` are transactions under the bill lock; `expectedCashCents` takes an optional client |
+| `src/services/bill_groups.js` | combine refuses only a card with net paid (payments − refunds) > 0 |
+| `test/unit/card_recheck2.test.js` | **New.** K1–K3 status-tap vs payment races, S1 shift close vs cash payment, X1 cancel vs kitchen tap (40 concurrent runs each), the trigger, and combining a fully refunded card |
+
 ## Feature modules and first-run setup
 
 Ten optional modules a shop can switch off, and the wizard that asks a new shop
-which it uses. Read the "Feature modules and first-run setup" section of
-`docs/REDESIGN-STATE.md` for the rules; this is where they live.
+which it uses. Built on card mode as reviewed (PR #16). Read the "Feature
+modules and first-run setup" section of `docs/REDESIGN-STATE.md` for the rules
+— including how each module sits under card mode's bill lock; this is where
+they live.
 
-**Schema (migration 015).** Settings rows only: `feature_kitchen`,
+**Schema (migration 016).** Settings rows only: `feature_kitchen`,
 `feature_stations`, `feature_printing`, `feature_shifts`, `feature_discounts`,
 `feature_refunds`, `feature_split_combine`, `feature_qr`, `feature_voice`,
 `feature_dashboard` (`'1'|'0'`; a **missing row reads as on**) and
-`setup_completed` (`'1'` = the wizard is done). 015 writes all eleven as `'1'`
+`setup_completed` (`'1'` = the wizard is done). 016 writes all eleven as `'1'`
 only when `orders` already has a row, so an upgraded shop keeps everything and
-never sees the wizard.
+never sees the wizard. (It was `015_features.sql` before card mode's 015 took
+that number; a database that ran it under the old name runs 016 once more,
+which only inserts rows that are missing — `ON CONFLICT DO NOTHING` — so no
+switch a shop has set changes.)
 
 **API.** Added: `GET /api/features` (any role: `{features:{kitchen:true,…},
 setup_completed}`) · `PATCH /api/features` (admin; `{features:{…}}`, any
 subset; returns `{features, switched_off}` — the children turned off with their
 parent; 409 turning off `split_combine` under an open bill group or `qr` under
-rounds awaiting approval; audits `features.update`) · `POST /api/setup` (admin;
+rounds awaiting approval, both checked under the bill lock; audits
+`features.update`) · `POST /api/setup` (admin;
 the wizard's Finish: `restaurant_name`, `restaurant_address`, `sst_number`,
 `tax_rate_bp`, `svc_rate_bp`, `features`, `card_count`, `qr_mode`
 `per_card|shop`; sets `setup_completed`; audits `setup.complete`).
@@ -429,24 +475,30 @@ shifts: every `/api/shift/*` ·
 discounts: `POST|DELETE /api/orders/:id/discounts…` ·
 refunds: `POST /api/orders/:id/refunds` (`POST /api/discounts/authorize` stays
 while either discounts or refunds is on) ·
-split_combine: `GET /api/orders/:id/split`, every `/api/bill-groups*` ·
+split_combine: `GET /api/orders/:id/split`, every `/api/bill-groups*` (the
+legs payment `POST /api/bill-groups/:id/pay` included) ·
 qr: `GET /api/t/:token`, `POST /api/public/orders`, `GET /api/public/sends/:ref`,
 `/api/kitchen/pending`, `POST /api/kitchen/sends/:id/approve|reject`,
-`/api/admin/cards/:id/qr.png`, `/api/admin/qr-shop(.png)`, `/api/admin/qr-health` ·
+`/api/admin/cards/:id/qr.png`, `POST /api/admin/cards/:id/regenerate-qr`,
+`/api/admin/qr-shop(.png)`, `POST /api/admin/qr-shop/regenerate`,
+`/api/admin/qr-health` ·
 voice: `POST /api/public/voice/interpret` (needs qr too) ·
 dashboard: `GET /api/dashboard` (`/api/summary` stays — it feeds the simple
 "Today's sales" card and the till's favourites). `GET /api/t/:token` reports
-`voice.enabled` false when the voice module is off.
+`voice.enabled` false when the voice module is off. Under the bill lock, a
+combine and a customer round re-check their switch and answer the same
+`404 feature_disabled` if it went off while they waited.
 
 | File | Lines | Contains |
 |---|---|---|
-| `migrations/015_features.sql` | 20 | **New.** The upgrade rows above, only where orders exist |
-| `src/services/features.js` | 120 | **New.** `MODULES`, `PARENT` (`stations→kitchen`, `voice→qr`), `PRESETS`; an in-memory cache of the flags (`state`/`all`/`isOn`, one shared in-flight load, `reload()` after every write); `save(client, changes)` merges, applies the parent rule, refuses the two money-stranding switch-offs, writes all ten rows in the caller's transaction; `requireFeature(...names)` middleware (404 `feature_disabled`); `moneyShift(client, refusal)` — the open shift a payment/refund/order belongs to, or NULL with no check when shifts are off |
-| `src/routes/features.js` | 93 | **New.** `GET|PATCH /api/features`, `POST /api/setup` (card count first through `cards.setCardCount`'s own guard, then settings + flags + `setup_completed` in one transaction); publishes `features.updated` |
-| `src/services/rounds.js` | — | `openTickets` inserts tickets already `served` (with `served_at`) when the kitchen is off; the station board skips a served ticket that never reached `ready` |
-| `src/services/orders.js` | — | `atStations()` snapshots every line to `kitchen` when stations are off; `insertOrder` re-derives status after opening tickets (a no-op with the kitchen on) and takes its shift from `features.moneyShift` |
-| `src/services/billing.js` | — | `addPayment`, `addRefund`, `settleIfMatchesPaid` take their shift from `features.moneyShift` (NULL, no check, with shifts off) |
-| `src/services/bill_groups.js` | — | `payGroup` likewise |
+| `migrations/016_features.sql` | 20 | **New.** The upgrade rows above, only where orders exist |
+| `src/services/features.js` | 156 | **New.** `MODULES`, `PARENT` (`stations→kitchen`, `voice→qr`), `PRESETS`; an in-memory cache of the flags for route gates and screens (`state`/`all`/`isOn`, one shared in-flight load, `reload()` after every write); `flagsTx`/`isOnTx`/`requireOnTx(client, …)` — the flags as committed, read in the caller's transaction under the bill lock; `save(client, changes)` takes the bill lock first, reads the current flags under it, merges, applies the parent rule, refuses the two money-stranding switch-offs, writes all ten rows, returns `{before, features, switched_off}`; `requireFeature(...names)` middleware (404 `feature_disabled`); `moneyShift(client, refusal)` — called inside the bill lock: the open shift a payment/refund/leg/order belongs to, or NULL with no check when shifts are off |
+| `src/routes/features.js` | 94 | **New.** `GET|PATCH /api/features`, `POST /api/setup` (card count first through `cards.setCardCount`'s own guard, then settings + flags + `setup_completed` in one transaction under the bill lock); publishes `features.updated` |
+| `src/lib/billlock.js` | — | Header names switching a module as a lock-taker |
+| `src/services/rounds.js` | — | `openTickets` inserts tickets already `served` (with `served_at`) when the kitchen is off, reading the switch under the caller's bill lock; the station board skips a served ticket that never reached `ready` |
+| `src/services/orders.js` | — | Under the bill lock: `refuseQrIfOff` (a `qr`-source round 404s once QR is off), `atStations(client, …)` snapshots every line to `kitchen` when stations are off, the shift from `features.moneyShift`; `insertOrder` re-derives status after opening tickets (a no-op with the kitchen on) |
+| `src/services/billing.js` | — | `addPayment`, `addRefund`, `settleIfMatchesPaid` take their shift from `features.moneyShift` inside the bill lock (NULL, no check, with shifts off); `addRefund`'s open-shift read moved from before the lock to inside it |
+| `src/services/bill_groups.js` | — | `payGroup`'s legs likewise; `combine` re-checks `split_combine` under the lock |
 | `src/services/printing.js` | — | `enqueueForRole` queues nothing with printing off; `enqueueRoundChits` and void slips queue nothing with the kitchen off |
 | `src/routes/*.js` | — | `requireFeature(...)` on the routes listed above; `kitchen.js`'s station list is just `kitchen` with stations off |
 | `public/js/features.js` | 45 | **New.** Client copy of the flags from `GET /api/features`; `on(name)`; `applyFlags` toggles `feat-off-<name>` on `<body>`; `fill()` for `{n}` placeholders |
@@ -459,9 +511,9 @@ dashboard: `GET /api/dashboard` (`/api/summary` stays — it feeds the simple
 | `public/js/pos.js` | — | "Send order" instead of "Send to Kitchen" with the kitchen off; the reprint button carries `data-feature="printing"` |
 | `public/js/i18n.js` | 207 | Every wizard, module and Features-screen string in English and Bahasa Malaysia (`features.*`, `module.*`, `setup.*`) |
 | `public/js/help.js` | 826 | New topic `features` — "Choosing what your POS does" (admin) |
-| `public/index.html` | 755 | `data-feature` on module-owned controls, the `#sec-features` admin section, `#setup-modal` |
+| `public/index.html` | 772 | `data-feature` on module-owned controls (card mode's combined-bill legs section `#pay-group-legs` included), the `#sec-features` admin section, `#setup-modal` |
 | `public/style.css` | 1437 | `body.feat-off-<name> [data-feature="<name>"]{display:none!important}` for all ten; wizard (`.setup-*`) and `.feature-row` styles on the existing tokens |
-| `public/sw.js` | — | Cache `v5`; precaches `features.js` and `setup.js` |
+| `public/sw.js` | — | Cache `v6` (card mode shipped `v5` separately); precaches `features.js` and `setup.js` |
 | `public/customer/customer.js` | — | `404 feature_disabled` shows "Please order at the counter", same as QR mode off |
-| `test/unit/features.test.js` | 383 | **New.** Every module's routes 404 when off and not when on (each module off in turn, children following); kitchen off → served at once, add-on too, no chit, not on the board after re-enabling; stations off → one station; shifts off → payment and refund with `shift_id` NULL, shifts on → refused, nothing back-filled; parent/child rules; discount survives off→on; printing off queues nothing; split_combine refused under an open group; fresh DB → wizard + all on, then a Lite setup trades; upgrade with orders → all on, no wizard; upgrade without → nothing written |
-| `test/e2e/journeys.spec.js` | 610 | New first journey: wizard as a small stall (name required, child switched off with its parent and the owner told, no QR step), then an order paid with no Shift and no Kitchen tab. A `beforeEach` puts every other journey on Advanced with 50 cards |
+| `test/unit/features.test.js` | 620 | **New.** Every module's routes 404 when off and not when on (each module off in turn, children following); kitchen off → served at once, add-on too, no chit, not on the board after re-enabling; stations off → one station; shifts off → payment and refund with `shift_id` NULL, shifts on → refused, nothing back-filled; parent/child rules; discount survives off→on; printing off queues nothing; split_combine refused under an open group; fresh DB → wizard + all on, then a Lite setup trades; upgrade with orders → all on, no wizard; upgrade without → nothing written. Against card mode's bill lock (`behindLock()` holds the lock, queues the request, commits what got there first): shifts off → a combined bill's legs with no shift; a refund, payment or combined payment queued behind a shift close is refused, and a payment queued behind shifts going back on lands in the open shift; the Split-and-combine switch and a combine, and the QR switch and a customer round, never cross; kitchen off → an accepted customer round is born served, an add-on or an approval queued behind a payment or a cancel never writes onto the closed bill, and an order queued behind the kitchen going off is born served |
+| `test/e2e/journeys.spec.js` | 619 | New first journey: wizard as a small stall (name required, child switched off with its parent and the owner told, no QR step), then an order paid with no Shift and no Kitchen tab. A `beforeEach` puts every other journey on Advanced with 50 cards |

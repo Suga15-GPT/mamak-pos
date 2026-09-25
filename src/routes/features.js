@@ -16,23 +16,24 @@ router.get('/api/features', requireRole(), awaitH(async (req, res) => {
   res.json({ features: s.flags, setup_completed: s.setupCompleted });
 }));
 
+// features.save takes the bill lock first, so everything written here —
+// the flags, and the wizard's settings through `extra` — commits under it.
 async function saveFeatures(changes, userId, extra) {
   const client = await pool.connect();
   let result;
   try {
     await client.query('BEGIN');
-    const before = await features.all();
     result = await features.save(client, changes);
     if (extra) await extra(client);
     await writeAudit(client, {
       userId, action: 'features.update', entityType: 'settings', entityId: null,
-      detail: { before, after: result.features, switched_off: result.switched_off },
+      detail: { before: result.before, after: result.features, switched_off: result.switched_off },
     });
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   await features.reload();
   publish('features.updated', {});
-  return result;
+  return { features: result.features, switched_off: result.switched_off };
 }
 
 function pickFlags(body) {

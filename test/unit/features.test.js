@@ -5,6 +5,12 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { Pool } = require('pg');
 const { withDb, getFreePort, TEST_DATABASE_URL } = require('../helper');
+const { BILL_LOCK_KEY } = require('../../src/lib/billlock');
+
+// This file's own connections, told apart from other test files' — they run in
+// parallel against the same database, and the bill lock is database-wide.
+const APP_NAME = `features-test-${process.pid}`;
+process.env.PGAPPNAME = APP_NAME;
 
 const SRC_DIR = path.join(__dirname, '..', '..', 'src') + path.sep;
 const DB_MODULE = require.resolve('../../src/db');
@@ -73,6 +79,58 @@ async function openCard(base, s, number, item = s.roti, qty = 1) {
 }
 
 const orderRow = (db, id) => db.query('SELECT * FROM orders WHERE id = $1', [id]).then(r => r.rows[0]);
+const count = async (db, sql, params) => (await db.query(sql, params)).rows[0].n;
+
+// A customer's round from the card's own QR; returns the order it landed on.
+async function customerOrder(base, s, db, number, item = s.roti) {
+  const r = await fetch(`${base}/api/public/orders`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ table_token: s.card(number).qr_token, items: [{ item_id: item.id, qty: 1 }] }),
+  });
+  assert.equal(r.status, 201, `a customer order on Card ${number}`);
+  return (await db.query(
+    "SELECT id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled','refunded')", [s.card(number).id])).rows[0].id;
+}
+const pendingRound = async (db, orderId) => (await db.query(
+  "SELECT id FROM order_sends WHERE order_id = $1 AND approval_state = 'pending'", [orderId])).rows[0].id;
+
+// What a switch committed in SQL looks like to anything that reads the flag
+// under the bill lock (the cache is not told — the point).
+const setFlagSql = (tx, name, on) => tx.query(
+  'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+  [`feature_${name}`, on ? '1' : '0']);
+
+/* Takes the bill lock on a connection of its own, starts `request`, waits
+   until that request is queued behind the lock, commits `change` (the payment,
+   shift close, switch or cancel that got there first) and lets it through.
+   This is the one ordering a check made before the lock gets wrong, forced
+   every time instead of hoped for. Returns the request's response. */
+async function behindLock(db, request, change) {
+  const c = await db.pool.connect();
+  let pending;
+  try {
+    await c.query('BEGIN');
+    await c.query('SELECT pg_advisory_xact_lock($1)', [BILL_LOCK_KEY]);
+    pending = request();
+    pending.catch(() => {});
+    for (let i = 0; ; i++) {
+      const queued = await db.query(
+        "SELECT 1 FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock' AND wait_event = 'advisory'",
+        [APP_NAME]);
+      if (queued.rows[0]) break;
+      if (i === 200) throw new Error('the request never queued behind the bill lock');
+      await new Promise(r => setTimeout(r, 25));
+    }
+    await change(c);
+    await c.query('COMMIT');
+  } catch (e) {
+    await c.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    c.release();
+  }
+  return pending;
+}
 
 /* Every route each module owns, as [method, url, body]. Ids that exist are
    filled in per test; the point is only which answer comes back. */
@@ -293,6 +351,185 @@ test('split and combine cannot be switched off under an open combined bill', asy
   });
 });
 
+/* ===== each module against card mode's bill lock =====
+   Every bill write takes one lock first (src/lib/billlock.js). These put the
+   write that got there first in place while the other waits on that lock. */
+
+test('shifts off: a combined bill paid in legs takes no shift and records none, like a single payment', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    const a = await openCard(base, s, 12);
+    const b = await openCard(base, s, 13, s.milo);
+    const g = await json(await post(base, s, '/api/bill-groups', { order_ids: [a, b] }));
+
+    const legs = { legs: [{ method: 'Card', amount: 1 }, { method: 'Cash', tendered: 20 }] };
+    const refused = await post(base, s, `/api/bill-groups/${g.id}/pay`, legs);
+    assert.equal(refused.status, 400, 'shifts on and none open: refused, as a single payment is');
+    assert.match((await json(refused)).error, /no shift is open/);
+
+    await setFeatures(base, s, { shifts: false });
+    assert.equal((await post(base, s, `/api/bill-groups/${g.id}/pay`, legs)).status, 200);
+    const rows = (await db.query('SELECT method, shift_id FROM payments WHERE order_id = ANY($1::int[])', [[a, b]])).rows;
+    assert.deepEqual([...new Set(rows.map(r => r.method))].sort(), ['Card', 'Cash'], 'both legs written');
+    assert.ok(rows.every(r => r.shift_id === null), 'no leg carries a shift');
+    for (const id of [a, b]) {
+      const row = await orderRow(db, id);
+      assert.equal(row.status, 'paid');
+      assert.equal(row.closed_shift_id, null);
+    }
+  });
+});
+
+test('the open shift is read under the bill lock: a refund, payment or combined payment queued behind a shift close lands in no closed shift', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    const openShift = async () => assert.equal((await post(base, s, '/api/shift/open', { float: 0 })).status, 201);
+    const closeShift = tx => tx.query('UPDATE shifts SET closed_at = now() WHERE closed_at IS NULL');
+
+    await openShift();
+    const paid = await openCard(base, s, 14);
+    assert.equal((await post(base, s, `/api/orders/${paid}/pay`, { method: 'Card' })).status, 200);
+    const payment = (await db.query('SELECT id FROM payments WHERE order_id = $1', [paid])).rows[0].id;
+    const single = await openCard(base, s, 15);
+    const g = await json(await post(base, s, '/api/bill-groups', { order_ids: [await openCard(base, s, 16), await openCard(base, s, 17)] }));
+
+    const cases = [
+      ['a refund', 'refunds', () => post(base, s, `/api/orders/${paid}/refunds`, { payment_id: payment, amount: 0.5, reason: 'cold roti' })],
+      ['a payment', 'payments', () => post(base, s, `/api/orders/${single}/pay`, { method: 'Card' })],
+      ['a combined payment', 'payments', () => post(base, s, `/api/bill-groups/${g.id}/pay`, { legs: [{ method: 'Card', amount: g.amount_due }] })],
+    ];
+    for (const [label, table, request] of cases) {
+      const before = await count(db, `SELECT count(*)::int n FROM ${table}`);
+      const r = await behindLock(db, request, closeShift);
+      assert.equal(r.status, 400, `${label} queued behind a shift close is refused`);
+      assert.match((await json(r)).error, /no shift is open/);
+      assert.equal(await count(db, `SELECT count(*)::int n FROM ${table}`), before, `${label} wrote nothing into the closed shift`);
+      await openShift();
+    }
+
+    // The switch itself is read under the lock too: a payment queued behind
+    // shifts going back on is taken into the open shift, not recorded in none
+    // and left out of that shift's cash-up.
+    await setFeatures(base, s, { shifts: false });
+    const late = await openCard(base, s, 18);
+    const r = await behindLock(db, () => post(base, s, `/api/orders/${late}/pay`, { method: 'Card' }), tx => setFlagSql(tx, 'shifts', true));
+    assert.equal(r.status, 200);
+    const open = (await db.query('SELECT id FROM shifts WHERE closed_at IS NULL')).rows[0].id;
+    assert.equal((await db.query('SELECT shift_id FROM payments WHERE order_id = $1', [late])).rows[0].shift_id, open);
+  });
+});
+
+test('Split and combine: the switch and a combine each wait on the bill lock and re-read under it, so neither slips past the other', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    const a = await openCard(base, s, 18);
+    const b = await openCard(base, s, 19);
+    const openGroups = () => count(db, 'SELECT count(*)::int n FROM bill_groups WHERE closed_at IS NULL');
+
+    // A combine lands first: the switch, queued behind it, sees the combined bill.
+    const off = await behindLock(db, () => call(base, s, 'PATCH', '/api/features', { features: { split_combine: false } }), async tx => {
+      const g = (await tx.query('INSERT INTO bill_groups (created_by) VALUES (NULL) RETURNING id')).rows[0].id;
+      await tx.query('UPDATE orders SET bill_group_id = $1 WHERE id = ANY($2::int[])', [g, [a, b]]);
+    });
+    assert.equal(off.status, 409);
+    assert.equal((await get(base, s, '/api/features')).features.split_combine, true, 'nothing switched');
+    const gid = (await orderRow(db, a)).bill_group_id;
+    assert.equal((await call(base, s, 'DELETE', `/api/bill-groups/${gid}`)).status, 200);
+
+    // The switch lands first: a combine the route let through is refused under the lock.
+    const combine = await behindLock(db, () => post(base, s, '/api/bill-groups', { order_ids: [a, b] }),
+      tx => setFlagSql(tx, 'split_combine', false));
+    assert.equal(combine.status, 404);
+    assert.equal((await json(combine)).error, 'feature_disabled');
+    assert.equal(await openGroups(), 0, 'no combined bill opened after the switch');
+  });
+});
+
+test('QR: not switched off under a round awaiting approval, and no customer round lands after the switch', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    assert.equal((await call(base, s, 'PATCH', '/api/settings', { qr_require_approval: true })).status, 200);
+    const qrOff = () => call(base, s, 'PATCH', '/api/features', { features: { qr: false } });
+
+    const held = await customerOrder(base, s, db, 20);
+    const refused = await qrOff();
+    assert.equal(refused.status, 409);
+    assert.match((await json(refused)).error, /waiting for approval/);
+    assert.equal((await get(base, s, '/api/features')).features.qr, true, 'nothing switched');
+    assert.equal((await post(base, s, `/api/kitchen/sends/${await pendingRound(db, held)}/approve`)).status, 200);
+
+    // A customer round lands first: the switch, queued behind it, sees it waiting.
+    const off = await behindLock(db, qrOff, async tx => {
+      const o = (await tx.query(
+        "INSERT INTO orders (card_id, status, source, order_type) VALUES ($1, 'sent', 'qr', 'dine_in') RETURNING id", [s.card(21).id])).rows[0].id;
+      await tx.query("INSERT INTO order_sends (order_id, seq_no, source, approval_state) VALUES ($1, 1, 'qr', 'pending')", [o]);
+    });
+    assert.equal(off.status, 409);
+    assert.equal((await get(base, s, '/api/features')).features.qr, true, 'nothing switched');
+
+    // The switch lands first: a round the route let through is refused under the lock.
+    const late = await behindLock(db, () => fetch(`${base}/api/public/orders`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ table_token: s.card(22).qr_token, items: [{ item_id: s.roti.id, qty: 1 }] }),
+    }), tx => setFlagSql(tx, 'qr', false));
+    assert.equal(late.status, 404);
+    assert.equal((await json(late)).error, 'feature_disabled');
+    assert.equal(await count(db, 'SELECT count(*)::int n FROM orders WHERE card_id = $1', [s.card(22).id]), 0,
+      'no order, and no round left awaiting an approval queue that is gone');
+  });
+});
+
+test('kitchen off: an accepted customer round is born served; an add-on or an acceptance queued behind a payment or a cancel never writes onto the closed bill', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    await setFeatures(base, s, { kitchen: false });
+    assert.equal((await call(base, s, 'PATCH', '/api/settings', { qr_require_approval: true })).status, 200);
+    const ticketStatuses = async sendId => (await db.query(
+      'SELECT status FROM order_send_tickets WHERE send_id = $1', [sendId])).rows.map(r => r.status);
+
+    // Accepting through the approval queue: born served, and the order says so.
+    const q = await customerOrder(base, s, db, 23);
+    const qRound = await pendingRound(db, q);
+    assert.equal((await post(base, s, `/api/kitchen/sends/${qRound}/approve`)).status, 200);
+    assert.deepEqual(await ticketStatuses(qRound), ['served']);
+    assert.equal((await orderRow(db, q)).status, 'served');
+
+    // An add-on queued behind the payment that closed the bill: refused, still paid.
+    const id = await openCard(base, s, 24);
+    const add = await behindLock(db, () => post(base, s, `/api/orders/${id}/items`, { items: [{ item_id: s.milo.id, qty: 1 }] }), async tx => {
+      const { total_cents: total } = (await tx.query('SELECT total_cents FROM orders WHERE id = $1', [id])).rows[0];
+      await tx.query("INSERT INTO payments (order_id, method, amount_cents) VALUES ($1, 'Card', $2)", [id, total]);
+      await tx.query("UPDATE orders SET status = 'paid', paid_at = now() WHERE id = $1", [id]);
+    });
+    assert.equal(add.status, 400);
+    assert.equal((await json(add)).error, 'order closed');
+    assert.equal((await orderRow(db, id)).status, 'paid');
+    assert.equal(await count(db, 'SELECT count(*)::int n FROM order_sends WHERE order_id = $1', [id]), 1, 'no new round');
+
+    // An acceptance queued behind a cancel: refused, still cancelled, nothing born served.
+    const c = await customerOrder(base, s, db, 25);
+    const cRound = await pendingRound(db, c);
+    const approve = await behindLock(db, () => post(base, s, `/api/kitchen/sends/${cRound}/approve`),
+      tx => tx.query("UPDATE orders SET status = 'cancelled' WHERE id = $1", [c]));
+    assert.equal(approve.status, 409);
+    assert.equal((await orderRow(db, c)).status, 'cancelled');
+    assert.deepEqual(await ticketStatuses(cRound), []);
+
+    // The switch is read under the lock: an order queued behind the kitchen
+    // screen going off is born served, not left 'sent' for a screen that's gone.
+    await setFeatures(base, s, { kitchen: true });
+    const r = await behindLock(db, () => post(base, s, '/api/orders', { card_id: s.card(26).id, items: [{ item_id: s.roti.id, qty: 1 }] }),
+      tx => setFlagSql(tx, 'kitchen', false));
+    assert.equal(r.status, 201);
+    assert.equal((await orderRow(db, (await json(r)).id)).status, 'served');
+  });
+});
+
 test('a fresh database has no setup and every module reads on; the wizard finishes it', async () => {
   await withDb(async db => {
     const base = await startApp();
@@ -324,8 +561,8 @@ test('a fresh database has no setup and every module reads on; the wizard finish
   });
 });
 
-/* Runs every migration before 015 against a fresh schema, lets the test put a
-   shop's history in place, then applies 015 — what an upgrade does. */
+/* Runs every migration before 016 against a fresh schema, lets the test put a
+   shop's history in place, then applies 016 — what an upgrade does. */
 async function withPreFeaturesDb(before, fn) {
   const schema = `test_${crypto.randomBytes(6).toString('hex')}`;
   const admin = new Pool({ connectionString: TEST_DATABASE_URL });
@@ -339,7 +576,7 @@ async function withPreFeaturesDb(before, fn) {
   try {
     await db.query('CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())');
     for (const file of fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort()) {
-      if (file >= '015') break;
+      if (file >= '016') break;
       await db.query(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
       await db.query('INSERT INTO schema_migrations (version) VALUES ($1)', [file]);
     }

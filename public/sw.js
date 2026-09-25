@@ -7,8 +7,10 @@
 // Bump CACHE_VERSION on each deploy; old caches are dropped on activate.
 // v3: the whole shell changed in the redesign, so every cached asset from v2
 // is stale and must be dropped.
-// v5: feature modules and the setup wizard (features.js, setup.js).
-const CACHE_VERSION = 'v5';
+// v5: card mode's combined-bill payment screen.
+// v6: feature modules and the setup wizard (features.js, setup.js) — past v5,
+// which card mode shipped separately with a different shell.
+const CACHE_VERSION = 'v6';
 const CACHE_NAME = `mamak-pos-${CACHE_VERSION}`;
 
 const SHELL_URLS = [

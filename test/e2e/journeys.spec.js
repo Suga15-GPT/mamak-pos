@@ -331,7 +331,8 @@ test('split bill', async ({ page, request }) => {
 });
 
 /* Card mode: two parties on two cards decide to pay together. Nothing moves
-   between their orders; one payment settles both and frees both cards. */
+   between their orders; the whole combined bill is paid in one go — here RM2
+   in cash and the rest by card, submitted together — and both cards free up. */
 test('two cards, combine, pay once', async ({ page, request }) => {
   const csrfToken = await apiLogin(request);
   const existing = await request.get('/api/shift/current').then(r => r.json());
@@ -361,16 +362,24 @@ test('two cards, combine, pay once', async ({ page, request }) => {
   await expect(page.locator('#pay-details')).toContainText('Combined bill');
   await expect(page.locator('#pay-details')).toContainText('Roti Canai');
   await expect(page.locator('#pay-details')).toContainText('Teh Tarik');
-  await page.locator('#pay-modal').getByRole('button', { name: '💵 Cash', exact: true }).click();
+  // Roti 2.12 + teh tarik 2.97 = 5.09: RM2.00 cash, RM3.09 by card.
+  await expect(page.locator('#pay-amount-row')).toBeHidden();
+  await page.locator('#group-cash-part').fill('2');
+  await page.locator('#group-cash-received').fill('5');
+  await expect(page.locator('#group-legs-summary')).toContainText('Cash RM 2.00 + card RM 3.09 · change RM 3.00');
+  await page.getByRole('button', { name: 'Take both payments' }).click();
   await expect(page.locator('#pos-tables')).toBeVisible();
 
-  // Both cards are free again, and each order was paid by its own row.
+  // Both cards are free again, and the payments are ordinary per-order rows,
+  // lowest card first: Card 11 by card; Card 12 the rest of the card, then cash.
   const open = await request.get('/api/orders').then(r => r.json());
   expect(open.find(o => o.label === 'Card 11' || o.label === 'Card 12')).toBeUndefined();
   const recent = await request.get('/api/orders?mode=recent').then(r => r.json());
   const paid = recent.filter(o => o.label === 'Card 11' || o.label === 'Card 12');
   expect(paid.map(o => o.status)).toEqual(['paid', 'paid']);
-  expect(paid.every(o => o.payments.length === 1)).toBe(true);
+  const byLabel = Object.fromEntries(paid.map(o => [o.label, o.payments.map(p => [p.method, p.amount])]));
+  expect(byLabel['Card 11']).toEqual([['Card', 2.12]]);
+  expect(byLabel['Card 12']).toEqual([['Card', 0.97], ['Cash', 2]]);
   await expect(page.locator('#tables-grid').getByRole('button', { name: /^Card 11\b/ })).toContainText('Free');
 });
 

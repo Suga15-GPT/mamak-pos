@@ -1,5 +1,6 @@
 const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
+const { lockBills } = require('../lib/billlock');
 const features = require('./features');
 
 /* ===== kitchen rounds =====
@@ -62,11 +63,16 @@ async function createSend(client, orderId, opts = {}) {
    printer until someone accepts it.
 
    With the kitchen screen switched off nobody will ever tap these along, so
-   they are born served, in the caller's transaction, and the derived
-   orders.status never sits at 'sent' waiting for a screen that isn't there. */
+   they are born served. Every caller (opening an order, adding a round,
+   approving a customer's round) holds the bill lock, knows the order is open
+   (it has just created it, or re-read it under the lock and refused a closed
+   one), and then re-derives its status through deriveOrderStatus — the same
+   locked, conditional path a kitchen tap takes — so the order reads served
+   rather than 'sent' for a screen that isn't there, and a closed bill is never
+   written to. The switch is read under that lock (features.flagsTx). */
 async function openTickets(client, sendId, stationCodes) {
   const codes = [...new Set(stationCodes)].filter(Boolean);
-  const served = !(await features.isOn('kitchen'));
+  const served = !(await features.isOnTx(client, 'kitchen'));
   for (const code of codes) {
     await client.query(
       served
@@ -96,9 +102,26 @@ async function deriveOrderStatus(client, orderId) {
   const live = new Set(r.rows.map(x => x.status));
   const next = ROLLUP_ORDER.find(st => live.has(st)) || 'sent';
   if (next !== cur.rows[0].status) {
-    await client.query('UPDATE orders SET status = $1, updated_at = now() WHERE id = $2', [next, orderId]);
+    // Conditional: a cooking status can never overwrite a closed bill, whether
+    // or not the caller holds the bill lock (re-check 2, K).
+    await client.query(
+      "UPDATE orders SET status = $1, updated_at = now() WHERE id = $2 AND status NOT IN ('paid','cancelled','refunded')",
+      [next, orderId]);
   }
   return next;
+}
+
+/* Shop-mode QR (and approval mode generally): a round awaiting approval is
+   not on the bill yet — its lines are shown "awaiting approval" and count in
+   no total — so the till must not take money while one is outstanding. The
+   customer would either pay for food nobody has accepted, or the round would
+   drop out of the approval queue the moment the bill closed and never be
+   cooked. */
+const HELD_MESSAGE = 'A customer order is waiting for approval — approve or reject it first.';
+async function refuseWhileHeld(client, orderIds) {
+  const r = await client.query(
+    "SELECT 1 FROM order_sends WHERE order_id = ANY($1::int[]) AND approval_state = 'pending' LIMIT 1", [orderIds]);
+  if (r.rows[0]) throw AppError(HELD_MESSAGE, 409);
 }
 
 /* The status of the station ticket a given order line is actually on — what
@@ -133,6 +156,9 @@ async function advanceTicket(ticketId, status, { userId, role }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // A tap writes a ticket and the order's status: bill lock first, so it is
+    // serialised with payment and cancel (re-check 2, K and X1).
+    await lockBills(client);
     const t = await client.query(
       `SELECT t.*, s.order_id FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id
         WHERE t.id = $1 FOR UPDATE OF t`, [ticketId]);
@@ -303,6 +329,7 @@ async function listPendingSends() {
 
 module.exports = {
   TICKET_STATUSES, TERMINAL_ORDER_STATUSES, TICKET_TRANSITIONS, BACKWARD_TICKET,
+  HELD_MESSAGE, refuseWhileHeld,
   listStations, createSend, openTickets, deriveOrderStatus, ticketStatusForLine,
   ticketTransitionError, advanceTicket, attachSends, listStationTickets, listPendingSends,
 };

@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const QRCode = require('qrcode');
 const { pool } = require('../db');
 const { requireRole } = require('../lib/auth');
@@ -9,6 +10,7 @@ const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const cards = require('../services/cards');
 const groups = require('../services/bill_groups');
+const { writeAudit } = require('../services/orders');
 const { requireFeature } = require('../services/features');
 
 const router = express.Router();
@@ -41,10 +43,31 @@ router.get('/api/admin/cards/:id/qr.png', requireRole('admin'), requireFeature('
   res.type('image/png').send(buf);
 }));
 
+/* Reissue a card's QR token: every printed copy of the old one stops working
+   (a card photographed and abused, or simply lost). */
+router.post('/api/admin/cards/:id/regenerate-qr', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
+  const token = crypto.randomBytes(8).toString('hex');
+  const r = await pool.query('UPDATE cards SET qr_token = $1 WHERE id = $2 RETURNING id, number', [token, req.params.id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+  await writeAudit(pool, {
+    userId: req.user.id, action: 'card.qr_regenerate', entityType: 'card', entityId: r.rows[0].id,
+    detail: { card: `Card ${r.rows[0].number}` },
+  });
+  res.json({ ok: true, url: `${publicBaseUrl(req)}/t/${token}` });
+}));
+
 // Shop mode's one poster.
 router.get('/api/admin/qr-shop', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
   const { shop_token: token } = await cards.qrSettings();
   res.json({ url: token ? `${publicBaseUrl(req)}/t/${token}` : null });
+}));
+
+router.post('/api/admin/qr-shop/regenerate', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
+  const token = crypto.randomBytes(8).toString('hex');
+  await pool.query(
+    "INSERT INTO settings (key, value) VALUES ('qr_shop_token', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [token]);
+  await writeAudit(pool, { userId: req.user.id, action: 'qr_shop.regenerate', entityType: 'settings', entityId: null, detail: {} });
+  res.json({ ok: true, url: `${publicBaseUrl(req)}/t/${token}` });
 }));
 
 router.get('/api/admin/qr-shop.png', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
@@ -56,6 +79,8 @@ router.get('/api/admin/qr-shop.png', requireRole('admin'), requireFeature('qr'),
 
 /* ===== combined bills ===== */
 
+// Split and combine switched off: every combined-bill route 404s. The switch
+// is refused while a combined bill is open, so none is ever stranded here.
 const staff = [requireRole('admin', 'staff'), requireFeature('split_combine')];
 const touched = ids => ids.forEach(id => publish('order.updated', { order_id: id }));
 
@@ -82,27 +107,28 @@ router.delete('/api/bill-groups/:id', staff, awaitH(async (req, res) => {
   res.json({ ok: true, ...r });
 }));
 
-/* Body: { method, amount?, tendered? } — the same shape as paying one order;
-   amount (RM) defaults to the group's whole remaining balance. */
+/* Body: { legs: [{ method, amount?, tendered? }, ...] } — every way the
+   customer is paying (RM), submitted together. The legs must settle the whole
+   bill; nothing is written otherwise. */
 router.post('/api/bill-groups/:id/pay', staff, awaitH(async (req, res) => {
-  const { method, amount, tendered } = req.body || {};
-  const result = await groups.payGroup(Number(req.params.id), {
-    method,
-    amountCents: amount != null ? rm2cents(amount) : null,
-    tenderedCents: tendered != null ? rm2cents(tendered) : null,
-    userId: req.user.id,
-  });
+  const raw = req.body?.legs;
+  const legs = Array.isArray(raw) ? raw.map(l => ({
+    method: l?.method,
+    amountCents: l?.amount != null ? rm2cents(l.amount) : null,
+    tenderedCents: l?.tendered != null ? rm2cents(l.tendered) : null,
+  })) : raw;
+  const result = await groups.payGroup(Number(req.params.id), { legs, userId: req.user.id });
   result.order_ids.forEach(id => publish('order.paid', { order_id: id }));
   // One receipt for the whole group: printing builds the grouped layout for
   // any order that belongs to a bill group.
-  if (result.settled && result.order_ids.length) await printing.enqueue('receipt', result.order_ids[0]);
+  if (result.order_ids.length) await printing.enqueue('receipt', result.order_ids[0]);
   res.json({
     ok: true,
     paid: cents2rm(result.amount_cents),
     change: cents2rm(result.change_cents),
-    remaining: cents2rm(result.remaining_cents),
+    rounding: cents2rm(result.rounding_cents),
     settled: result.settled,
-    allocations: result.allocations.map(a => ({ order_id: a.order_id, card_number: a.card_number, amount: cents2rm(a.amount_cents) })),
+    allocations: result.allocations.map(a => ({ order_id: a.order_id, card_number: a.card_number, method: a.method, amount: cents2rm(a.amount_cents) })),
   });
 }));
 
