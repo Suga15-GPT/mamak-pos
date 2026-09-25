@@ -1,6 +1,7 @@
 const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
-const { cents2rm, roundCashCents } = require('../lib/money');
+const { cents2rm, roundCashCents, formatRM } = require('../lib/money');
+const { lockBills } = require('../lib/billlock');
 const { writeAudit, ordersWithItems } = require('./orders');
 const rounds = require('./rounds');
 
@@ -22,37 +23,37 @@ const METHODS = ['Cash', 'Card', 'DuitNow/eWallet'];
 const UNCOMBINE_BLOCKED = "This combined bill has a payment on it and can't be split apart.";
 const NOT_IN_FULL = 'A combined bill has to be paid in full in one go.';
 
-/* One lock order everywhere a group is touched: every order involved, by
-   ascending id, then every group involved, by ascending id. Combine used to
-   lock orders then groups while payment locked the group then its orders, and
-   the two deadlocked (finding #5).
-
-   Membership can change between reading it and locking it, so the set is
-   re-read after locking and the lock widened until it is stable. Returns the
-   locked orders (with card numbers) and the locked groups. */
+/* Locks everything a group operation touches. The bill lock (lib/billlock)
+   comes first: every operation that can change membership, settle a bill or
+   change a total holds it, so the group closure read next cannot change
+   underneath us, and the rows are then locked in one fixed order — orders by
+   ascending id, groups by ascending id. The earlier version locked the orders
+   it was given and then discovered and locked the rest of their groups while
+   still holding the first set, which deadlocked whenever a discovered order had
+   a lower id (PR #16 re-check, #5). Returns the locked orders (with card
+   numbers) and the locked groups. */
 async function lockGroupSet(client, orderIds) {
-  let ids = [...new Set(orderIds.map(Number))].filter(id => id > 0);
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const orders = (await client.query(
-      `SELECT o.*, c.number AS card_number FROM orders o LEFT JOIN cards c ON c.id = o.card_id
-        WHERE o.id = ANY($1::int[]) ORDER BY o.id FOR UPDATE OF o`, [ids])).rows;
-    const groupIds = [...new Set(orders.map(o => o.bill_group_id).filter(Boolean))].sort((a, b) => a - b);
-    const members = groupIds.length ? (await client.query(
-      'SELECT id FROM orders WHERE bill_group_id = ANY($1::int[])', [groupIds])).rows.map(r => r.id) : [];
-    const missing = members.filter(id => !ids.includes(id));
-    if (!missing.length) {
-      const groups = groupIds.length ? (await client.query(
-        'SELECT * FROM bill_groups WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [groupIds])).rows : [];
-      return { orders, groups };
-    }
-    ids = [...ids, ...missing];
-  }
-  throw AppError('this combined bill changed while you were working on it — try again', 409);
+  await lockBills(client);
+  const ids = [...new Set(orderIds.map(Number))].filter(id => id > 0);
+  const closure = (await client.query(
+    `SELECT id FROM orders WHERE id = ANY($1::int[])
+     UNION
+     SELECT m.id FROM orders o JOIN orders m ON m.bill_group_id = o.bill_group_id WHERE o.id = ANY($1::int[])`,
+    [ids])).rows.map(r => r.id);
+  const orders = (await client.query(
+    `SELECT o.*, c.number AS card_number FROM orders o LEFT JOIN cards c ON c.id = o.card_id
+      WHERE o.id = ANY($1::int[]) ORDER BY o.id FOR UPDATE OF o`, [closure])).rows;
+  const groupIds = [...new Set(orders.map(o => o.bill_group_id).filter(Boolean))].sort((a, b) => a - b);
+  const groups = groupIds.length ? (await client.query(
+    'SELECT * FROM bill_groups WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [groupIds])).rows : [];
+  return { orders, groups };
 }
 
 // Locks a group and all its members; members come back in allocation order
-// (ascending card number).
+// (ascending card number). Membership is read after the bill lock, so it is
+// the membership that gets locked.
 async function lockGroup(client, groupId) {
+  await lockBills(client);
   const memberIds = (await client.query('SELECT id FROM orders WHERE bill_group_id = $1', [groupId])).rows.map(r => r.id);
   const { orders, groups } = await lockGroupSet(client, memberIds);
   let g = groups.find(x => x.id === Number(groupId));
@@ -114,6 +115,11 @@ async function combine(orderIds, userId) {
       if (CLOSED.includes(o.status)) throw AppError(`Order #${o.id} is already closed and can't be combined`, 409);
       if (o.order_type !== 'dine_in' || !o.card_id) throw AppError('Only open card orders can be combined — not takeaway or table orders', 409);
     }
+    // Combined bills are paid all at once, so a card that has already taken
+    // money of its own can't join one.
+    const paidAlready = (await client.query(
+      'SELECT 1 FROM payments WHERE order_id = ANY($1::int[]) LIMIT 1', [ids])).rows[0];
+    if (paidAlready) throw AppError('This card has a payment on it — pay or refund it before combining.', 409);
 
     const groups = [...new Set(orders.map(o => o.bill_group_id).filter(Boolean))].sort((a, b) => a - b);
     for (const g of groups) {
@@ -171,23 +177,20 @@ async function uncombine(groupId, { orderId = null, userId }) {
    group automatically, and a group left with one card dissolves. Otherwise the
    remaining cards could never be paid (finding #1). No-op for an order that is
    not grouped or still open. */
-async function leaveGroupIfClosed(orderId, userId, reason) {
-  const o = (await pool.query('SELECT bill_group_id FROM orders WHERE id = $1', [orderId])).rows[0];
-  if (!o?.bill_group_id) return null;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const { orders, groups } = await lockGroupSet(client, [orderId]);
-    const me = orders.find(x => x.id === Number(orderId));
-    const group = groups.find(g => g.id === me?.bill_group_id);
-    if (!me || !group || group.closed_at || !CLOSED.includes(me.status)) { await client.query('COMMIT'); return null; }
-    const members = orders.filter(x => x.bill_group_id === group.id);
-    const r = await detach(client, group, members, [me], {
-      userId, action: 'bill_group.remove', reason: `Card ${me.card_number} closed on its own (${reason})`,
-    });
-    await client.query('COMMIT');
-    return r;
-  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+async function leaveGroupIfClosedTx(client, orderId, userId, reason) {
+  const { orders, groups } = await lockGroupSet(client, [orderId]);
+  const me = orders.find(x => x.id === Number(orderId));
+  const group = groups.find(g => g.id === me?.bill_group_id);
+  if (!me || !group || group.closed_at || !CLOSED.includes(me.status)) return null;
+  // A card with a customer order still awaiting approval never leaves on its
+  // own: that order must stay visible and decidable (re-check, R-A).
+  const held = (await client.query(
+    "SELECT 1 FROM order_sends WHERE order_id = $1 AND approval_state = 'pending' LIMIT 1", [me.id])).rows[0];
+  if (held) return null;
+  const members = orders.filter(x => x.bill_group_id === group.id);
+  return detach(client, group, members, [me], {
+    userId, action: 'bill_group.remove', reason: `Card ${me.card_number} closed on its own (${reason})`,
+  });
 }
 
 /* The combined bill: each member order (with its lines, for the "Card N"
@@ -282,9 +285,9 @@ async function payGroup(groupId, { legs, userId }) {
     if (remainder > 0) {
       if (!cash) throw AppError(NOT_IN_FULL, 400);
       rounded = roundCashCents(remainder);
-      if (cash.amountCents != null && cash.amountCents < rounded) throw AppError(NOT_IN_FULL, 400);
       tendered = cash.tenderedCents ?? cash.amountCents ?? rounded;
-      if (tendered < rounded) throw AppError(NOT_IN_FULL, 400);
+      if (tendered < rounded) throw AppError(`Cash given ${formatRM(tendered)} is less than the ${formatRM(rounded)} still due`, 400);
+      if (cash.amountCents != null && cash.amountCents < rounded) throw AppError(NOT_IN_FULL, 400);
       changeCents = tendered - rounded;
     } else if (cash) {
       throw AppError('the card and e-wallet amounts already cover this bill — take the cash off', 400);
@@ -362,4 +365,4 @@ async function payGroup(groupId, { legs, userId }) {
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
 
-module.exports = { combine, uncombine, getGroup, payGroup, leaveGroupIfClosed, UNCOMBINE_BLOCKED, NOT_IN_FULL };
+module.exports = { combine, uncombine, getGroup, payGroup, leaveGroupIfClosedTx, UNCOMBINE_BLOCKED, NOT_IN_FULL };

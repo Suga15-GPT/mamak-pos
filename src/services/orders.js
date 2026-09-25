@@ -2,6 +2,7 @@ const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
 const rounds = require('./rounds');
+const { lockBills } = require('../lib/billlock');
 
 // "Orderable" = available and not sold out today (sold_out_until resets itself
 // at KL midnight rather than requiring an admin to remember to flip it back).
@@ -138,6 +139,8 @@ async function appendSend(orderId, parsed, source, userId = null, idemKey = null
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Adding a round changes a bill's total: bill lock first (lib/billlock).
+    await lockBills(client);
     const send = await rounds.createSend(client, orderId, { source, userId, approvalState, publicRef });
     const cur = (await client.query(
       `SELECT status, EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id) AS has_payment

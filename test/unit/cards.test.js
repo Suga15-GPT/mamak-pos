@@ -210,7 +210,7 @@ test('combine Card 1 + Card 4, add items to Card 4, pay the group in cash once',
   });
 });
 
-test('a combined bill is never part-paid; a card paid part-way before combining blocks un-combining; with no payment un-combining leaves both cards as they were', async () => {
+test('a combined bill is never part-paid; a card with a payment of its own cannot be combined; un-combining leaves both cards as they were', async () => {
   await withDb(async db => {
     const base = await startApp();
     const s = await setup(base);
@@ -231,28 +231,29 @@ test('a combined bill is never part-paid; a card paid part-way before combining 
     assert.equal((await post(base, s, `/api/orders/${o6}/pay`, { method: 'Card' })).status, 200, 'Card 6 pays on its own again');
     assert.equal((await fetch(`${base}/api/orders/${o7}/split?ways=2`, { headers: s.h })).status, 200, 'and splits on its own');
 
-    // Card 2 pays RM1.00 on its own, then is combined with Card 5: that
-    // payment stays attached, so the combined bill can't be split apart.
+    // Card 2 pays RM1.00 on its own: combined bills are paid all at once, so
+    // it can't join one until that payment is settled or refunded.
     assert.equal((await post(base, s, `/api/orders/${o2}/pay`, { method: 'Card', amount: 1 })).status, 200);
-    const g2 = await json(await post(base, s, '/api/bill-groups', { order_ids: [o2, o5] }));
-    assert.equal(g2.amount_due, 10.13);
-    for (const r of [await del(base, s, `/api/bill-groups/${g2.id}`), await del(base, s, `/api/bill-groups/${g2.id}/orders/${o5}`)]) {
-      assert.equal(r.status, 409);
-      assert.equal((await json(r)).error, "This combined bill has a payment on it and can't be split apart.");
-    }
+    const refused = await post(base, s, '/api/bill-groups', { order_ids: [o2, o5] });
+    assert.equal(refused.status, 409);
+    assert.equal((await json(refused)).error, 'This card has a payment on it — pay or refund it before combining.');
+    assert.equal((await orderRow(db, o5)).bill_group_id, null, 'nothing was combined');
+    const o3 = await openCard(base, s, 3, s.roti);   // 2.12
+    const g2 = await json(await post(base, s, '/api/bill-groups', { order_ids: [o3, o5] }));
+    assert.equal(g2.amount_due, 11.13);
 
     // A payment that would leave the combined bill open is refused and writes nothing.
     const part = await post(base, s, `/api/bill-groups/${g2.id}/pay`, { legs: [{ method: 'Card', amount: 5 }] });
     assert.equal(part.status, 400);
     assert.equal((await json(part)).error, 'A combined bill has to be paid in full in one go.');
-    assert.equal((await db.query('SELECT count(*)::int n FROM payments WHERE order_id = ANY($1::int[])', [[o2, o5]])).rows[0].n, 1);
+    assert.equal((await db.query('SELECT count(*)::int n FROM payments WHERE order_id = ANY($1::int[])', [[o3, o5]])).rows[0].n, 0);
 
     // Two legs that settle it exactly, allocated lowest card first.
-    const full = await json(await post(base, s, `/api/bill-groups/${g2.id}/pay`, { legs: [{ method: 'Card', amount: 5 }, { method: 'Card', amount: 5.13 }] }));
+    const full = await json(await post(base, s, `/api/bill-groups/${g2.id}/pay`, { legs: [{ method: 'Card', amount: 5 }, { method: 'Card', amount: 6.13 }] }));
     assert.equal(full.settled, true);
-    assert.deepEqual(full.allocations.map(x => [x.card_number, x.amount]), [[2, 1.12], [5, 3.88], [5, 5.13]], 'lowest card first');
-    assert.equal((await db.query('SELECT COALESCE(SUM(amount_cents),0)::int s FROM payments WHERE order_id = ANY($1::int[])', [[o2, o5]])).rows[0].s, 1113);
-    assert.equal((await orderRow(db, o2)).status, 'paid');
+    assert.deepEqual(full.allocations.map(x => [x.card_number, x.amount]), [[3, 2.12], [5, 2.88], [5, 6.13]], 'lowest card first');
+    assert.equal((await db.query('SELECT COALESCE(SUM(amount_cents),0)::int s FROM payments WHERE order_id = ANY($1::int[])', [[o3, o5]])).rows[0].s, 1113);
+    assert.equal((await orderRow(db, o3)).status, 'paid');
     assert.equal((await orderRow(db, o5)).status, 'paid');
 
     const audit = (await db.query(

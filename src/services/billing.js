@@ -3,7 +3,8 @@ const { AppError } = require('../lib/errors');
 const { computeBill, roundCashCents, roundHalfUp, formatRM } = require('../lib/money');
 const { writeAudit } = require('./orders');
 const rounds = require('./rounds');
-const { leaveGroupIfClosed } = require('./bill_groups');
+const { leaveGroupIfClosedTx } = require('./bill_groups');
+const { lockBills } = require('../lib/billlock');
 
 // A line belongs on the bill once its round is accepted. A round held for
 // approval (shop-mode QR) is shown "awaiting approval" and counts in no total;
@@ -86,31 +87,40 @@ function guardAgainstShortfall(actionLabel, newTotalCents, paidCents) {
 // sale is done — close it now rather than leaving what looks like an occupied
 // table open all night (settling normally requires the balance to reach zero,
 // which a paid amount > 0 can never do on its own).
-async function settleIfMatchesPaid(orderId, totalCents, paidCents, userId, trigger) {
+// Runs inside the caller's transaction (which holds the bill lock and the
+// order's row lock).
+async function settleIfMatchesPaid(client, orderId, totalCents, paidCents, userId, trigger) {
   if (totalCents !== paidCents) return false;
+  // An order with a customer round still awaiting approval is never settled
+  // automatically: those lines are off the bill until someone decides, and
+  // closing it would drop the round out of the approval queue with the
+  // customer's phone saying "pending" forever (re-check, R-A).
+  const held = (await client.query(
+    "SELECT 1 FROM order_sends WHERE order_id = $1 AND approval_state = 'pending' LIMIT 1", [orderId])).rows[0];
+  if (held) return false;
   // Phase 12: closed_shift_id is the shift the order actually settled in —
   // whichever shift is open right now, if any (a comp can close an order with
   // no shift open at all, in which case its sales simply carry no shift until
   // a future phase needs one).
-  const openShift = await pool.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
+  const openShift = await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
   const shiftId = openShift.rows[0]?.id || null;
-  await pool.query(
+  await client.query(
     "UPDATE orders SET status = 'paid', paid_at = now(), closed_by = $1, closed_shift_id = $2, updated_at = now() WHERE id = $3",
     [userId || null, shiftId, orderId]);
-  await writeAudit(pool, {
+  await writeAudit(client, {
     userId, action: 'order.settle', entityType: 'order', entityId: orderId,
     detail: { trigger, total_cents: totalCents, paid_cents: paidCents },
   });
   // A card that closes on its own (voided to zero, comped) leaves its
   // combined bill rather than holding it open forever.
-  await leaveGroupIfClosed(orderId, userId, trigger);
+  await leaveGroupIfClosedTx(client, orderId, userId, trigger);
   return true;
 }
 
 // Previews the bill with one line excluded (as if it were voided) — used to guard
 // a void before committing it.
-async function previewBillExcludingLine(orderId, itemId) {
-  const { bill } = await computeLiveBill(orderId, { excludeItemId: itemId });
+async function previewBillExcludingLine(orderId, itemId, client = pool) {
+  const { bill } = await computeLiveBill(orderId, { excludeItemId: itemId }, client);
   return bill;
 }
 
@@ -146,6 +156,7 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await lockBills(client);
     const o = await client.query('SELECT status, bill_group_id FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
     if (!o.rows[0]) throw AppError('order not found', 404);
     if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order already closed', 400);
@@ -220,50 +231,62 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
 // Discounts apply to the subtotal before tax (docs/REBUILD-PLAN.md §3): tax stays
 // computed on the undiscounted subtotal+service_charge; the discount only reduces
 // gross. `value` is basis points for 'percent', cents for 'amount', ignored for 'comp'.
+// One transaction under the bill lock and the order's row lock: the order is
+// re-read after locking, so a discount racing a payment can no longer
+// recompute a bill that has just been paid (re-check, N-B) — once closed it is
+// refused with 409.
 async function addDiscount(orderId, { kind, value, reason, userId }) {
   if (!['percent', 'amount', 'comp'].includes(kind)) throw AppError('bad discount kind', 400);
   const cleanReason = String(reason || '').trim();
   if (cleanReason.length < 3 || cleanReason.length > 200) throw AppError('reason must be 3-200 chars', 400);
 
-  const o = await pool.query('SELECT * FROM orders WHERE id = $1', [orderId]);
-  if (!o.rows[0]) throw AppError('order not found', 404);
-  if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order closed', 400);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await lockBills(client);
+    const o = await client.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
+    if (!o.rows[0]) throw AppError('order not found', 404);
+    if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order closed', 409);
+    // A comp closes the bill, so it follows the payment rule: not while a
+    // customer order is waiting for approval.
+    if (kind === 'comp') await rounds.refuseWhileHeld(client, [orderId]);
 
-  const subtotalCents = o.rows[0].subtotal_cents || 0;
-  const grossBeforeThisDiscount =
-    subtotalCents + (o.rows[0].service_charge_cents || 0) + (o.rows[0].tax_cents || 0) - (o.rows[0].discount_cents || 0);
+    const subtotalCents = o.rows[0].subtotal_cents || 0;
+    const grossBeforeThisDiscount =
+      subtotalCents + (o.rows[0].service_charge_cents || 0) + (o.rows[0].tax_cents || 0) - (o.rows[0].discount_cents || 0);
 
-  let amountCents;
-  if (kind === 'comp') amountCents = grossBeforeThisDiscount;
-  else if (kind === 'percent') amountCents = roundHalfUp(subtotalCents * (Number(value) || 0) / 10000);
-  else amountCents = Number(value) || 0;
+    let amountCents;
+    if (kind === 'comp') amountCents = grossBeforeThisDiscount;
+    else if (kind === 'percent') amountCents = roundHalfUp(subtotalCents * (Number(value) || 0) / 10000);
+    else amountCents = Number(value) || 0;
 
-  if (!(amountCents >= 0)) throw AppError('bad discount value', 400);
-  amountCents = Math.min(amountCents, grossBeforeThisDiscount);
+    if (!(amountCents >= 0)) throw AppError('bad discount value', 400);
+    amountCents = Math.min(amountCents, grossBeforeThisDiscount);
 
-  const paidCents = await paidCentsFor(orderId);
-  const { bill: preview } = await computeLiveBill(orderId, { extraDiscountCents: amountCents });
-  guardAgainstShortfall('applying this discount', preview.total_cents, paidCents);
+    const paidCents = await paidCentsFor(orderId, client);
+    const { bill: preview } = await computeLiveBill(orderId, { extraDiscountCents: amountCents }, client);
+    guardAgainstShortfall('applying this discount', preview.total_cents, paidCents);
 
-  const d = await pool.query(
-    'INSERT INTO discounts (order_id, kind, value, amount_cents, reason, approved_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
-    [orderId, kind, Number(value) || 0, amountCents, cleanReason, userId]);
+    const d = await client.query(
+      'INSERT INTO discounts (order_id, kind, value, amount_cents, reason, approved_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+      [orderId, kind, Number(value) || 0, amountCents, cleanReason, userId]);
 
-  const bill = await recomputeOrderBill(orderId);
+    const bill = await recomputeOrderBill(orderId, client);
 
-  await writeAudit(pool, {
-    userId, action: 'discount.apply', entityType: 'order', entityId: orderId,
-    detail: { discount_id: d.rows[0].id, kind, value: Number(value) || 0, amount_cents: amountCents, reason: cleanReason },
-  });
+    await writeAudit(client, {
+      userId, action: 'discount.apply', entityType: 'order', entityId: orderId,
+      detail: { discount_id: d.rows[0].id, kind, value: Number(value) || 0, amount_cents: amountCents, reason: cleanReason },
+    });
 
-  // A discount that brings the balance down to exactly what's already been paid
-  // (0 when nothing has been paid yet — a comp, or a partial one that happens to
-  // zero it — or the paid amount itself) settles the order immediately.
-  // payments.amount_cents must be > 0, so a zero remainder never needs a payment
-  // row — the discount alone closes it.
-  await settleIfMatchesPaid(orderId, bill.total_cents, paidCents, userId, 'discount');
-
-  return { id: d.rows[0].id, amount_cents: amountCents, bill };
+    // A discount that brings the balance down to exactly what's already been paid
+    // (0 when nothing has been paid yet — a comp, or a partial one that happens to
+    // zero it — or the paid amount itself) settles the order immediately.
+    // payments.amount_cents must be > 0, so a zero remainder never needs a payment
+    // row — the discount alone closes it.
+    await settleIfMatchesPaid(client, orderId, bill.total_cents, paidCents, userId, 'discount');
+    await client.query('COMMIT');
+    return { id: d.rows[0].id, amount_cents: amountCents, bill };
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
 
 async function listDiscounts(orderId) {
@@ -277,22 +300,28 @@ async function listDiscounts(orderId) {
 // there's no shortfall risk here; the restriction is about not undoing something
 // the customer was already charged against).
 async function removeDiscount(orderId, discountId, { userId }) {
-  const o = await pool.query('SELECT status FROM orders WHERE id = $1', [orderId]);
-  if (!o.rows[0]) throw AppError('order not found', 404);
-  if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order closed', 400);
-  if (await hasPayments(orderId)) throw AppError('order has a payment recorded; cannot remove discount', 409);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await lockBills(client);
+    const o = await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
+    if (!o.rows[0]) throw AppError('order not found', 404);
+    if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order closed', 400);
+    const paid = await client.query('SELECT 1 FROM payments WHERE order_id = $1 LIMIT 1', [orderId]);
+    if (paid.rows[0]) throw AppError('order has a payment recorded; cannot remove discount', 409);
 
-  const d = await pool.query('DELETE FROM discounts WHERE id = $1 AND order_id = $2 RETURNING *', [discountId, orderId]);
-  if (!d.rows[0]) throw AppError('discount not found', 404);
+    const d = await client.query('DELETE FROM discounts WHERE id = $1 AND order_id = $2 RETURNING *', [discountId, orderId]);
+    if (!d.rows[0]) throw AppError('discount not found', 404);
 
-  const bill = await recomputeOrderBill(orderId);
+    const bill = await recomputeOrderBill(orderId, client);
 
-  await writeAudit(pool, {
-    userId, action: 'discount.remove', entityType: 'order', entityId: orderId,
-    detail: { discount_id: d.rows[0].id, kind: d.rows[0].kind, amount_cents: d.rows[0].amount_cents, reason: d.rows[0].reason },
-  });
-
-  return { bill };
+    await writeAudit(client, {
+      userId, action: 'discount.remove', entityType: 'order', entityId: orderId,
+      detail: { discount_id: d.rows[0].id, kind: d.rows[0].kind, amount_cents: d.rows[0].amount_cents, reason: d.rows[0].reason },
+    });
+    await client.query('COMMIT');
+    return { bill };
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
 
 // Phase 12: the first way to move money back out of the till. Always against
@@ -316,6 +345,8 @@ async function addRefund(orderId, { paymentId, amountCents, reason, approvedBy, 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await lockBills(client);
+    await client.query('SELECT id FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
     const pay = await client.query('SELECT * FROM payments WHERE id = $1 AND order_id = $2 FOR UPDATE', [paymentId, orderId]);
     if (!pay.rows[0]) throw AppError('payment not found', 404);
 

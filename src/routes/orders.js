@@ -8,7 +8,8 @@ const { buildOrderItems, insertOrder, appendSend, ordersWithItems, writeAudit } 
 const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const rounds = require('../services/rounds');
-const { leaveGroupIfClosed } = require('../services/bill_groups');
+const { leaveGroupIfClosedTx } = require('../services/bill_groups');
+const { lockBills } = require('../lib/billlock');
 const {
   recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
   addRefund, listRefunds,
@@ -176,39 +177,50 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
   const reason = String(req.body?.reason || '').trim();
   if (reason.length < 3 || reason.length > 200) return res.status(400).json({ error: 'reason must be 3-200 chars' });
 
-  const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
-  if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
-  if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) return res.status(400).json({ error: 'order closed' });
+  // One transaction under the bill lock and the order's row lock. Everything
+  // is read after locking: checked before it, a void racing a payment waited
+  // on the payment's lock and then recomputed the bill it had just paid
+  // (re-check, N-B). A bill closed by then is refused with 409.
+  const client = await pool.connect();
+  let o, li;
+  try {
+    await client.query('BEGIN');
+    await lockBills(client);
+    o = await client.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (!o.rows[0]) throw Object.assign(new Error('not found'), { status: 404 });
+    if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw Object.assign(new Error('order closed'), { status: 409 });
 
-  const li = await pool.query('SELECT * FROM order_items WHERE id = $1 AND order_id = $2', [req.params.lineId, o.rows[0].id]);
-  if (!li.rows[0]) return res.status(404).json({ error: 'line not found' });
-  if (li.rows[0].voided_at) return res.status(400).json({ error: 'already voided' });
+    li = await client.query('SELECT * FROM order_items WHERE id = $1 AND order_id = $2', [req.params.lineId, o.rows[0].id]);
+    if (!li.rows[0]) throw Object.assign(new Error('line not found'), { status: 404 });
+    if (li.rows[0].voided_at) throw Object.assign(new Error('already voided'), { status: 400 });
 
-  // Now that one bill can hold several rounds at different stages, "has the
-  // kitchen started this?" is a question about *this line's* station ticket,
-  // not about the order as a whole: a still-'sent' add-on stays staff-voidable
-  // even though round 1 was served an hour ago.
-  const lineStatus = await rounds.ticketStatusForLine(pool, li.rows[0].id);
-  if (lineStatus && lineStatus !== 'sent' && req.user.role !== 'admin')
-    return res.status(403).json({ error: 'admin only once the kitchen has started this item' });
+    // Now that one bill can hold several rounds at different stages, "has the
+    // kitchen started this?" is a question about *this line's* station ticket,
+    // not about the order as a whole: a still-'sent' add-on stays staff-voidable
+    // even though round 1 was served an hour ago.
+    const lineStatus = await rounds.ticketStatusForLine(client, li.rows[0].id);
+    if (lineStatus && lineStatus !== 'sent' && req.user.role !== 'admin')
+      throw Object.assign(new Error('admin only once the kitchen has started this item'), { status: 403 });
 
-  // A partially-paid order's status stays 'sent' — voiding a line can drop the
-  // total below what's already been paid, which the status check alone (paid
-  // orders only) never catches. Guard before committing anything.
-  const paidCents = await paidCentsFor(o.rows[0].id);
-  const preview = await previewBillExcludingLine(o.rows[0].id, li.rows[0].id);
-  guardAgainstShortfall('voiding this line', preview.total_cents, paidCents);
+    // A partially-paid order's status stays 'sent' — voiding a line can drop the
+    // total below what's already been paid, which the status check alone (paid
+    // orders only) never catches. Guard before committing anything.
+    const paidCents = await paidCentsFor(o.rows[0].id, client);
+    const preview = await previewBillExcludingLine(o.rows[0].id, li.rows[0].id, client);
+    guardAgainstShortfall('voiding this line', preview.total_cents, paidCents);
 
-  await pool.query(
-    'UPDATE order_items SET voided_at = now(), voided_by = $1, void_reason = $2 WHERE id = $3',
-    [req.user.id, reason, li.rows[0].id]);
-  await pool.query('UPDATE orders SET updated_at = now() WHERE id = $1', [o.rows[0].id]);
-  await writeAudit(pool, {
-    userId: req.user.id, action: 'order.void_line', entityType: 'order_item', entityId: li.rows[0].id,
-    detail: { order_id: o.rows[0].id, name: li.rows[0].name, qty: li.rows[0].qty, price_cents: li.rows[0].price_cents, reason },
-  });
-  const bill = await recomputeOrderBill(o.rows[0].id);
-  await settleIfMatchesPaid(o.rows[0].id, bill.total_cents, paidCents, req.user.id, 'void');
+    await client.query(
+      'UPDATE order_items SET voided_at = now(), voided_by = $1, void_reason = $2 WHERE id = $3',
+      [req.user.id, reason, li.rows[0].id]);
+    await client.query('UPDATE orders SET updated_at = now() WHERE id = $1', [o.rows[0].id]);
+    await writeAudit(client, {
+      userId: req.user.id, action: 'order.void_line', entityType: 'order_item', entityId: li.rows[0].id,
+      detail: { order_id: o.rows[0].id, name: li.rows[0].name, qty: li.rows[0].qty, price_cents: li.rows[0].price_cents, reason },
+    });
+    const bill = await recomputeOrderBill(o.rows[0].id, client);
+    await settleIfMatchesPaid(client, o.rows[0].id, bill.total_cents, paidCents, req.user.id, 'void');
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   publish('order.voided', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
   await printing.enqueue('void', o.rows[0].id, { itemId: li.rows[0].id });
   res.json({ ok: true });
@@ -244,6 +256,10 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Cancelling closes a bill: bill lock first, then re-read under the lock.
+      await lockBills(client);
+      const now = (await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [o.rows[0].id])).rows[0];
+      if (!(TRANSITIONS[now.status] || []).includes('cancelled')) throw Object.assign(new Error(`cannot go ${now.status} -> cancelled`), { status: 409 });
       await client.query('UPDATE orders SET status = $1, closed_by = $2, updated_at = now() WHERE id = $3', [status, req.user.id, o.rows[0].id]);
       // Cancelling the bill stops every station: a cancelled ticket drops off
       // the kitchen display instead of being cooked for nobody.
@@ -254,9 +270,9 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
         userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: o.rows[0].id,
         detail: { from: cur },
       });
+      await leaveGroupIfClosedTx(client, o.rows[0].id, req.user.id, 'cancelled');
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
-    await leaveGroupIfClosed(o.rows[0].id, req.user.id, 'cancelled');
   } else {
     const client = await pool.connect();
     try {
@@ -317,6 +333,7 @@ router.post('/api/orders/:id/move', requireRole('admin', 'staff'), awaitH(async 
   let target;
   try {
     await client.query('BEGIN');
+    await lockBills(client);
     target = (await client.query('SELECT id, number, active FROM cards WHERE id = $1 FOR SHARE', [targetId])).rows[0];
     if (!target || !target.active) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'card not found' }); }
     await client.query(

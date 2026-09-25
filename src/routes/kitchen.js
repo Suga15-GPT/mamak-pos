@@ -7,7 +7,8 @@ const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const rounds = require('../services/rounds');
 const { recomputeOrderBill } = require('../services/billing');
-const { leaveGroupIfClosed } = require('../services/bill_groups');
+const { leaveGroupIfClosedTx } = require('../services/bill_groups');
+const { lockBills } = require('../lib/billlock');
 
 const router = express.Router();
 
@@ -59,6 +60,8 @@ const NOT_OPEN = 'This order is no longer open, so there is nothing to approve o
    round on a closed order is refused (409) rather than recomputing a bill
    that has already been settled or written off. */
 async function lockDecidable(client, sendId) {
+  // Approving or rejecting changes a bill's total: bill lock first.
+  await lockBills(client);
   const s0 = (await client.query('SELECT order_id FROM order_sends WHERE id = $1', [sendId])).rows[0];
   if (!s0) throw Object.assign(new Error('round not found'), { status: 404 });
   const o = (await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [s0.order_id])).rows[0];
@@ -101,7 +104,7 @@ router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), awa
    did ask for these, and a bill that silently loses lines is unauditable. */
 router.post('/api/kitchen/sends/:id/reject', requireRole('admin', 'staff'), awaitH(async (req, res) => {
   const reason = String(req.body?.reason || '').trim() || 'rejected by staff';
-  let s, cancelled = false;
+  let s;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -131,13 +134,12 @@ router.post('/api/kitchen/sends/:id/reject', requireRole('admin', 'staff'), awai
         userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: s.order_id,
         detail: { reason: 'every item on this order was rejected' },
       });
-      cancelled = true;
+      // A cancelled card leaves its combined bill (and a group of one dissolves).
+      await leaveGroupIfClosedTx(client, s.order_id, req.user.id, 'every item rejected');
     }
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 
-  // A cancelled card leaves its combined bill (and a group of one dissolves).
-  if (cancelled) await leaveGroupIfClosed(s.order_id, req.user.id, 'every item rejected');
   const o = await pool.query('SELECT table_id FROM orders WHERE id = $1', [s.order_id]);
   publish('order.updated', { order_id: s.order_id, table_id: o.rows[0]?.table_id || null });
   res.json({ ok: true });
