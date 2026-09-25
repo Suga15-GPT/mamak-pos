@@ -97,7 +97,16 @@ router.post('/api/public/orders', publicH(async (req, res) => {
       return res.status(409).json({ error: 'bill_being_paid', message: 'Your bill is being settled. Please order with our staff.' });
     }
     orderId = open.rows[0].id;
-    ({ sendId, seqNo } = await appendSend(orderId, parsed, 'qr', null, null, { approvalState, publicRef }));
+    try {
+      ({ sendId, seqNo } = await appendSend(orderId, parsed, 'qr', null, null, { approvalState, publicRef }));
+    } catch (e) {
+      // Settled or closed in the instant between looking the bill up and
+      // locking it: the same answer as the check above.
+      if (e.code === 'has_payment' || e.code === 'order_closed') {
+        return res.status(409).json({ error: 'bill_being_paid', message: 'Your bill is being settled. Please order with our staff.' });
+      }
+      throw e;
+    }
   } else {
     try {
       ({ orderId, sendId, seqNo } = await insertOrder(
@@ -115,9 +124,11 @@ router.post('/api/public/orders', publicH(async (req, res) => {
         ({ sendId, seqNo } = await appendSend(orderId, parsed, 'qr', null, null, { approvalState, publicRef }));
       } else throw e;
     }
+    // appendSend recomputes inside its own transaction; a brand-new order
+    // still needs its first bill written.
+    if (seqNo === 1) await recomputeOrderBill(orderId);
   }
 
-  await recomputeOrderBill(orderId);
   publish(open.rows[0] ? 'order.updated' : 'order.created', { order_id: orderId, card_id: cardId });
   // A round awaiting staff approval reaches no printer and no station display
   // until someone accepts it.

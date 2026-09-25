@@ -93,6 +93,19 @@ async function deriveOrderStatus(client, orderId) {
   return next;
 }
 
+/* Shop-mode QR (and approval mode generally): a round awaiting approval is
+   not on the bill yet — its lines are shown "awaiting approval" and count in
+   no total — so the till must not take money while one is outstanding. The
+   customer would either pay for food nobody has accepted, or the round would
+   drop out of the approval queue the moment the bill closed and never be
+   cooked. */
+const HELD_MESSAGE = 'A customer order is waiting for approval — approve or reject it first.';
+async function refuseWhileHeld(client, orderIds) {
+  const r = await client.query(
+    "SELECT 1 FROM order_sends WHERE order_id = ANY($1::int[]) AND approval_state = 'pending' LIMIT 1", [orderIds]);
+  if (r.rows[0]) throw AppError(HELD_MESSAGE, 409);
+}
+
 /* The status of the station ticket a given order line is actually on — what
    "has the kitchen started this yet?" means once one bill can hold several
    rounds at different stages. */
@@ -292,6 +305,7 @@ async function listPendingSends() {
 
 module.exports = {
   TICKET_STATUSES, TERMINAL_ORDER_STATUSES, TICKET_TRANSITIONS, BACKWARD_TICKET,
+  HELD_MESSAGE, refuseWhileHeld,
   listStations, createSend, openTickets, deriveOrderStatus, ticketStatusForLine,
   ticketTransitionError, advanceTicket, attachSends, listStationTickets, listPendingSends,
 };

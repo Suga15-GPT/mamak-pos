@@ -2,30 +2,37 @@ const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { computeBill, roundCashCents, roundHalfUp, formatRM } = require('../lib/money');
 const { writeAudit } = require('./orders');
+const rounds = require('./rounds');
+const { leaveGroupIfClosed } = require('./bill_groups');
+
+// A line belongs on the bill once its round is accepted. A round held for
+// approval (shop-mode QR) is shown "awaiting approval" and counts in no total;
+// a rejected round's lines are already voided.
+const ON_BILL_SQL = "(oi.send_id IS NULL OR EXISTS (SELECT 1 FROM order_sends s WHERE s.id = oi.send_id AND s.approval_state = 'approved'))";
 
 // Same math recomputeOrderBill writes, without writing — lets a caller preview
 // what the bill would become (excluding a line about to be voided, or with an
 // extra discount about to be applied) before committing anything.
-async function computeLiveBill(orderId, { excludeItemId, extraDiscountCents = 0 } = {}) {
-  const items = await pool.query(
+async function computeLiveBill(orderId, { excludeItemId, extraDiscountCents = 0 } = {}, client = pool) {
+  const items = await client.query(
     excludeItemId
-      ? 'SELECT id, price_cents, qty FROM order_items WHERE order_id = $1 AND voided_at IS NULL AND id != $2'
-      : 'SELECT id, price_cents, qty FROM order_items WHERE order_id = $1 AND voided_at IS NULL',
+      ? `SELECT oi.id, oi.price_cents, oi.qty FROM order_items oi WHERE oi.order_id = $1 AND oi.voided_at IS NULL AND ${ON_BILL_SQL} AND oi.id != $2`
+      : `SELECT oi.id, oi.price_cents, oi.qty FROM order_items oi WHERE oi.order_id = $1 AND oi.voided_at IS NULL AND ${ON_BILL_SQL}`,
     excludeItemId ? [orderId, excludeItemId] : [orderId]);
   const mods = items.rows.length
-    ? await pool.query('SELECT order_item_id, price_cents FROM order_item_mods WHERE order_item_id = ANY($1::int[])',
+    ? await client.query('SELECT order_item_id, price_cents FROM order_item_mods WHERE order_item_id = ANY($1::int[])',
         [items.rows.map(i => i.id)])
     : { rows: [] };
   const modsByItem = {};
   mods.rows.forEach(m => (modsByItem[m.order_item_id] ||= []).push(m));
   const lines = items.rows.map(i => ({ price_cents: i.price_cents, qty: i.qty, mods: modsByItem[i.id] || [] }));
 
-  const rateRows = await pool.query("SELECT key, value FROM settings WHERE key IN ('tax_rate_bp', 'svc_rate_bp')");
+  const rateRows = await client.query("SELECT key, value FROM settings WHERE key IN ('tax_rate_bp', 'svc_rate_bp')");
   const rates = Object.fromEntries(rateRows.rows.map(r => [r.key, Number(r.value)]));
   const taxRateBp = rates.tax_rate_bp || 0;
   const svcRateBp = rates.svc_rate_bp || 0;
 
-  const discRows = await pool.query('SELECT COALESCE(SUM(amount_cents), 0) AS s FROM discounts WHERE order_id = $1', [orderId]);
+  const discRows = await client.query('SELECT COALESCE(SUM(amount_cents), 0) AS s FROM discounts WHERE order_id = $1', [orderId]);
   const discountCents = Number(discRows.rows[0].s) + extraDiscountCents;
 
   return { bill: computeBill({ lines, taxRateBp, svcRateBp, discountCents, method: null }), taxRateBp, svcRateBp };
@@ -37,10 +44,10 @@ async function computeLiveBill(orderId, { excludeItemId, extraDiscountCents = 0 
 // bites once the order actually closes). No cash rounding is baked in here: that's
 // a payment-time artifact applied only to the final settling cash leg, in
 // addPayment, not a property of the bill itself.
-async function recomputeOrderBill(orderId) {
-  const { bill, taxRateBp, svcRateBp } = await computeLiveBill(orderId);
+async function recomputeOrderBill(orderId, client = pool) {
+  const { bill, taxRateBp, svcRateBp } = await computeLiveBill(orderId, {}, client);
 
-  await pool.query(
+  await client.query(
     `UPDATE orders SET subtotal_cents = $1, service_charge_cents = $2, tax_cents = $3, discount_cents = $4,
        rounding_cents = 0, total_cents = $5, tax_rate_bp = $6, svc_rate_bp = $7, updated_at = now()
      WHERE id = $8`,
@@ -50,8 +57,13 @@ async function recomputeOrderBill(orderId) {
   return bill;
 }
 
-async function paidCentsFor(orderId) {
-  const r = await pool.query('SELECT COALESCE(SUM(amount_cents), 0) AS s FROM payments WHERE order_id = $1', [orderId]);
+// What has been paid and not given back. A refund on a still-open bill just
+// reduces this; it never closes the order (finding #8).
+const NET_PAID_SQL = `COALESCE((SELECT SUM(amount_cents) FROM payments WHERE order_id = $1), 0)
+                    - COALESCE((SELECT SUM(amount_cents) FROM refunds WHERE order_id = $1), 0)`;
+
+async function paidCentsFor(orderId, client = pool) {
+  const r = await client.query(`SELECT ${NET_PAID_SQL} AS s`, [orderId]);
   return Number(r.rows[0].s);
 }
 
@@ -89,6 +101,9 @@ async function settleIfMatchesPaid(orderId, totalCents, paidCents, userId, trigg
     userId, action: 'order.settle', entityType: 'order', entityId: orderId,
     detail: { trigger, total_cents: totalCents, paid_cents: paidCents },
   });
+  // A card that closes on its own (voided to zero, comped) leaves its
+  // combined bill rather than holding it open forever.
+  await leaveGroupIfClosed(orderId, userId, trigger);
   return true;
 }
 
@@ -99,11 +114,10 @@ async function previewBillExcludingLine(orderId, itemId) {
   return bill;
 }
 
-async function amountDue(orderId) {
-  const o = await pool.query('SELECT total_cents FROM orders WHERE id = $1', [orderId]);
+async function amountDue(orderId, client = pool) {
+  const o = await client.query('SELECT total_cents FROM orders WHERE id = $1', [orderId]);
   if (!o.rows[0]) throw AppError('order not found', 404);
-  const paid = await pool.query('SELECT COALESCE(SUM(amount_cents), 0) AS s FROM payments WHERE order_id = $1', [orderId]);
-  return (o.rows[0].total_cents || 0) - Number(paid.rows[0].s);
+  return (o.rows[0].total_cents || 0) - await paidCentsFor(orderId, client);
 }
 
 async function hasPayments(orderId) {
@@ -113,7 +127,7 @@ async function hasPayments(orderId) {
 
 async function listPayments(orderId) {
   const r = await pool.query(
-    'SELECT id, method, amount_cents, tendered_cents, taken_by, at FROM payments WHERE order_id = $1 ORDER BY at', [orderId]);
+    'SELECT id, method, amount_cents, tendered_cents, taken_by, at FROM payments WHERE order_id = $1 ORDER BY at, id', [orderId]);
   return r.rows;
 }
 
@@ -122,69 +136,85 @@ async function listPayments(orderId) {
 // tendering more than the amount due just means change — and if this leg brings the
 // order's remaining balance to zero, the 5-sen cash-rounding adjustment (kept out of
 // the bill until now) is folded into this final leg and the order's stored total.
+//
+// One transaction holding the order's row lock — the lock appendSend and the
+// QR approval route take too — so items can never land on a bill between the
+// balance being read and the order being marked paid (finding #7).
 async function addPayment(orderId, { method, amountCents, tenderedCents, userId }) {
   if (!['Cash', 'Card', 'DuitNow/eWallet'].includes(method)) throw AppError('bad method', 400);
 
-  const o = await pool.query('SELECT status FROM orders WHERE id = $1', [orderId]);
-  if (!o.rows[0]) throw AppError('order not found', 404);
-  if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order already closed', 400);
-
-  const due = await amountDue(orderId);
-  if (due <= 0) throw AppError('order already settled', 400);
-
-  // Phase 09: the drawer this cash lands in (and the shift a card/eWallet sale
-  // is attributed to) must be the open one — refusing here is the control that
-  // makes shift cash reconciliation trustworthy at all.
-  const openShift = await pool.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
-  const shiftId = openShift.rows[0]?.id;
-  if (!shiftId) throw AppError('no shift is open — open a shift before taking payment', 400);
-
-  let apply = amountCents == null ? due : Number(amountCents);
-  if (!(apply > 0)) throw AppError('amount must be positive', 400);
-
-  let roundingAdj = 0;
-  let tendered = null;
-
-  if (method === 'Cash') {
-    tendered = tenderedCents == null ? apply : Number(tenderedCents);
-    if (apply >= due) {
-      const rounded = roundCashCents(due);
-      roundingAdj = rounded - due;
-      apply = rounded;
-      if (tenderedCents == null) tendered = apply;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const o = await client.query('SELECT status, bill_group_id FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
+    if (!o.rows[0]) throw AppError('order not found', 404);
+    if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order already closed', 400);
+    // A combined card is settled with its group, so the group's allocation and
+    // its one rounding stay whole.
+    if (o.rows[0].bill_group_id) {
+      throw Object.assign(AppError('This card is on a combined bill — take payment on the combined bill', 409), { bill_group_id: o.rows[0].bill_group_id });
     }
-    if (tendered < apply) throw AppError('cash tendered is less than the amount', 400);
-  } else if (apply > due) {
-    throw AppError('amount exceeds balance due', 400);
-  }
+    await rounds.refuseWhileHeld(client, [orderId]);
 
-  const p = await pool.query(
-    'INSERT INTO payments (order_id, method, amount_cents, tendered_cents, taken_by, shift_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
-    [orderId, method, apply, tendered, userId || null, shiftId]);
+    const due = await amountDue(orderId, client);
+    if (due <= 0) throw AppError('order already settled', 400);
 
-  if (roundingAdj) {
-    await pool.query('UPDATE orders SET rounding_cents = rounding_cents + $1, total_cents = total_cents + $1 WHERE id = $2',
-      [roundingAdj, orderId]);
-  }
+    // Phase 09: the drawer this cash lands in (and the shift a card/eWallet sale
+    // is attributed to) must be the open one — refusing here is the control that
+    // makes shift cash reconciliation trustworthy at all.
+    const openShift = await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
+    const shiftId = openShift.rows[0]?.id;
+    if (!shiftId) throw AppError('no shift is open — open a shift before taking payment', 400);
 
-  const remainingCents = Math.max(0, due - apply + roundingAdj);
-  const settled = remainingCents === 0;
-  if (settled) {
-    // Phase 12: closed_shift_id is the shift that collected this settling
-    // payment — the same shiftId this leg was just recorded against — so the
-    // sales side of a Z report agrees with the cash side by construction.
-    await pool.query(
-      "UPDATE orders SET status = 'paid', paid_at = now(), paid_by = $1, closed_shift_id = $2, updated_at = now() WHERE id = $3",
-      [userId || null, shiftId, orderId]);
-  }
+    let apply = amountCents == null ? due : Number(amountCents);
+    if (!(apply > 0)) throw AppError('amount must be positive', 400);
 
-  const changeCents = tendered != null ? tendered - apply : 0;
-  await writeAudit(pool, {
-    userId, action: 'order.pay', entityType: 'order', entityId: orderId,
-    detail: { payment_id: p.rows[0].id, method, amount_cents: apply, tendered_cents: tendered, change_cents: changeCents, settled },
-  });
+    let roundingAdj = 0;
+    let tendered = null;
 
-  return { payment_id: p.rows[0].id, amount_cents: apply, tendered_cents: tendered, change_cents: changeCents, remaining_cents: remainingCents, settled };
+    if (method === 'Cash') {
+      tendered = tenderedCents == null ? apply : Number(tenderedCents);
+      if (apply >= due) {
+        const rounded = roundCashCents(due);
+        roundingAdj = rounded - due;
+        apply = rounded;
+        if (tenderedCents == null) tendered = apply;
+      }
+      if (tendered < apply) throw AppError('cash tendered is less than the amount', 400);
+    } else if (apply > due) {
+      throw AppError('amount exceeds balance due', 400);
+    }
+
+    // A 1-2 sen remainder paid in cash rounds to nothing: the order settles on
+    // the rounding alone, with no zero-sen payment row (finding #6).
+    const paymentId = apply > 0 ? (await client.query(
+      'INSERT INTO payments (order_id, method, amount_cents, tendered_cents, taken_by, shift_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+      [orderId, method, apply, tendered, userId || null, shiftId])).rows[0].id : null;
+
+    if (roundingAdj) {
+      await client.query('UPDATE orders SET rounding_cents = rounding_cents + $1, total_cents = total_cents + $1 WHERE id = $2',
+        [roundingAdj, orderId]);
+    }
+
+    const remainingCents = Math.max(0, due - apply + roundingAdj);
+    const settled = remainingCents === 0;
+    if (settled) {
+      // Phase 12: closed_shift_id is the shift that collected this settling
+      // payment — the same shiftId this leg was just recorded against — so the
+      // sales side of a Z report agrees with the cash side by construction.
+      await client.query(
+        "UPDATE orders SET status = 'paid', paid_at = now(), paid_by = $1, closed_shift_id = $2, updated_at = now() WHERE id = $3",
+        [userId || null, shiftId, orderId]);
+    }
+
+    const changeCents = tendered != null ? tendered - apply : 0;
+    await writeAudit(client, {
+      userId, action: 'order.pay', entityType: 'order', entityId: orderId,
+      detail: { payment_id: paymentId, method, amount_cents: apply, tendered_cents: tendered, change_cents: changeCents, rounding_cents: roundingAdj, settled },
+    });
+    await client.query('COMMIT');
+    return { payment_id: paymentId, amount_cents: apply, tendered_cents: tendered, change_cents: changeCents, remaining_cents: remainingCents, settled };
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
 
 // Discounts apply to the subtotal before tax (docs/REBUILD-PLAN.md §3): tax stays
@@ -303,13 +333,16 @@ async function addRefund(orderId, { paymentId, amountCents, reason, approvedBy, 
       detail: { refund_id: r.rows[0].id, payment_id: paymentId, method: pay.rows[0].method, amount_cents: amountCents, reason: cleanReason, approved_by: approvedBy },
     });
 
-    // Once every payment on the order has been refunded back to zero, the sale
-    // is undone — that's a different terminal state than 'paid'.
+    // Once every payment on a *closed* order has been refunded back to zero, the
+    // sale is undone — that's a different terminal state than 'paid'. On an
+    // order still open, a refund only reduces what has been paid: marking it
+    // 'refunded' there freed the card with the food still unpaid (finding #8).
     const totals = await client.query(
-      `SELECT COALESCE(SUM(p.amount_cents), 0)::int paid, COALESCE((SELECT SUM(amount_cents) FROM refunds WHERE order_id = $1), 0)::int refunded
+      `SELECT COALESCE(SUM(p.amount_cents), 0)::int paid, COALESCE((SELECT SUM(amount_cents) FROM refunds WHERE order_id = $1), 0)::int refunded,
+              (SELECT status FROM orders WHERE id = $1) AS status
        FROM payments p WHERE p.order_id = $1`, [orderId]);
-    const { paid: totalPaid, refunded: totalRefunded } = totals.rows[0];
-    const refundedToZero = totalPaid > 0 && totalRefunded >= totalPaid;
+    const { paid: totalPaid, refunded: totalRefunded, status } = totals.rows[0];
+    const refundedToZero = status === 'paid' && totalPaid > 0 && totalRefunded >= totalPaid;
     if (refundedToZero) {
       await client.query("UPDATE orders SET status = 'refunded', updated_at = now() WHERE id = $1", [orderId]);
     }
@@ -348,7 +381,7 @@ async function splitBySeat(orderId) {
   const r = await pool.query(
     `SELECT oi.id, oi.seat, oi.price_cents, oi.qty, COALESCE(SUM(m.price_cents), 0) AS mods_cents
      FROM order_items oi LEFT JOIN order_item_mods m ON m.order_item_id = oi.id
-     WHERE oi.order_id = $1 AND oi.voided_at IS NULL
+     WHERE oi.order_id = $1 AND oi.voided_at IS NULL AND ${ON_BILL_SQL}
      GROUP BY oi.id`, [orderId]);
   const bySeat = {};
   r.rows.forEach(row => {

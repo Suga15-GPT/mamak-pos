@@ -125,13 +125,25 @@ async function insertOrder(cardId, parsed, note, source, userId = null, idemKey 
 }
 
 /* Appends a new round to an order that is already open. Returns the new round
-   and the ids of the lines it holds, so the caller can print exactly those. */
+   and the ids of the lines it holds, so the caller can print exactly those.
+
+   The "still open, nothing paid" check is made here, after createSend has taken
+   the order's row lock — the same lock a payment takes. Checked any earlier,
+   a payment landing in between let the lines join a bill that was already
+   paid, and the kitchen cooked them for free (staff, QR and voice all come
+   through here). The bill is recomputed inside the same transaction, so a
+   payment that waits on this lock sees the new total, never the old one. */
 async function appendSend(orderId, parsed, source, userId = null, idemKey = null, opts = {}) {
   const { approvalState = 'approved', publicRef = null, audit = null } = opts;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const send = await rounds.createSend(client, orderId, { source, userId, approvalState, publicRef });
+    const cur = (await client.query(
+      `SELECT status, EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id) AS has_payment
+         FROM orders o WHERE o.id = $1`, [orderId])).rows[0];
+    if (rounds.TERMINAL_ORDER_STATUSES.includes(cur.status)) throw Object.assign(AppError('order closed', 400), { code: 'order_closed' });
+    if (cur.has_payment) throw Object.assign(AppError('order has a payment recorded; cannot add items', 409), { code: 'has_payment' });
     const insertedIds = await insertSendLines(client, orderId, send.id, parsed, userId, idemKey);
     if (audit) await writeAudit(client, audit);
     if (approvalState === 'approved') {
@@ -141,6 +153,8 @@ async function appendSend(orderId, parsed, source, userId = null, idemKey = null
       await rounds.deriveOrderStatus(client, orderId);
     }
     await client.query('UPDATE orders SET updated_at = now() WHERE id = $1', [orderId]);
+    // Required lazily: billing requires this module.
+    await require('./billing').recomputeOrderBill(orderId, client);
     await client.query('COMMIT');
     return { sendId: send.id, seqNo: send.seq_no, insertedIds };
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
@@ -163,7 +177,12 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
   const orders = oq.rows;
   if (!orders.length) return [];
   const ids = orders.map(o => o.id);
-  const iq = await pool.query('SELECT * FROM order_items WHERE order_id = ANY($1::int[]) ORDER BY id', [ids]);
+  // held: the line's round is awaiting approval (shop-mode QR). It is shown,
+  // marked "awaiting approval", and counts in no total until it is accepted.
+  const iq = await pool.query(
+    `SELECT oi.*, (s.approval_state = 'pending') AS held
+       FROM order_items oi LEFT JOIN order_sends s ON s.id = oi.send_id
+      WHERE oi.order_id = ANY($1::int[]) ORDER BY oi.id`, [ids]);
   const itemIds = iq.rows.map(i => i.id);
   const mq = itemIds.length
     ? await pool.query('SELECT * FROM order_item_mods WHERE order_item_id = ANY($1::int[]) ORDER BY id', [itemIds])
@@ -171,8 +190,8 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
   const byOrder = {}; orders.forEach(o => { o.items = []; byOrder[o.id] = o; });
   const byItem = {}; iq.rows.forEach(i => { i.mods = []; byItem[i.id] = i; byOrder[i.order_id].items.push(i); });
   mq.rows.forEach(m => byItem[m.order_item_id]?.mods.push(m));
-  // Voided lines never count toward a total — paid or still open.
-  const totalCents = o => o.items.filter(i => !i.voided_at).reduce((s, i) =>
+  // Voided and held lines never count toward a total — paid or still open.
+  const totalCents = o => o.items.filter(i => !i.voided_at && !i.held).reduce((s, i) =>
     s + (i.price_cents + i.mods.reduce((a, m) => a + m.price_cents, 0)) * i.qty, 0);
   const shaped = orders.map(o => ({
     id: o.id, table: o.table_name, table_id: o.table_id, status: o.status, source: o.source,
@@ -195,7 +214,7 @@ async function ordersWithItems(where, params, orderBy = 'ORDER BY o.created_at A
       id: i.id, item_id: i.item_id, name: i.name, qty: i.qty, price: cents2rm(i.price_cents), note: i.note, seat: i.seat,
       send_id: i.send_id, station: i.station_code,
       mods: i.mods.map(m => ({ name: m.name, price: cents2rm(m.price_cents) })),
-      voided: !!i.voided_at, void_reason: i.void_reason || null,
+      voided: !!i.voided_at, void_reason: i.void_reason || null, held: !!i.held,
     })),
   }));
   // Rounds carry the preparation state now, so every order ships with them:

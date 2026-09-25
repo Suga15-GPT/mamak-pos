@@ -8,6 +8,7 @@ const { buildOrderItems, insertOrder, appendSend, ordersWithItems, writeAudit } 
 const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const rounds = require('../services/rounds');
+const { leaveGroupIfClosed } = require('../services/bill_groups');
 const {
   recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
   addRefund, listRefunds,
@@ -160,7 +161,8 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
     throw e;
   }
 
-  await recomputeOrderBill(o.rows[0].id);
+  // appendSend recomputed the bill inside its own transaction; recomputing it
+  // again here could land after a payment and rewrite a settled bill.
   publish('order.updated', { order_id: o.rows[0].id, table_id: o.rows[0].table_id });
   // The new round prints its own chit(s) — only its own lines, at each station
   // it touches. The original order is never reprinted.
@@ -254,6 +256,7 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
       });
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+    await leaveGroupIfClosed(o.rows[0].id, req.user.id, 'cancelled');
   } else {
     const client = await pool.connect();
     try {
@@ -303,18 +306,27 @@ router.post('/api/orders/:id/move', requireRole('admin', 'staff'), awaitH(async 
   if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) return res.status(400).json({ error: 'order closed' });
   if (!(targetId > 0)) return res.status(400).json({ error: 'card_id required' });
 
-  const target = (await pool.query('SELECT id, number FROM cards WHERE id = $1 AND active', [targetId])).rows[0];
-  if (!target) return res.status(404).json({ error: 'card not found' });
   if (o.rows[0].card_id === targetId) return res.status(400).json({ error: 'order is already on that card' });
 
   const from = o.rows[0].card_number != null ? `Card ${o.rows[0].card_number}` : (o.rows[0].table_name || null);
+  // The target card is locked FOR SHARE and its `active` re-read after the
+  // lock, exactly as opening an order does: lowering the card count locks the
+  // cards it retires FOR UPDATE, so the two can no longer interleave and leave
+  // an open bill on a card that is off the floor (finding #4).
+  const client = await pool.connect();
+  let target;
   try {
-    await pool.query(
+    await client.query('BEGIN');
+    target = (await client.query('SELECT id, number, active FROM cards WHERE id = $1 FOR SHARE', [targetId])).rows[0];
+    if (!target || !target.active) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'card not found' }); }
+    await client.query(
       "UPDATE orders SET card_id = $1, order_type = 'dine_in', updated_at = now() WHERE id = $2", [targetId, o.rows[0].id]);
+    await client.query('COMMIT');
   } catch (e) {
+    await client.query('ROLLBACK');
     if (e.code === '23505') return res.status(409).json({ error: `Card ${target.number} already has an open order` });
     throw e;
-  }
+  } finally { client.release(); }
   await writeAudit(pool, {
     userId: req.user.id, action: 'order.move', entityType: 'order', entityId: o.rows[0].id,
     detail: {
@@ -335,9 +347,6 @@ router.post('/api/orders/:id/pay', requireRole('admin', 'staff'), awaitH(async (
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!['served', 'ready', 'preparing', 'sent'].includes(o.rows[0].status))
     return res.status(400).json({ error: 'order already closed' });
-  // A combined card is settled with its group, so the group's allocation and
-  // its one rounding stay whole.
-  if (o.rows[0].bill_group_id) return res.status(409).json({ error: 'This card is on a combined bill — take payment on the combined bill', bill_group_id: o.rows[0].bill_group_id });
 
   const result = await addPayment(o.rows[0].id, {
     method,

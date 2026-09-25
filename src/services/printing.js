@@ -80,11 +80,15 @@ async function withMods(items) {
   return items;
 }
 
+// Without itemIds: the lines on the bill — not voided, and not in a round
+// still awaiting approval (those count in no total, so no receipt shows them).
 async function loadItems(orderId, itemIds = null) {
   const r = await pool.query(
     itemIds
       ? 'SELECT * FROM order_items WHERE order_id = $1 AND id = ANY($2::int[]) ORDER BY id'
-      : 'SELECT * FROM order_items WHERE order_id = $1 AND voided_at IS NULL ORDER BY id',
+      : `SELECT oi.* FROM order_items oi WHERE oi.order_id = $1 AND oi.voided_at IS NULL
+           AND (oi.send_id IS NULL OR EXISTS (SELECT 1 FROM order_sends s WHERE s.id = oi.send_id AND s.approval_state = 'approved'))
+         ORDER BY oi.id`,
     itemIds ? [orderId, itemIds] : [orderId]);
   return withMods(r.rows);
 }
