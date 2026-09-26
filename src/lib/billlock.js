@@ -10,6 +10,11 @@
    discovering and ordering its rows correctly (PR #16 re-check, #5). They are
    rare and quick at restaurant scale, so serialising them costs nothing.
 
+   Switching a feature module takes it too (services/features.js save): the
+   switch refuses to strand a combined bill or a round awaiting approval, and
+   the operations above read the flags they depend on under this lock, so a
+   switch lands wholly before or wholly after each of them.
+
    Released automatically at COMMIT or ROLLBACK. */
 
 const BILL_LOCK_KEY = 7243016;

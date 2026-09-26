@@ -496,6 +496,32 @@ const TOPICS = [
     ],
   },
   {
+    id: 'features', icon: '🧩', title: 'Choosing what your POS does', time: '1 min', roles: ['admin'],
+    blurb: 'A small stall or a full restaurant — switch on only what you use.',
+    body: [
+      { p: 'The first time an owner logs in, the POS asks a few questions: your shop’s name and tax, what kind of shop it is, which extras you want, how many cards you hand out, and how customers scan a QR. You can change any answer later.' },
+      { h: 'Always there, whatever you choose', list: [
+        'The menu, the numbered cards, taking orders and taking payment by cash, card or eWallet.',
+        'SST and service charge, staff PINs, the activity log, orders taken while the internet is down, and this Help.',
+      ] },
+      { h: 'The extras', list: [
+        'Kitchen screen — cooks tap orders ready. Off: an order is done the moment you send it, and nothing prints for the kitchen.',
+        'Separate drinks and food screens — needs the kitchen screen.',
+        'Printers — kitchen slips and receipts.',
+        'Shifts and cash drawer — open and count the till, end-of-day reports. Off: you can take payment without opening a shift.',
+        'Discounts, Refunds, Split and combine bills.',
+        'Customer QR ordering, and Speak to Order — which needs QR.',
+        'Full sales dashboard — the 💰 Sales screen. Off: there is no Sales screen.',
+      ] },
+      { h: 'Changing it later', steps: [
+        '⚙ Admin → 🧩 Features & setup.',
+        'Flip the switch next to what you want. It saves straight away, on every till.',
+        'Or tap Run setup again to go through the questions once more.',
+      ] },
+      { tip: 'Switching something off only hides it. Nothing is deleted: a discount already on a bill stays on it, past refunds stay in the reports, and switching it back on shows everything again. Switching off the kitchen screen also switches off separate drinks screens; switching off QR also switches off Speak to Order — the screen tells you when that happens.' },
+    ],
+  },
+  {
     id: 'printing', icon: '🖨', title: 'Printers', time: '1 min', roles: ['admin'],
     blurb: 'Chits, receipts, and retrying a failed print.',
     body: [

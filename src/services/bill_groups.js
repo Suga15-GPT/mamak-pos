@@ -4,6 +4,7 @@ const { cents2rm, roundCashCents, formatRM } = require('../lib/money');
 const { lockBills } = require('../lib/billlock');
 const { writeAudit, ordersWithItems } = require('./orders');
 const rounds = require('./rounds');
+const features = require('./features');
 
 /* ===== combined bills =====
    A bill group settles several card orders together. Nothing moves between
@@ -109,6 +110,10 @@ async function combine(orderIds, userId) {
   try {
     await client.query('BEGIN');
     const { orders: locked, groups: lockedGroups } = await lockGroupSet(client, ids);
+    // Switching Split and combine off takes the bill lock and is refused while
+    // a combined bill is open; re-checked here under the same lock, a combine
+    // that passed the route just before the switch can't open one after it.
+    await features.requireOnTx(client, 'split_combine');
     const orders = locked.filter(o => ids.includes(o.id));
     if (orders.length !== ids.length) throw AppError('order not found', 404);
     for (const o of orders) {
@@ -272,9 +277,9 @@ async function payGroup(groupId, { legs, userId }) {
     const groupDue = dues.reduce((s, d) => s + d.due, 0);
     if (groupDue <= 0) throw AppError('combined bill already settled', 400);
 
-    // Same control as a single order's payment: no open shift, no payment.
-    const shiftId = (await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1')).rows[0]?.id;
-    if (!shiftId) throw AppError('no shift is open — open a shift before taking payment', 400);
+    // Same control as a single order's payment: no open shift, no payment
+    // (and with shifts switched off, no check and every leg's shift_id NULL).
+    const shiftId = await features.moneyShift(client, 'no shift is open — open a shift before taking payment');
 
     const nonCash = legs.filter(l => l.method !== 'Cash');
     const cash = legs.find(l => l.method === 'Cash');

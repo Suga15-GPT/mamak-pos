@@ -10,6 +10,7 @@ const printing = require('../services/printing');
 const rounds = require('../services/rounds');
 const { leaveGroupIfClosedTx } = require('../services/bill_groups');
 const { lockBills } = require('../lib/billlock');
+const { requireFeature, isOn } = require('../services/features');
 const {
   recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
   addRefund, listRefunds,
@@ -244,6 +245,8 @@ const TRANSITIONS = {
 const BACKWARD = new Set(['preparing>sent', 'ready>preparing', 'served>ready']);
 router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
   const { status } = req.body || {};
+  // Cancelling a bill is the till's; every other move here is preparation.
+  if (status !== 'cancelled' && !(await isOn('kitchen'))) return res.status(404).json({ error: 'feature_disabled' });
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
   const cur = o.rows[0].status;
@@ -262,9 +265,7 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
       await client.query('UPDATE orders SET status = $1, closed_by = $2, updated_at = now() WHERE id = $3', [status, req.user.id, o.rows[0].id]);
       // Cancelling the bill stops every station: a cancelled ticket drops off
       // the kitchen display instead of being cooked for nobody.
-      await client.query(
-        `UPDATE order_send_tickets SET status = 'cancelled'
-          WHERE send_id IN (SELECT id FROM order_sends WHERE order_id = $1) AND status <> 'served'`, [o.rows[0].id]);
+      await rounds.cancelOpenTickets(client, o.rows[0].id);
       await writeAudit(client, {
         userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: o.rows[0].id,
         detail: { from: cur },
@@ -411,7 +412,7 @@ router.post('/api/orders/:id/pay', requireRole('admin', 'staff'), awaitH(async (
 /* Manual reprint — admin only, and always audited: a reprinted receipt is a
    known fraud vector (a second copy handed to a customer who already paid,
    used to claim a refund elsewhere). */
-router.post('/api/orders/:id/reprint-receipt', requireRole('admin'), awaitH(async (req, res) => {
+router.post('/api/orders/:id/reprint-receipt', requireRole('admin'), requireFeature('printing'), awaitH(async (req, res) => {
   const o = await pool.query('SELECT id FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
   await printing.reprintReceipt(o.rows[0].id, req.user.id);
@@ -420,7 +421,7 @@ router.post('/api/orders/:id/reprint-receipt', requireRole('admin'), awaitH(asyn
 
 /* Preview only — does not record anything. ?ways=N for an even split of the
    remaining balance, or ?by=seat for a per-seat breakdown. */
-router.get('/api/orders/:id/split', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.get('/api/orders/:id/split', requireRole('admin', 'staff'), requireFeature('split_combine'), awaitH(async (req, res) => {
   const o = (await pool.query('SELECT bill_group_id FROM orders WHERE id = $1', [req.params.id])).rows[0];
   if (!o) return res.status(404).json({ error: 'not found' });
   if (o.bill_group_id) return res.status(409).json({ error: 'This card is on a combined bill. Remove it from the combined bill before splitting it.' });
@@ -438,6 +439,8 @@ router.get('/api/orders/:id/split', requireRole('admin', 'staff'), awaitH(async 
 /* Staff can't self-approve a discount — an admin types their PIN here, which
    returns a short-lived, one-use token authorizing exactly one discount action. */
 router.post('/api/discounts/authorize', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  // Shared by discounts and refunds, so it exists while either one does.
+  if (!(await isOn('discounts')) && !(await isOn('refunds'))) return res.status(404).json({ error: 'feature_disabled' });
   const name = String(req.body?.name || '');
   const u = await pool.query("SELECT id, pin_hash FROM users WHERE name = $1 AND role = 'admin'", [name]);
   if (!u.rows[0] || !verifyPin(req.body?.pin, u.rows[0].pin_hash)) return res.status(401).json({ error: 'invalid admin credentials' });
@@ -446,7 +449,7 @@ router.post('/api/discounts/authorize', requireRole('admin', 'staff'), awaitH(as
   res.json({ token, expires_in: 120 });
 }));
 
-router.post('/api/orders/:id/discounts', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/orders/:id/discounts', requireRole('admin', 'staff'), requireFeature('discounts'), awaitH(async (req, res) => {
   const { kind, value, reason, authorize_token } = req.body || {};
   let approverId = req.user.id;
   if (req.user.role !== 'admin') {
@@ -467,7 +470,7 @@ router.post('/api/orders/:id/discounts', requireRole('admin', 'staff'), awaitH(a
    recorded against the order (removing a discount only ever raises the total, so
    there's no shortfall to guard against; the restriction is about not undoing
    something the customer was already charged against). */
-router.delete('/api/orders/:id/discounts/:discountId', requireRole('admin'), awaitH(async (req, res) => {
+router.delete('/api/orders/:id/discounts/:discountId', requireRole('admin'), requireFeature('discounts'), awaitH(async (req, res) => {
   await removeDiscount(req.params.id, req.params.discountId, { userId: req.user.id });
   res.json({ ok: true });
 }));
@@ -477,7 +480,7 @@ router.delete('/api/orders/:id/discounts/:discountId', requireRole('admin'), awa
    POST /api/discounts/authorize (reused here rather than a second endpoint).
    Always against one payment_id, never free-floating, so it refunds by the
    method it was taken by and the drawer maths stays honest. */
-router.post('/api/orders/:id/refunds', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/orders/:id/refunds', requireRole('admin', 'staff'), requireFeature('refunds'), awaitH(async (req, res) => {
   const { payment_id, amount, reason, authorize_token } = req.body || {};
   const o = await pool.query('SELECT id, table_id FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });

@@ -9,6 +9,7 @@ const rounds = require('../services/rounds');
 const { qrHealth } = require('../lib/baseurl');
 const { systemHealth } = require('../services/health');
 const { publish } = require('../lib/events');
+const { requireFeature } = require('../services/features');
 
 const router = express.Router();
 
@@ -315,7 +316,7 @@ router.delete('/api/admin/item_modifier_groups/:itemId/:groupId', adminOnly, awa
 
 /* ===== preparation stations ===== */
 
-router.get('/api/admin/stations', adminOnly, awaitH(async (req, res) => {
+router.get('/api/admin/stations', adminOnly, requireFeature('stations'), awaitH(async (req, res) => {
   const stations = await rounds.listStations();
   const counts = await pool.query('SELECT station_code, count(*)::int n FROM items GROUP BY station_code');
   const byCode = Object.fromEntries(counts.rows.map(r => [r.station_code, r.n]));
@@ -326,7 +327,7 @@ router.get('/api/admin/stations', adminOnly, awaitH(async (req, res) => {
    Card QR codes and the shop poster live in routes/cards.js (card mode,
    migration 014); table management is retired with tables. */
 
-router.get('/api/admin/qr-health', adminOnly, awaitH(async (req, res) => {
+router.get('/api/admin/qr-health', adminOnly, requireFeature('qr'), awaitH(async (req, res) => {
   res.json(qrHealth(req));
 }));
 
@@ -437,12 +438,12 @@ router.get('/api/admin/audit', adminOnly, awaitH(async (req, res) => {
 
 /* ===== printers (phase 08) — CRUD, a test print, and the jobs list so a
    jammed printer is visible instead of silently eating chits/receipts ===== */
-router.get('/api/admin/printers', adminOnly, awaitH(async (req, res) => {
+router.get('/api/admin/printers', adminOnly, requireFeature('printing'), awaitH(async (req, res) => {
   const r = await pool.query('SELECT * FROM printers ORDER BY id');
   res.json(r.rows);
 }));
 
-router.post('/api/admin/printers', adminOnly, awaitH(async (req, res) => {
+router.post('/api/admin/printers', adminOnly, requireFeature('printing'), awaitH(async (req, res) => {
   const { name, host, port, role, width, enabled } = req.body || {};
   if (!name || !host || !['kitchen', 'receipt', 'bar'].includes(role))
     return res.status(400).json({ error: "name, host, role ('kitchen'|'receipt'|'bar') required" });
@@ -452,7 +453,7 @@ router.post('/api/admin/printers', adminOnly, awaitH(async (req, res) => {
   res.json({ id: r.rows[0].id });
 }));
 
-router.patch('/api/admin/printers/:id', adminOnly, awaitH(async (req, res) => {
+router.patch('/api/admin/printers/:id', adminOnly, requireFeature('printing'), awaitH(async (req, res) => {
   const b = req.body || {};
   const sets = [], vals = [];
   if (b.name !== undefined) sets.push('name = $' + vals.push(String(b.name).slice(0, 60)));
@@ -470,17 +471,17 @@ router.patch('/api/admin/printers/:id', adminOnly, awaitH(async (req, res) => {
   res.json({ ok: true });
 }));
 
-router.delete('/api/admin/printers/:id', adminOnly, awaitH(async (req, res) => {
+router.delete('/api/admin/printers/:id', adminOnly, requireFeature('printing'), awaitH(async (req, res) => {
   await pool.query('DELETE FROM printers WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
 }));
 
-router.post('/api/admin/printers/:id/test-print', adminOnly, awaitH(async (req, res) => {
+router.post('/api/admin/printers/:id/test-print', adminOnly, requireFeature('printing'), awaitH(async (req, res) => {
   const jobId = await printing.testPrint(Number(req.params.id));
   res.json({ ok: true, job_id: jobId });
 }));
 
-router.get('/api/admin/print-jobs', adminOnly, awaitH(async (req, res) => {
+router.get('/api/admin/print-jobs', adminOnly, requireFeature('printing'), awaitH(async (req, res) => {
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));
   const params = [];
   let where = '';
@@ -503,7 +504,7 @@ router.get('/api/admin/print-jobs', adminOnly, awaitH(async (req, res) => {
 
 /* Retry a failed print job — reprints the exact stored ticket on the same
    printer. Creates no order, no round and no charge; the bill is untouched. */
-router.post('/api/admin/print-jobs/:id/retry', adminOnly, awaitH(async (req, res) => {
+router.post('/api/admin/print-jobs/:id/retry', adminOnly, requireFeature('printing'), awaitH(async (req, res) => {
   const jobId = await printing.retryJob(Number(req.params.id), req.user.id);
   res.json({ ok: true, job_id: jobId });
 }));

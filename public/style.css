@@ -1381,3 +1381,57 @@ body.dark .wt-cell.cta.dark { color:var(--bg); }
 @media (prefers-reduced-motion: reduce) {
   .wt-cursor { transition:none; }
 }
+
+/* =============================================================================
+   FEATURE MODULES + SETUP WIZARD
+   A switched-off module puts feat-off-<name> on <body> (features.js); anything
+   the module owns carries data-feature="<name>". One rule per module hides it
+   everywhere, including controls a renderer draws later. The server refuses the
+   module regardless — this only keeps the screens honest.
+   ========================================================================== */
+body.feat-off-kitchen       [data-feature="kitchen"],
+body.feat-off-stations      [data-feature="stations"],
+body.feat-off-printing      [data-feature="printing"],
+body.feat-off-shifts        [data-feature="shifts"],
+body.feat-off-discounts     [data-feature="discounts"],
+body.feat-off-refunds       [data-feature="refunds"],
+body.feat-off-split_combine [data-feature="split_combine"],
+body.feat-off-qr            [data-feature="qr"],
+body.feat-off-voice         [data-feature="voice"],
+body.feat-off-dashboard     [data-feature="dashboard"] { display:none !important; }
+
+.feature-row { flex-wrap:nowrap; align-items:flex-start; }
+.feature-row > div:first-child { flex:1; }
+.feature-row .switch { margin-top:2px; }
+.feature-row .feature-note { margin-top:8px; font-size:13px; }
+.feature-row.child { padding-left:22px; border-left:3px solid var(--border); margin-left:4px; }
+.feature-row .feature-needs { color:var(--text-3); font-size:12px; }
+.feature-row .switch input:disabled + .slider { opacity:.45; cursor:not-allowed; }
+
+.setup-top { display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:38px; }
+.setup-modal h3 { margin:6px 0 10px; }
+/* The module list is long on a phone; Back and Next stay within reach. */
+.setup-modal .modal-actions {
+  position:sticky; bottom:-24px; margin:16px -24px -24px; padding:12px 24px 24px;
+  background:var(--surface); border-top:1px solid var(--border);
+}
+.setup-progress { height:4px; border-radius:var(--radius-pill); background:var(--surface-3); overflow:hidden; margin-top:8px; }
+.setup-progress span { display:block; height:100%; width:0; background:var(--brand); transition:width .25s var(--ease); }
+.setup-hint { margin-bottom:14px; }
+.setup-choices { display:flex; flex-direction:column; gap:10px; }
+.setup-choice {
+  display:flex; gap:12px; align-items:flex-start; cursor:pointer;
+  padding:14px; border:1px solid var(--border); border-radius:var(--radius-md);
+  background:var(--surface); color:var(--text);
+}
+.setup-choice:hover { border-color:var(--brand); }
+.setup-choice:has(input:checked) { border-color:var(--brand); background:var(--brand-tint); box-shadow:var(--ring); }
+.setup-choice input {
+  width:20px; height:20px; min-width:0; min-height:0; margin-top:2px; padding:0; flex-shrink:0;
+  background:none; border-radius:50%; accent-color:var(--brand);
+}
+.setup-choice b { display:block; font-size:15px; color:var(--text); }
+.setup-choice .meta { display:block; font-size:13px; color:var(--text-2); margin-top:2px; }
+.setup-review { margin-bottom:12px; }
+.setup-review .row span:last-child { text-align:right; overflow-wrap:anywhere; }
+.setup-modal .bill-group-head { margin-top:14px; }

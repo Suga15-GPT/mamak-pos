@@ -11,6 +11,7 @@ const printing = require('../services/printing');
 const cards = require('../services/cards');
 const groups = require('../services/bill_groups');
 const { writeAudit } = require('../services/orders');
+const { requireFeature } = require('../services/features');
 
 const router = express.Router();
 
@@ -35,7 +36,7 @@ router.get('/api/admin/cards', requireRole('admin'), awaitH(async (req, res) => 
   res.json(r.rows.map(c => ({ ...c, url: `${base}/t/${c.qr_token}` })));
 }));
 
-router.get('/api/admin/cards/:id/qr.png', requireRole('admin'), awaitH(async (req, res) => {
+router.get('/api/admin/cards/:id/qr.png', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
   const r = await pool.query('SELECT qr_token FROM cards WHERE id = $1', [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   const buf = await QRCode.toBuffer(`${publicBaseUrl(req)}/t/${r.rows[0].qr_token}`, { width: 512, margin: 1 });
@@ -44,7 +45,7 @@ router.get('/api/admin/cards/:id/qr.png', requireRole('admin'), awaitH(async (re
 
 /* Reissue a card's QR token: every printed copy of the old one stops working
    (a card photographed and abused, or simply lost). */
-router.post('/api/admin/cards/:id/regenerate-qr', requireRole('admin'), awaitH(async (req, res) => {
+router.post('/api/admin/cards/:id/regenerate-qr', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
   const token = crypto.randomBytes(8).toString('hex');
   const r = await pool.query('UPDATE cards SET qr_token = $1 WHERE id = $2 RETURNING id, number', [token, req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -56,12 +57,12 @@ router.post('/api/admin/cards/:id/regenerate-qr', requireRole('admin'), awaitH(a
 }));
 
 // Shop mode's one poster.
-router.get('/api/admin/qr-shop', requireRole('admin'), awaitH(async (req, res) => {
+router.get('/api/admin/qr-shop', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
   const { shop_token: token } = await cards.qrSettings();
   res.json({ url: token ? `${publicBaseUrl(req)}/t/${token}` : null });
 }));
 
-router.post('/api/admin/qr-shop/regenerate', requireRole('admin'), awaitH(async (req, res) => {
+router.post('/api/admin/qr-shop/regenerate', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
   const token = crypto.randomBytes(8).toString('hex');
   await pool.query(
     "INSERT INTO settings (key, value) VALUES ('qr_shop_token', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [token]);
@@ -69,7 +70,7 @@ router.post('/api/admin/qr-shop/regenerate', requireRole('admin'), awaitH(async 
   res.json({ ok: true, url: `${publicBaseUrl(req)}/t/${token}` });
 }));
 
-router.get('/api/admin/qr-shop.png', requireRole('admin'), awaitH(async (req, res) => {
+router.get('/api/admin/qr-shop.png', requireRole('admin'), requireFeature('qr'), awaitH(async (req, res) => {
   const { shop_token: token } = await cards.qrSettings();
   if (!token) return res.status(404).json({ error: 'not found' });
   const buf = await QRCode.toBuffer(`${publicBaseUrl(req)}/t/${token}`, { width: 768, margin: 1 });
@@ -78,7 +79,9 @@ router.get('/api/admin/qr-shop.png', requireRole('admin'), awaitH(async (req, re
 
 /* ===== combined bills ===== */
 
-const staff = requireRole('admin', 'staff');
+// Split and combine switched off: every combined-bill route 404s. The switch
+// is refused while a combined bill is open, so none is ever stranded here.
+const staff = [requireRole('admin', 'staff'), requireFeature('split_combine')];
 // A bill-group or order id that isn't a positive whole number names nothing:
 // 404, rather than letting it reach Postgres as NaN and come back a 500.
 const validIds = (req, res, next) => {

@@ -3,6 +3,7 @@ const { AppError } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
 const rounds = require('./rounds');
 const { lockBills } = require('../lib/billlock');
+const features = require('./features');
 
 // "Orderable" = available and not sold out today (sold_out_until resets itself
 // at KL midnight rather than requiring an admin to remember to flip it back).
@@ -70,6 +71,25 @@ async function buildOrderItems(client, rawItems) {
   });
 }
 
+/* With one preparation station (stations switched off) every line goes to the
+   kitchen. The item keeps its own station_code, so switching stations back on
+   routes tomorrow's orders exactly as before. Read under the caller's bill
+   lock, like every flag a bill write depends on (features.flagsTx). */
+async function atStations(client, parsed) {
+  if (await features.isOnTx(client, 'stations')) return parsed;
+  return parsed.map(l => ({ ...l, item: { ...l.item, station_code: 'kitchen' } }));
+}
+
+/* A customer's round (source 'qr': typed, or spoken and confirmed) is refused
+   once QR ordering is switched off. Checked here, under the bill lock, as well
+   as by the route: switching QR off takes the same lock and is refused while a
+   round awaits approval, so a round the route let through a moment before the
+   switch is either in place before that check or refused here — never left
+   awaiting approval with no queue to decide it in. */
+async function refuseQrIfOff(client, source) {
+  if (source === 'qr') await features.requireOnTx(client, 'qr');
+}
+
 /* Writes one round's worth of lines. Every line carries the round it was sent
    in (send_id) and a snapshot of the station that prepared it — moving an item
    to another station tomorrow must not rewrite yesterday's ticket. */
@@ -101,6 +121,8 @@ async function insertOrder(cardId, parsed, note, source, userId = null, idemKey 
     // Opening a bill writes an order, its lines and its first total: bill
     // lock first, like every other bill write (lib/billlock).
     await lockBills(client);
+    await refuseQrIfOff(client, source);
+    parsed = await atStations(client, parsed);
     // FOR SHARE: lowering the card count locks the cards it retires, so a card
     // can't be opened in the instant it is being taken out of use.
     if (cardId != null) {
@@ -109,9 +131,8 @@ async function insertOrder(cardId, parsed, note, source, userId = null, idemKey 
     }
     // Stamps whichever shift is open right now, if any — orders may still be
     // taken with no shift open (only payment is refused for that), so this is
-    // nullable.
-    const openShift = await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
-    const shiftId = openShift.rows[0]?.id || null;
+    // nullable. With shifts switched off, always null.
+    const shiftId = await features.moneyShift(client);
     const o = await client.query(
       `INSERT INTO orders (card_id, status, source, note, opened_by, idempotency_key, shift_id, order_type)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
@@ -122,6 +143,9 @@ async function insertOrder(cardId, parsed, note, source, userId = null, idemKey 
     await insertSendLines(client, orderId, send.id, parsed, userId);
     if (approvalState === 'approved') {
       await rounds.openTickets(client, send.id, parsed.map(l => l.item.station_code || 'kitchen'));
+      // A no-op while the kitchen screen is on (a new order is 'sent'); with it
+      // off the tickets were born served and the order must say so.
+      await rounds.deriveOrderStatus(client, orderId);
     }
     // The first total is written in the same transaction as the lines.
     await require('./billing').recomputeOrderBill(orderId, client);
@@ -146,6 +170,8 @@ async function appendSend(orderId, parsed, source, userId = null, idemKey = null
     await client.query('BEGIN');
     // Adding a round changes a bill's total: bill lock first (lib/billlock).
     await lockBills(client);
+    await refuseQrIfOff(client, source);
+    parsed = await atStations(client, parsed);
     const send = await rounds.createSend(client, orderId, { source, userId, approvalState, publicRef });
     const cur = (await client.query(
       `SELECT status,

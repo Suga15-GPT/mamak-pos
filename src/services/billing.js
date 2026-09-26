@@ -5,6 +5,7 @@ const { writeAudit } = require('./orders');
 const rounds = require('./rounds');
 const { leaveGroupIfClosedTx } = require('./bill_groups');
 const { lockBills } = require('../lib/billlock');
+const features = require('./features');
 
 // A line belongs on the bill once its round is accepted. A round held for
 // approval (shop-mode QR) is shown "awaiting approval" and counts in no total;
@@ -101,9 +102,8 @@ async function settleIfMatchesPaid(client, orderId, totalCents, paidCents, userI
   // Phase 12: closed_shift_id is the shift the order actually settled in —
   // whichever shift is open right now, if any (a comp can close an order with
   // no shift open at all, in which case its sales simply carry no shift until
-  // a future phase needs one).
-  const openShift = await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
-  const shiftId = openShift.rows[0]?.id || null;
+  // a future phase needs one). None at all with shifts switched off.
+  const shiftId = await features.moneyShift(client);
   await client.query(
     "UPDATE orders SET status = 'paid', paid_at = now(), closed_by = $1, closed_shift_id = $2, updated_at = now() WHERE id = $3",
     [userId || null, shiftId, orderId]);
@@ -174,10 +174,9 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
 
     // Phase 09: the drawer this cash lands in (and the shift a card/eWallet sale
     // is attributed to) must be the open one — refusing here is the control that
-    // makes shift cash reconciliation trustworthy at all.
-    const openShift = await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
-    const shiftId = openShift.rows[0]?.id;
-    if (!shiftId) throw AppError('no shift is open — open a shift before taking payment', 400);
+    // makes shift cash reconciliation trustworthy at all. With shifts switched
+    // off there is no drawer to reconcile: no check, and shift_id is NULL.
+    const shiftId = await features.moneyShift(client, 'no shift is open — open a shift before taking payment');
 
     let apply = amountCents == null ? due : Number(amountCents);
     if (!(apply > 0)) throw AppError('amount must be positive', 400);
@@ -345,10 +344,9 @@ async function addRefund(orderId, { paymentId, amountCents, reason, approvedBy, 
     // Same control as taking a payment: the shift a cash refund draws down (or a
     // card/eWallet refund is attributed to) must be the open one — read under
     // the bill lock, which shift close also takes, so a refund can't land in a
-    // shift whose expected cash has just been frozen without it.
-    const openShift = await client.query('SELECT id FROM shifts WHERE closed_at IS NULL LIMIT 1');
-    const shiftId = openShift.rows[0]?.id;
-    if (!shiftId) throw AppError('no shift is open — open a shift before issuing a refund', 400);
+    // shift whose expected cash has just been frozen without it. With shifts
+    // switched off there is no drawer: no check, and shift_id is NULL.
+    const shiftId = await features.moneyShift(client, 'no shift is open — open a shift before issuing a refund');
     await client.query('SELECT id FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
     const pay = await client.query('SELECT * FROM payments WHERE id = $1 AND order_id = $2 FOR UPDATE', [paymentId, orderId]);
     if (!pay.rows[0]) throw AppError('payment not found', 404);

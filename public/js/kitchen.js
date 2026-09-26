@@ -1,5 +1,6 @@
 import { $, esc, toast, onStreamEvent, stateWords, minsSince, ageClass, ask } from './state.js';
 import { setPendingCount } from './nav.js';
+import { on } from './features.js';
 
 /* ===== KITCHEN DISPLAY =====
    Works station tickets, not dining orders. One ticket is "what this station
@@ -99,6 +100,8 @@ function fill(colId, countId, tickets) {
 }
 
 export async function refreshKitchen() {
+  // With the kitchen screen off this tab is only the QR approval queue.
+  if (!on('kitchen')) { stations = []; await refreshPending(); return; }
   await loadStations();
   renderStationTabs();
   if (!activeStation) {
@@ -127,6 +130,7 @@ export async function refreshKitchen() {
 /* ===== QR APPROVAL QUEUE =====
    Empty (and invisible) unless an admin turned on "Require staff approval". */
 async function refreshPending() {
+  if (!on('qr')) { setPendingCount(0); $('kitchen-pending').innerHTML = ''; return; }
   let pending = [];
   try { pending = await API.get('/api/kitchen/pending'); } catch (e) { pending = []; }
   setPendingCount(pending.length);

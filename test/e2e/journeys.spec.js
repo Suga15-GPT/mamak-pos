@@ -51,6 +51,121 @@ async function addItem(page, category, item) {
   await page.locator('#pos-workspace').getByRole('button', { name: new RegExp(item) }).first().click();
 }
 
+const MODULES = ['kitchen', 'stations', 'printing', 'shifts', 'discounts', 'refunds', 'split_combine', 'qr', 'voice', 'dashboard'];
+const LITE_JOURNEY = 'first run: the setup wizard with Small stall, then order and pay with no shift and no kitchen';
+
+/* Every journey except the first-run one runs as a full restaurant (Advanced),
+   exactly as before feature modules existed. The first-run journey leaves the
+   shop on Lite with 20 cards, so this puts everything back each time. */
+test.beforeEach(async ({ request }, testInfo) => {
+  if (testInfo.title === LITE_JOURNEY) return;
+  const csrfToken = await apiLogin(request);
+  const r = await request.post('/api/setup', {
+    headers: { 'X-CSRF-Token': csrfToken },
+    data: { features: Object.fromEntries(MODULES.map(m => [m, true])), card_count: 50 },
+  });
+  expect(r.status()).toBe(200);
+});
+
+/* Runs first: the database is fresh, so the admin is sent straight into the
+   wizard at login and can't get past it without finishing. */
+test(LITE_JOURNEY, async ({ page, request }) => {
+  // Not login(): that opens the account menu, which the wizard sits on top of.
+  await page.goto('/');
+  await page.locator('#lname').fill('Admin');
+  await page.locator('#lpin').fill('1234');
+  await page.getByRole('button', { name: 'Log In' }).click();
+  await expect(page.locator('#app-view')).toBeVisible();
+  const wizard = page.locator('#setup-modal');
+  await page.waitForLoadState('networkidle');
+  if (!(await wizard.isVisible())) {
+    // Run on its own after another journey finished setup: reopen it from Admin.
+    await navTab(page, 'Admin').click();
+    await page.locator('#admin-tabs').getByRole('button', { name: /Features & setup/ }).click();
+    await page.getByRole('button', { name: 'Run setup again' }).click();
+  }
+  await expect(wizard).toBeVisible();
+  await expect(wizard.locator('#setup-cancel')).toBeHidden();
+
+  // 1. Shop details — the name is required.
+  await expect(page.locator('#setup-step')).toHaveText('Step 1 of 6');
+  await page.locator('#setup-name').fill('');
+  await wizard.getByRole('button', { name: 'Next' }).click();
+  await expect(page.locator('#setup-err')).toContainText('shop name');
+  await page.locator('#setup-name').fill('Gerai Pak Ali');
+  await page.locator('#setup-tax').fill('6');
+  await page.locator('#setup-svc').fill('0');
+  await wizard.getByRole('button', { name: 'Next' }).click();
+
+  // 2. A starting point.
+  await wizard.getByText('Small stall').click();
+  await wizard.getByRole('button', { name: 'Next' }).click();
+
+  // 3. Every module, pre-ticked from the preset: all off for a small stall.
+  const sw = mod => wizard.locator(`input[data-module="${mod}"]`);
+  // The checkbox itself is visually hidden inside its switch; tap the switch.
+  const flip = mod => wizard.locator('label.switch', { has: page.locator(`input[data-module="${mod}"]`) }).click();
+  for (const m of MODULES) await expect(sw(m)).not.toBeChecked();
+  await expect(sw('stations')).toBeDisabled();
+  // Switching a parent off takes its child with it, and the owner is told.
+  await flip('kitchen');
+  await flip('stations');
+  await expect(sw('stations')).toBeChecked();
+  await flip('kitchen');
+  await expect(wizard.locator('.feature-note')).toContainText('Separate drinks and food screens was switched off too');
+  await expect(sw('stations')).not.toBeChecked();
+  // Shifts on with no shift open: the owner is told payments will be refused.
+  await flip('shifts');
+  await expect(wizard.locator('.feature-shift-note')).toContainText('every payment will be refused until someone opens one');
+  await flip('shifts');
+  await expect(wizard.locator('.feature-shift-note')).toHaveCount(0);
+  await wizard.getByRole('button', { name: 'Next' }).click();
+
+  // 4. Cards. QR is off, so there is no QR step: review is step 5 of 5.
+  await page.locator('#setup-cards').fill('20');
+  await wizard.getByRole('button', { name: 'Next' }).click();
+  await expect(page.locator('#setup-step')).toHaveText('Step 5 of 5');
+  await expect(wizard).toContainText('Gerai Pak Ali');
+  await expect(wizard).toContainText('20 cards');
+  await wizard.getByRole('button', { name: 'Finish setup' }).click();
+  await expect(wizard).toBeHidden();
+
+  // The app is a simple order-and-pay till: no Shift, no Kitchen, no Sales.
+  await expect(navTab(page, 'Cards')).toBeVisible();
+  await expect(navTab(page, 'Shift')).toHaveCount(0);
+  await expect(navTab(page, 'Kitchen')).toHaveCount(0);
+  await expect(navTab(page, 'Sales')).toHaveCount(0);
+  await expect(page.locator('#tables-grid').getByRole('button', { name: /^Card 20\b/ })).toBeVisible();
+  await expect(page.locator('#tables-grid').getByRole('button', { name: /^Card 21\b/ })).toHaveCount(0);
+
+  await openCard(page, 1);
+  await addItem(page, 'Roti', 'Roti Canai');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#cart-body')).toContainText('Already sent');
+
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Payment' })).toBeVisible();
+  await expect(page.locator('#pay-discount-section')).toBeHidden();
+  await expect(page.locator('#pay-split-section')).toBeHidden();
+  await page.locator('#pay-modal').getByRole('button', { name: '💵 Cash', exact: true }).click();
+  await expect(page.locator('#pos-tables')).toBeVisible();
+
+  // Paid with no shift open and without ever going through a kitchen.
+  await apiLogin(request);
+  expect((await request.get('/api/shift/current')).status()).toBe(404);
+  const recent = await request.get('/api/orders?mode=recent').then(r => r.json());
+  const order = recent.find(o => o.label === 'Card 1');
+  expect(order.status).toBe('paid');
+  expect(order.payments).toHaveLength(1);
+  expect(order.sends[0].tickets.every(tk => tk.status === 'served')).toBe(true);
+  const features = await request.get('/api/features').then(r => r.json());
+  expect(features.setup_completed).toBe(true);
+  expect(Object.values(features.features).every(v => v === false)).toBe(true);
+
+  // Sales figures are the dashboard's: switched off, they aren't served.
+  expect((await request.get('/api/summary')).status()).toBe(404);
+});
+
 test('staff login → order → kitchen → pay', async ({ page, request }) => {
   // A payment is refused unless a shift is open.
   const csrfToken = await apiLogin(request);
@@ -182,6 +297,47 @@ test('takeaway order needs no card', async ({ page, request }) => {
 
   await page.getByRole('button', { name: /Back to Cards/ }).click();
   await expect(page.locator('#takeaway-grid')).toContainText('Takeaway #');
+});
+
+/* Paying before the food is made is normal: a takeaway paid at the counter.
+   The kitchen screen keeps it until it is served, and serving it leaves the
+   paid bill exactly as it was paid. */
+test('a takeaway paid at the counter stays on the kitchen screen until it is served', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  const existing = await request.get('/api/shift/current').then(r => r.json());
+  if (!existing) await request.post('/api/shift/open', { headers: { 'X-CSRF-Token': csrfToken }, data: { float: 0 } });
+  // Nothing is cooked yet, so Take Payment asks "Take payment anyway?".
+  page.on('dialog', dialog => dialog.accept());
+
+  await login(page);
+  await page.getByRole('button', { name: /New Takeaway/ }).click();
+  await addItem(page, 'Roti', 'Roti Telur');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#ws-title')).toContainText('Takeaway #');
+  const label = (await page.locator('#ws-title').textContent()).trim();
+  const orderId = Number(label.replace('Takeaway #', ''));
+
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Payment' })).toBeVisible();
+  await page.locator('#pay-modal').getByRole('button', { name: '💵 Cash', exact: true }).click();
+  await expect(page.locator('#pos-tables')).toBeVisible();
+  const paid = (await request.get('/api/orders?mode=recent').then(r => r.json())).find(o => o.id === orderId);
+  expect(paid.status).toBe('paid');
+
+  await navTab(page, 'Kitchen').click();
+  const ticket = column => page.locator(`#k-col-${column} .k-order`, { hasText: new RegExp(`${label}\\b`) });
+  await expect(ticket('sent')).toContainText('Roti Telur');
+  await ticket('sent').getByRole('button', { name: /Start cooking/ }).click();
+  await ticket('preparing').getByRole('button', { name: /Ready/ }).click();
+  await ticket('ready').getByRole('button', { name: /Served/ }).click();
+  await expect(ticket('served')).toBeVisible();
+
+  const after = (await request.get('/api/orders?mode=recent').then(r => r.json())).find(o => o.id === orderId);
+  expect(after.status).toBe('paid');
+  expect(after.grand_total).toBe(paid.grand_total);
+  expect(after.paid_at).toBe(paid.paid_at);
+  expect(after.updated_at).toBe(paid.updated_at);   // the taps never wrote to the bill
+  expect(after.sends[0].tickets.map(t => t.status)).toEqual(['served']);
 });
 
 test('split bill', async ({ page, request }) => {

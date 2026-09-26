@@ -4,6 +4,7 @@ const { AppError } = require('../lib/errors');
 const { formatRM } = require('../lib/money');
 const { createPrinter } = require('../lib/escpos');
 const { writeAudit } = require('./orders');
+const features = require('./features');
 
 const MAX_ATTEMPTS = 3;
 const KL_TZ = 'Asia/Kuala_Lumpur';
@@ -32,6 +33,9 @@ async function insertJob(printerId, kind, orderId, payload, status = 'queued', l
 // immediately (order_id still set, so it's visible in the jobs list) rather
 // than silently dropped.
 async function enqueueForRole(kind, orderId, role, buildPayload, meta = {}) {
+  // Printing switched off: nothing is queued, not even a 'failed' job — a shop
+  // with no printers should not collect a jobs list it will never look at.
+  if (!(await features.isOn('printing'))) return;
   let printers = await findEnabledPrinters(role);
   // A shop with one printer must not lose its drinks chits because no 'bar'
   // printer exists: fall back to the kitchen, which is where those chits went
@@ -375,6 +379,8 @@ async function processQueue() {
    never block or fail the order that asked for the chit. */
 async function enqueueRoundChits(sendId) {
   try {
+    // No kitchen screen means no kitchen work, so no chit either.
+    if (!(await features.isOn('kitchen'))) return;
     const send = (await pool.query('SELECT id, order_id FROM order_sends WHERE id = $1', [sendId])).rows[0];
     if (!send) return;
     const stations = (await pool.query(
@@ -395,6 +401,7 @@ async function enqueueRoundChits(sendId) {
 async function enqueue(kind, orderId, opts = {}) {
   try {
     if (kind === 'void') {
+      if (!(await features.isOn('kitchen'))) return;
       // A void chit belongs at the station that is cooking the line.
       const st = (await pool.query(
         `SELECT oi.station_code, ps.printer_role FROM order_items oi

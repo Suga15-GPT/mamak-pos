@@ -5,12 +5,16 @@ const { awaitH } = require('../lib/errors');
 const { cents2rm, rm2cents } = require('../lib/money');
 const shifts = require('../services/shifts');
 const printing = require('../services/printing');
+const rounds = require('../services/rounds');
+const { requireFeature } = require('../services/features');
 
 const router = express.Router();
 
 const KL = 'Asia/Kuala_Lumpur';
 
-router.get('/api/summary', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+// Sales figures belong to the dashboard module: with it off, 404 like every
+// other route of a switched-off module, and the 💰 Sales tab is not shown.
+router.get('/api/summary', requireRole('admin', 'staff'), requireFeature('dashboard'), awaitH(async (req, res) => {
   // `lt` is a local (tz-naive) timestamp. Bucket boundaries must stay plain
   // timestamps too — comparing against a `::timestamptz` cast re-introduces a
   // timezone (the session's, not KL) and can land a payment in the wrong
@@ -50,7 +54,7 @@ router.get('/api/summary', requireRole('admin', 'staff'), awaitH(async (req, res
    Postgres off rows that already exist — no metric is invented, and anything
    the data cannot support honestly is simply absent rather than zero-filled.
    All money stays integer cents until the JSON boundary. */
-router.get('/api/dashboard', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.get('/api/dashboard', requireRole('admin', 'staff'), requireFeature('dashboard'), awaitH(async (req, res) => {
   const today = `(now() AT TIME ZONE '${KL}')::date`;
   const paidLocal = `(o.paid_at AT TIME ZONE '${KL}')`;
 
@@ -92,20 +96,26 @@ router.get('/api/dashboard', requireRole('admin', 'staff'), awaitH(async (req, r
 
     // Kitchen health, measured off the round tickets that actually record it.
     // Preparation time is sent -> ready; a ticket that never reached 'ready'
-    // contributes nothing rather than a guess.
+    // contributes nothing rather than a guess. Active and late count exactly
+    // the kitchen board's New and Cooking columns (rounds.ON_BOARD_SQL), a
+    // paid bill's tickets included, so a ticket no screen shows is never
+    // counted as waiting.
     pool.query(`
-      WITH t AS (
+      WITH prep AS (
         SELECT tk.*, s.sent_at FROM order_send_tickets tk JOIN order_sends s ON s.id = tk.send_id
          WHERE s.approval_state = 'approved' AND tk.status <> 'cancelled'
+      ),
+      active AS (
+        SELECT s.sent_at FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id JOIN orders o ON o.id = s.order_id
+         WHERE ${rounds.ON_BOARD_SQL} AND t.status IN ('sent','preparing')
       )
       SELECT
         (SELECT COALESCE(ROUND(AVG(EXTRACT(epoch FROM (ready_at - sent_at)) / 60))::int, 0)
-           FROM t WHERE ready_at IS NOT NULL AND (sent_at AT TIME ZONE '${KL}')::date = ${today}) AS avg_prep_minutes,
-        (SELECT COUNT(*)::int FROM t WHERE status IN ('sent','preparing'))                        AS active_tickets,
+           FROM prep WHERE ready_at IS NOT NULL AND (sent_at AT TIME ZONE '${KL}')::date = ${today}) AS avg_prep_minutes,
+        (SELECT COUNT(*)::int FROM active)                                                        AS active_tickets,
         (SELECT COALESCE(MAX(FLOOR(EXTRACT(epoch FROM (now() - sent_at)) / 60))::int, 0)
-           FROM t WHERE status IN ('sent','preparing'))                                          AS longest_active_minutes,
-        (SELECT COUNT(*)::int FROM t
-          WHERE status IN ('sent','preparing') AND sent_at < now() - interval '10 minutes')       AS late_tickets,
+           FROM active)                                                                          AS longest_active_minutes,
+        (SELECT COUNT(*)::int FROM active WHERE sent_at < now() - interval '10 minutes')          AS late_tickets,
         (SELECT COUNT(*)::int FROM order_sends s2 WHERE s2.approval_state = 'pending')            AS pending_approval`),
 
     pool.query(`
@@ -215,31 +225,31 @@ router.patch('/api/settings', requireRole('admin'), awaitH(async (req, res) => {
 
 /* ===== Shifts, cash drawer, X/Z reports (phase 09) ===== */
 
-router.get('/api/shift/current', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.get('/api/shift/current', requireRole('admin', 'staff'), requireFeature('shifts'), awaitH(async (req, res) => {
   res.json(await shifts.current());
 }));
 
-router.post('/api/shift/open', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/shift/open', requireRole('admin', 'staff'), requireFeature('shifts'), awaitH(async (req, res) => {
   const floatCents = rm2cents(req.body?.float || 0);
   res.status(201).json(await shifts.open({ userId: req.user.id, floatCents }));
 }));
 
-router.post('/api/shift/movements', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/shift/movements', requireRole('admin', 'staff'), requireFeature('shifts'), awaitH(async (req, res) => {
   const { kind, amount, reason } = req.body || {};
   res.status(201).json(await shifts.addMovement({ kind, amountCents: rm2cents(amount), reason, userId: req.user.id }));
 }));
 
-router.post('/api/shift/close', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/shift/close', requireRole('admin', 'staff'), requireFeature('shifts'), awaitH(async (req, res) => {
   const countedCents = rm2cents(req.body?.counted || 0);
   const note = req.body?.note;
   res.json(await shifts.close({ userId: req.user.id, countedCents, note }));
 }));
 
-router.get('/api/shift/:id/report', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.get('/api/shift/:id/report', requireRole('admin', 'staff'), requireFeature('shifts'), awaitH(async (req, res) => {
   res.json(await shifts.report(Number(req.params.id), { final: req.query.final === '1' || req.query.final === 'true' }));
 }));
 
-router.post('/api/shift/:id/print-report', requireRole('admin'), awaitH(async (req, res) => {
+router.post('/api/shift/:id/print-report', requireRole('admin'), requireFeature('shifts', 'printing'), awaitH(async (req, res) => {
   const final = req.query.final === '1' || req.query.final === 'true';
   const data = await shifts.report(Number(req.params.id), { final });
   await printing.printShiftReport(Number(req.params.id), data);

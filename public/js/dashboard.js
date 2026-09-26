@@ -1,4 +1,5 @@
 import { $, fmt, esc } from './state.js';
+import { on } from './features.js';
 
 /* ===== DASHBOARD =====
    The owner should understand the business in about five seconds: money first,
@@ -77,6 +78,8 @@ function barList(rows, { valueOf, labelOf, fill = '' }) {
 }
 
 export async function refreshDashboard() {
+  // Switched off, the 💰 Sales tab isn't shown and its figures 404 (nav.js).
+  if (!on('dashboard')) return;
   try {
     const d = await API.get('/api/dashboard');
 

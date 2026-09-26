@@ -10,6 +10,7 @@ const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const voice = require('../services/voice');
 const { qrSettings, resolveQr, locationSql } = require('../services/cards');
+const { requireFeature, isOn } = require('../services/features');
 
 const router = express.Router();
 
@@ -46,7 +47,7 @@ router.get('/api/menu', publicH(async (req, res) => {
    poster token; the page must ask for a card number first, and passes it back
    as ?card=N to check it before showing the menu. off: 404, and the page says
    "Please order at the counter". */
-router.get('/api/t/:token', publicH(async (req, res) => {
+router.get('/api/t/:token', requireFeature('qr'), publicH(async (req, res) => {
   const { settings, card } = await resolveQr(req.params.token, req.query.card, { requireCard: false });
   const open = card ? await pool.query(
     "SELECT id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled','refunded') LIMIT 1", [card.id]) : { rows: [] };
@@ -58,7 +59,7 @@ router.get('/api/t/:token', publicH(async (req, res) => {
     has_open_order: !!open.rows[0],
     // A half-configured deployment shows the menu and no microphone, rather
     // than a Speak to Order button that fails when somebody taps it.
-    voice: { enabled: voice.isEnabled() },
+    voice: { enabled: voice.isEnabled() && (await isOn('voice')) },
   });
 }));
 
@@ -70,7 +71,7 @@ router.get('/api/t/:token', publicH(async (req, res) => {
    token plus the card number typed in) is the entire identity, and the
    response never carries an order id, only an opaque round reference the
    customer can poll for their own food. */
-router.post('/api/public/orders', publicH(async (req, res) => {
+router.post('/api/public/orders', requireFeature('qr'), publicH(async (req, res) => {
   const { table_token, card_number, items, note } = req.body || {};
   const { settings: ordering, card } = await resolveQr(table_token, card_number);
 
@@ -142,7 +143,7 @@ router.post('/api/public/orders', publicH(async (req, res) => {
 /* A customer following their own round. `ref` is an opaque per-round token
    handed out at submit time — never an order id, and it exposes only what that
    customer already knows they ordered. */
-router.get('/api/public/sends/:ref', publicH(async (req, res) => {
+router.get('/api/public/sends/:ref', requireFeature('qr'), publicH(async (req, res) => {
   if (!(await qrSettings()).enabled) return res.status(404).json({ error: 'Please order at the counter' });
   if (!rateLimit('sendref:' + req.ip, 240, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many requests' });
   const s = await pool.query(

@@ -1,9 +1,11 @@
-import { state, $, connectStream, disconnectStream } from './state.js';
+import { state, $, connectStream, disconnectStream, onStreamEvent } from './state.js';
 import { loadAll } from './pos.js';
 import { buildNav, refreshLive } from './nav.js';
 import { startOutbox } from './outbox.js';
 import { openChangePinDialog } from './staff.js';
 import { showHelpTopic } from './help.js';
+import { loadFeatures, setupCompleted } from './features.js';
+import { openSetup } from './setup.js';
 import './i18n.js';
 
 /* ===== OFFLINE (phase 07) =====
@@ -36,7 +38,19 @@ function showLogin() {
   if (state.pollTimer) clearInterval(state.pollTimer);
   disconnectStream();
 }
-function loadApp() {
+/* An admin on a shop that hasn't been set up goes through the wizard before
+   anything else loads; it can't be skipped, and finishing it starts the app.
+   Everyone else gets the app as the flags say. */
+async function loadApp() {
+  await loadFeatures();
+  if (API.user.role === 'admin' && !setupCompleted()) {
+    openSetup({ mandatory: true, onDone: startApp });
+    return;
+  }
+  startApp();
+}
+
+function startApp() {
   buildNav();
   loadAll();
   connectStream();
@@ -57,6 +71,13 @@ function showApp() {
   loadApp();
 }
 document.addEventListener('pin-changed-mandatory', loadApp);
+
+// Another till switched a module on or off: follow it without a reload.
+onStreamEvent(batch => {
+  if (batch.some(e => e.type === 'features.updated')) {
+    loadFeatures().then(() => document.dispatchEvent(new Event('features-changed')));
+  }
+});
 
 /* A "? how this works" link anywhere in the app opens the matching Help topic.
    One handler, so a new link is one attribute rather than one more listener. */

@@ -22,6 +22,7 @@ Words you will see on the screen are written **like this**.
 
 1. [Opening the POS](#1-opening-the-pos)
 2. [Logging in](#2-logging-in)
+2b. [The first day: choosing what your POS does](#2b-the-first-day-choosing-what-your-pos-does)
 3. [Opening the shift](#3-opening-the-shift)
 4. [Taking an order](#4-taking-an-order)
 5. [Adding more food later](#5-adding-more-food-later--the-most-important-page)
@@ -77,10 +78,83 @@ for ten minutes. Typing it correctly never counts against you.
 
 ---
 
+## 2b. The first day: choosing what your POS does
+
+*For the owner.* The very first time an admin logs in, the POS asks six short
+questions before anything else. You cannot skip them — the shop has to say
+what it is before it can trade — but every answer can be changed later.
+
+1. **Your shop** — the shop name (required), address, SST registration number
+   (leave it empty if you have none), SST % and service charge %. These print
+   at the top of every receipt.
+2. **What kind of shop is this?** Pick the closest:
+   - **Small stall** — take the order, take the money. Nothing else.
+   - **Busy shop** — a kitchen screen, printers, shifts, discounts and split bills.
+   - **Full restaurant** — everything, including customer QR ordering and the
+     full sales dashboard.
+
+   This only ticks the boxes on the next page for you.
+3. **Choose what your POS does** — one switch for each extra, with a line
+   saying what it does. Tick or untick any of them.
+4. **How many cards?** — the numbered cards you hand out (50 to start).
+5. **How do customers scan?** — only asked if you switched on QR ordering: a QR
+   printed on each card, or one QR poster for the whole shop where customers
+   type their card number.
+6. **Check and finish** — read it through and tap **Finish setup**.
+
+**Always there, whatever you choose:** the menu, the cards, taking orders,
+cash / card / eWallet payment, SST and service charge, staff PINs, the
+activity log, orders taken while the internet is down, and Help.
+
+**The extras you can switch on or off:**
+
+| Switch | What it does in the shop | If it is off |
+|---|---|---|
+| **Kitchen screen** | Cooks see new orders on a screen and tap them ready. | An order is done the moment you send it. Nothing prints for the kitchen. |
+| **Separate drinks and food screens** | Drinks go to the drinks counter, food to the kitchen. Needs the kitchen screen. | Everything goes to the one kitchen screen. |
+| **Printers** | Kitchen slips and customer receipts. | Nothing is printed. |
+| **Shifts and cash drawer** | Open and count the till, cash in and out, end-of-day reports. | You can take payment without opening a shift. There is no **🕐 Shift** button. |
+| **Discounts** | Money off a bill, or free, with an owner's PIN. | No **Discount** button. |
+| **Refunds** | Give money back on a paid bill, with an owner's PIN. | No **Refund** button. |
+| **Split and combine bills** | Split one bill, or let several cards pay together. | No split or **Combine bills** buttons. |
+| **Customer QR ordering** | Customers order from their own phone. | Scanning a card says *Please order at the counter*. |
+| **Speak to Order** | Customers say their order into their phone. Needs QR ordering. | Customers tap the menu instead. |
+| **Full sales dashboard** | Today's, this month's and this year's sales, charts by hour, top items, payment mix. | There is no **💰 Sales** button. |
+
+**Changing it later:** tap **⚙ Admin → 🧩 Features & setup**. Flip the switch
+next to what you want — it saves straight away, on every tablet. Or tap
+**Run setup again** to go through the six questions once more.
+
+> **Switching something off only hides it. Nothing is deleted.** A discount
+> already on a bill stays on it. Past refunds stay in the reports. Switch it
+> back on and everything is there again. Switching off the **kitchen screen**
+> also switches off **separate drinks screens**, and switching off **QR
+> ordering** also switches off **Speak to Order** — the screen tells you when
+> that happens. Switching one back on does not switch the other back on; do
+> that yourself if you want it.
+
+Four switches wait for you to finish something first:
+
+- **Shifts and cash drawer** cannot be switched off while a shift is open.
+  Close the shift first, so its cash count includes every sale.
+- The **kitchen screen** cannot be switched off while the kitchen board still
+  has orders on it. Finish them, or clear them.
+- **Split and combine bills** cannot be switched off while cards are on a
+  combined bill. Take payment on it, or take the cards apart.
+- **QR ordering** cannot be switched off while customer orders are waiting for
+  you to accept them.
+
+If you switch **Shifts and cash drawer** on while no shift is open, the screen
+warns you: every payment is refused until someone opens a shift on **🕐 Shift**.
+
+---
+
 ## 3. Opening the shift
 
 Do this once, when the shop opens. **Payments do not work until a shift is
-open.**
+open.** (If your shop has switched off *Shifts and cash drawer* — see
+[2b](#2b-the-first-day-choosing-what-your-pos-does) — there is no Shift button
+and you can skip this.)
 
 1. Tap **🕐 Shift** at the bottom (or top) of the screen.
 2. In **Float (RM)**, type how much cash is in the drawer to start with.
@@ -164,6 +238,10 @@ To see the whole history, tap **Order timeline** at the bottom of the bill.
 
 ## 6. The kitchen screen
 
+(If your shop has switched off the *Kitchen screen* — see
+[2b](#2b-the-first-day-choosing-what-your-pos-does) — an order is done the
+moment you send it, and you can go straight to taking payment.)
+
 Tap **🍳 Kitchen**. There are four columns:
 
 | Column | What it means |
@@ -230,6 +308,11 @@ On the **🍽 Tables** screen the table tile now says **💵 Ready to pay**.
    - **📱 DuitNow / eWallet**
 
 The receipt prints and the table goes back to being free.
+
+**Food not ready yet?** You can still take payment — a takeaway paid at the
+counter, say. The screen asks *Food is still being prepared. Take payment
+anyway?* Tap **OK**. The order stays on the kitchen screen until the kitchen
+taps **🍽 Served**.
 
 **Paying part now, part later?** Under **Pay a specific amount (RM)**, type the
 amount and tap **Apply cash** (or card, or eWallet). The screen shows what is

@@ -9,21 +9,35 @@ const rounds = require('../services/rounds');
 const { recomputeOrderBill } = require('../services/billing');
 const { leaveGroupIfClosedTx } = require('../services/bill_groups');
 const { lockBills } = require('../lib/billlock');
+const { requireFeature, isOn } = require('../services/features');
 
 const router = express.Router();
 
 /* The kitchen and drinks displays work station tickets, not dining orders: one
    ticket is "what this station has to make for this round of this table". */
 
-router.get('/api/kitchen/stations', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
-  res.json((await rounds.listStations()).filter(s => s.active));
+// With one station (stations switched off) every line is snapshotted to
+// 'kitchen', so that is the only display there is.
+async function activeStations() {
+  const all = (await rounds.listStations()).filter(s => s.active);
+  return (await isOn('stations')) ? all : all.filter(s => s.code === 'kitchen');
+}
+
+router.get('/api/kitchen/stations', requireRole('admin', 'staff', 'kitchen'), requireFeature('kitchen'), awaitH(async (req, res) => {
+  res.json(await activeStations());
 }));
 
-router.get('/api/kitchen/tickets', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
-  const stations = (await rounds.listStations()).filter(s => s.active).map(s => s.code);
+router.get('/api/kitchen/tickets', requireRole('admin', 'staff', 'kitchen'), requireFeature('kitchen'), awaitH(async (req, res) => {
+  const stations = (await activeStations()).map(s => s.code);
   const station = stations.includes(req.query.station) ? req.query.station : stations[0];
   if (!station) return res.json({ station: null, tickets: [] });
-  const tickets = await rounds.listStationTickets(station);
+  // The first screen also carries every station without one of its own —
+  // drinks sent before stations were switched off — so nothing still to make
+  // is left where no screen shows it.
+  const codes = station === stations[0]
+    ? [station, ...(await rounds.listStations()).map(s => s.code).filter(c => !stations.includes(c))]
+    : [station];
+  const tickets = await rounds.listStationTickets(codes);
   // Recently-served is context, not work: keep the last dozen so a cook can
   // undo a mis-tap, and drop the rest.
   const served = tickets.filter(t => t.status === 'served').slice(-12);
@@ -33,7 +47,7 @@ router.get('/api/kitchen/tickets', requireRole('admin', 'staff', 'kitchen'), awa
   });
 }));
 
-router.patch('/api/kitchen/tickets/:id', requireRole('admin', 'staff', 'kitchen'), awaitH(async (req, res) => {
+router.patch('/api/kitchen/tickets/:id', requireRole('admin', 'staff', 'kitchen'), requireFeature('kitchen'), awaitH(async (req, res) => {
   const r = await rounds.advanceTicket(Number(req.params.id), req.body?.status, {
     userId: req.user.id, role: req.user.role,
   });
@@ -50,7 +64,7 @@ router.patch('/api/kitchen/tickets/:id', requireRole('admin', 'staff', 'kitchen'
    Only reachable when an admin has turned on "Require staff approval"; with the
    default "Send directly to kitchen" this list is simply always empty. */
 
-router.get('/api/kitchen/pending', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.get('/api/kitchen/pending', requireRole('admin', 'staff'), requireFeature('qr'), awaitH(async (req, res) => {
   res.json(await rounds.listPendingSends());
 }));
 
@@ -71,7 +85,7 @@ async function lockDecidable(client, sendId) {
   return s;
 }
 
-router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), requireFeature('qr'), awaitH(async (req, res) => {
   let s;
   const client = await pool.connect();
   try {
@@ -102,7 +116,7 @@ router.post('/api/kitchen/sends/:id/approve', requireRole('admin', 'staff'), awa
 
 /* Rejecting voids the round's lines rather than deleting them: the customer
    did ask for these, and a bill that silently loses lines is unauditable. */
-router.post('/api/kitchen/sends/:id/reject', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+router.post('/api/kitchen/sends/:id/reject', requireRole('admin', 'staff'), requireFeature('qr'), awaitH(async (req, res) => {
   const reason = String(req.body?.reason || '').trim() || 'rejected by staff';
   let s;
   const client = await pool.connect();
@@ -130,6 +144,9 @@ router.post('/api/kitchen/sends/:id/reject', requireRole('admin', 'staff'), awai
       await client.query(
         "UPDATE orders SET status = 'cancelled', closed_by = $1, updated_at = now() WHERE id = $2",
         [req.user.id, s.order_id]);
+      // An earlier round whose lines were all voided can still have a ticket
+      // on the board: it goes with the bill, like any cancel.
+      await rounds.cancelOpenTickets(client, s.order_id);
       await writeAudit(client, {
         userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: s.order_id,
         detail: { reason: 'every item on this order was rejected' },

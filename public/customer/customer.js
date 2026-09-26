@@ -50,7 +50,8 @@ async function start() {
   try {
     const res = await fetch('/api/t/' + tableToken + (cardNumber ? '?card=' + encodeURIComponent(cardNumber) : ''));
     const info = await res.json();
-    if (res.status === 404 && /counter/i.test(info.error || '')) return showCounter();
+    // QR mode 'off', or customer QR ordering switched off for the shop.
+    if (res.status === 404 && (/counter/i.test(info.error || '') || info.error === 'feature_disabled')) return showCounter();
     if (res.status === 400 && cardNumber) { cardNumber = null; return askCardNumber(info.error); }
     if (info.error) return fail('This QR code is not in use', 'Please ask our staff for help.');
     if (info.needs_card_number) return askCardNumber();

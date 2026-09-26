@@ -6,6 +6,7 @@ import { refreshAdmin } from './admin.js';
 import { refreshShift } from './shift.js';
 import { refreshHelp } from './help.js';
 import { t } from './i18n.js';
+import { on } from './features.js';
 
 /* Navigation is simplified by role (master spec §40): a cook sees the kitchen
    and nothing else; a waiter sees the floor. Every destination carries an icon
@@ -13,9 +14,10 @@ import { t } from './i18n.js';
    English slowly. Nothing frequently used is hidden behind a hamburger. */
 const TAB_DEFS = [
   { id: 'pos',       key: 'nav.pos',       icon: '🍽', roles: ['admin', 'staff'] },
-  { id: 'kitchen',   key: 'nav.kitchen',   icon: '🍳', roles: ['admin', 'staff', 'kitchen'] },
-  { id: 'dashboard', key: 'nav.dashboard', icon: '💰', roles: ['admin', 'staff'] },
-  { id: 'shift',     key: 'nav.shift',     icon: '🕐', roles: ['admin', 'staff'] },
+  // Kitchen also holds the QR approval queue, so it stays while either is on.
+  { id: 'kitchen',   key: 'nav.kitchen',   icon: '🍳', roles: ['admin', 'staff', 'kitchen'], feature: () => on('kitchen') || on('qr') },
+  { id: 'dashboard', key: 'nav.dashboard', icon: '💰', roles: ['admin', 'staff'], feature: () => on('dashboard') },
+  { id: 'shift',     key: 'nav.shift',     icon: '🕐', roles: ['admin', 'staff'], feature: () => on('shifts') },
   { id: 'admin',     key: 'nav.admin',     icon: '⚙',  roles: ['admin'] },
   // Help is last on purpose — always in the same place, never in the way of the
   // four things somebody taps a hundred times a night.
@@ -27,7 +29,9 @@ let activeTab = null;
 // nobody has to go looking for a queue that is usually empty.
 let pendingCount = 0;
 
-function allowed() { return TAB_DEFS.filter(def => def.roles.includes(API.user.role)); }
+function allowed() {
+  return TAB_DEFS.filter(def => def.roles.includes(API.user.role) && (!def.feature || def.feature()));
+}
 
 function buttonHtml(def) {
   const badge = def.id === 'kitchen' && pendingCount ? `<span class="nav-badge">${pendingCount}</span>` : '';
@@ -70,6 +74,14 @@ export function setPendingCount(n) {
 }
 
 document.addEventListener('localechange', paint);
+
+// A module switched on or off: repaint in place, and only move somebody whose
+// current screen has just gone.
+document.addEventListener('features-changed', () => {
+  if (!API.user) return;
+  if (activeTab && !allowed().some(d => d.id === activeTab)) buildNav();
+  else paint();
+});
 
 export function switchTab(id) {
   if (!allowed().some(d => d.id === id)) return;
