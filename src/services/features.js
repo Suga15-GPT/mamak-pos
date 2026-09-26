@@ -123,17 +123,12 @@ async function guardTurnOff(client, current, next) {
   if (current.shifts && !next.shifts && await shiftOpen(client)) {
     throw AppError('Close the open shift before switching shifts off.', 409);
   }
-  // Tickets part-way through would sit on a board nobody can see, and be
-  // cooked again when the kitchen screen came back.
-  if (current.kitchen && !next.kitchen) {
-    const live = await client.query(
-      `SELECT 1 FROM order_send_tickets t
-         JOIN order_sends s ON s.id = t.send_id
-         JOIN orders o ON o.id = s.order_id
-        WHERE s.approval_state = 'approved' AND t.status NOT IN ('served', 'cancelled')
-          AND o.status NOT IN ('paid', 'cancelled', 'refunded')
-        LIMIT 1`);
-    if (live.rows[0]) throw AppError('Finish or clear the kitchen board before switching the kitchen screen off.', 409);
+  // Any ticket still to finish on the kitchen board — a paid bill's too:
+  // paying before the food is ready is normal — would sit on a screen nobody
+  // can see, and be cooked again when the kitchen screen came back. Required
+  // lazily: rounds requires this module.
+  if (current.kitchen && !next.kitchen && await require('./rounds').boardHasUnfinished(client)) {
+    throw AppError('Finish or clear the kitchen board before switching the kitchen screen off.', 409);
   }
   if (current.split_combine && !next.split_combine) {
     const g = await client.query('SELECT count(*)::int n FROM bill_groups WHERE closed_at IS NULL');

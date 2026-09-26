@@ -299,6 +299,47 @@ test('takeaway order needs no card', async ({ page, request }) => {
   await expect(page.locator('#takeaway-grid')).toContainText('Takeaway #');
 });
 
+/* Paying before the food is made is normal: a takeaway paid at the counter.
+   The kitchen screen keeps it until it is served, and serving it leaves the
+   paid bill exactly as it was paid. */
+test('a takeaway paid at the counter stays on the kitchen screen until it is served', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  const existing = await request.get('/api/shift/current').then(r => r.json());
+  if (!existing) await request.post('/api/shift/open', { headers: { 'X-CSRF-Token': csrfToken }, data: { float: 0 } });
+  // Nothing is cooked yet, so Take Payment asks "Take payment anyway?".
+  page.on('dialog', dialog => dialog.accept());
+
+  await login(page);
+  await page.getByRole('button', { name: /New Takeaway/ }).click();
+  await addItem(page, 'Roti', 'Roti Telur');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#ws-title')).toContainText('Takeaway #');
+  const label = (await page.locator('#ws-title').textContent()).trim();
+  const orderId = Number(label.replace('Takeaway #', ''));
+
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Payment' })).toBeVisible();
+  await page.locator('#pay-modal').getByRole('button', { name: '💵 Cash', exact: true }).click();
+  await expect(page.locator('#pos-tables')).toBeVisible();
+  const paid = (await request.get('/api/orders?mode=recent').then(r => r.json())).find(o => o.id === orderId);
+  expect(paid.status).toBe('paid');
+
+  await navTab(page, 'Kitchen').click();
+  const ticket = column => page.locator(`#k-col-${column} .k-order`, { hasText: new RegExp(`${label}\\b`) });
+  await expect(ticket('sent')).toContainText('Roti Telur');
+  await ticket('sent').getByRole('button', { name: /Start cooking/ }).click();
+  await ticket('preparing').getByRole('button', { name: /Ready/ }).click();
+  await ticket('ready').getByRole('button', { name: /Served/ }).click();
+  await expect(ticket('served')).toBeVisible();
+
+  const after = (await request.get('/api/orders?mode=recent').then(r => r.json())).find(o => o.id === orderId);
+  expect(after.status).toBe('paid');
+  expect(after.grand_total).toBe(paid.grand_total);
+  expect(after.paid_at).toBe(paid.paid_at);
+  expect(after.updated_at).toBe(paid.updated_at);   // the taps never wrote to the bill
+  expect(after.sends[0].tickets.map(t => t.status)).toEqual(['served']);
+});
+
 test('split bill', async ({ page, request }) => {
   const csrfToken = await apiLogin(request);
   const existingShift = await request.get('/api/shift/current').then(r => r.json());

@@ -4,6 +4,7 @@ const path = require('path');
 const { pool } = require('../db');
 const { subscriberCount } = require('../lib/events');
 const { qrHealth } = require('../lib/baseurl');
+const { ON_BOARD_SQL } = require('./rounds');
 
 /* Admin -> System.
 
@@ -61,14 +62,16 @@ async function checkPrinters() {
   return { printers: results, failed_jobs: failed };
 }
 
+// The kitchen board's New and Cooking columns, a paid bill's tickets
+// included — the same count as the dashboard (rounds.ON_BOARD_SQL).
 async function checkKitchen() {
   const r = await pool.query(`
     SELECT
       COUNT(*) FILTER (WHERE t.status IN ('sent','preparing'))::int AS active,
       COUNT(*) FILTER (WHERE t.status IN ('sent','preparing') AND s.sent_at < now() - interval '10 minutes')::int AS late,
       COALESCE(MAX(FLOOR(EXTRACT(epoch FROM (now() - s.sent_at)) / 60)) FILTER (WHERE t.status IN ('sent','preparing')), 0)::int AS oldest_minutes
-    FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id
-   WHERE s.approval_state = 'approved' AND t.status <> 'cancelled'`);
+    FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id JOIN orders o ON o.id = s.order_id
+   WHERE ${ON_BOARD_SQL}`);
   const stations = (await pool.query('SELECT code, name FROM prep_stations WHERE active ORDER BY sort')).rows;
   return { ...r.rows[0], stations };
 }

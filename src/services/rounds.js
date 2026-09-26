@@ -118,7 +118,7 @@ async function deriveOrderStatus(client, orderId) {
    drop out of the approval queue the moment the bill closed and never be
    cooked. */
 const HELD_MESSAGE = 'A customer order is waiting for approval — approve or reject it first.';
-const TICKET_CLOSED_MESSAGE = 'This order is paid or closed, so its kitchen ticket can no longer be moved.';
+const TICKET_CANCELLED_MESSAGE = 'This order has been cancelled, so its kitchen ticket can no longer be moved.';
 async function refuseWhileHeld(client, orderIds) {
   const r = await client.query(
     "SELECT 1 FROM order_sends WHERE order_id = ANY($1::int[]) AND approval_state = 'pending' LIMIT 1", [orderIds]);
@@ -151,6 +151,45 @@ const STAMP = {
   served: ['served_at', 'served_by'],
 };
 
+/* ===== the kitchen board =====
+   Every ticket still to make is on it, paid for or not. Paying before the
+   food is ready is normal — a takeaway paid at the counter, a table that pays
+   mid-cook (the till asks "Take payment anyway?") — and a tap writes only the
+   ticket: deriveOrderStatus never rewrites a closed bill, and migrations
+   015/017 refuse it besides, so a paid or refunded order stays exactly as it
+   was paid. A cancelled order's tickets are not on it: cancelling cancels
+   every unfinished one (cancelOpenTickets), and a tap on one is refused.
+
+   ON_BOARD_SQL is that rule over t (order_send_tickets), s (order_sends) and
+   o (orders): an accepted round, a ticket and an order that aren't
+   cancelled, and a line at the ticket's station (migration 012 gave some old
+   rounds a kitchen ticket with nothing to make). The station board, the
+   kitchen switch-off guard and kitchen health (the dashboard, Admin → System)
+   all read it, so each counts exactly what the board shows. */
+const ON_BOARD_SQL = `s.approval_state = 'approved' AND t.status <> 'cancelled' AND o.status <> 'cancelled'
+  AND EXISTS (SELECT 1 FROM order_items oi WHERE oi.send_id = t.send_id AND oi.station_code = t.station_code)`;
+
+// Whether any ticket on the board is still to finish: the kitchen screen
+// can't be switched off until none is (features.guardTurnOff).
+async function boardHasUnfinished(client) {
+  const r = await client.query(
+    `SELECT 1 FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id JOIN orders o ON o.id = s.order_id
+      WHERE ${ON_BOARD_SQL} AND t.status IN ('sent','preparing','ready') LIMIT 1`);
+  return !!r.rows[0];
+}
+
+/* Cancelling a bill stops every station: its unfinished tickets are cancelled
+   (a served one stays served), so none is left on a cancelled order, where no
+   board shows it and nobody could finish it. Both ways an order is cancelled
+   call this in the same transaction: the till's cancel, and rejecting the
+   last round a bill had left. */
+async function cancelOpenTickets(client, orderId) {
+  await client.query(
+    `UPDATE order_send_tickets SET status = 'cancelled'
+      WHERE send_id IN (SELECT id FROM order_sends WHERE order_id = $1) AND status IN ('sent','preparing','ready')`,
+    [orderId]);
+}
+
 /* Advances one station ticket and re-derives its order's rollup. Returns the
    order id so the caller can publish/print against it. */
 async function advanceTicket(ticketId, status, { userId, role }) {
@@ -164,11 +203,12 @@ async function advanceTicket(ticketId, status, { userId, role }) {
       `SELECT t.*, s.order_id FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id
         WHERE t.id = $1 FOR UPDATE OF t`, [ticketId]);
     if (!t.rows[0]) throw AppError('ticket not found', 404);
-    // A closed bill's tickets are off the board and stay as they are: read
-    // under the bill lock, so a tap that waited on a payment or a cancel is
-    // refused rather than moving food that has been paid for or written off.
+    // A paid or refunded order's ticket moves like any other (the kitchen
+    // board). A cancelled order's is off the board: read under the bill lock,
+    // so a tap that waited on the cancel is refused rather than putting a
+    // served ticket back to work for a bill that no longer exists.
     const order = (await client.query('SELECT status FROM orders WHERE id = $1', [t.rows[0].order_id])).rows[0];
-    if (TERMINAL_ORDER_STATUSES.includes(order.status)) throw AppError(TICKET_CLOSED_MESSAGE, 409);
+    if (order.status === 'cancelled') throw AppError(TICKET_CANCELLED_MESSAGE, 409);
     const err = ticketTransitionError(t.rows[0].status, status, role);
     if (err) throw err;
 
@@ -243,11 +283,12 @@ async function attachSends(orders) {
   return orders;
 }
 
-/* The kitchen/drinks display: live tickets for one station, oldest first, with
-   just the lines that station is responsible for. Recently-served tickets are
-   included (bounded to the last two hours) so the display can show a "recently
-   served" column without a second query; the caller decides how many to keep. */
-async function listStationTickets(stationCode) {
+/* The kitchen/drinks display: the board's tickets (ON_BOARD_SQL) for the
+   stations one screen covers, oldest first, each with just the lines its
+   station is responsible for. Recently-served tickets are included (bounded
+   to the last two hours) so the display can show a "recently served" column
+   without a second query; the caller decides how many to keep. */
+async function listStationTickets(stationCodes) {
   const r = await pool.query(
     `SELECT t.id, t.status, t.station_code, t.preparing_at, t.ready_at, t.served_at,
             pu.name AS preparing_by_name, ru.name AS ready_by_name, su.name AS served_by_name,
@@ -264,17 +305,13 @@ async function listStationTickets(stationCode) {
        LEFT JOIN users pu ON pu.id = t.preparing_by
        LEFT JOIN users ru ON ru.id = t.ready_by
        LEFT JOIN users su ON su.id = t.served_by
-      WHERE t.station_code = $1
-        AND s.approval_state = 'approved'
-        AND t.status <> 'cancelled'
-        -- Open bills only: a paid, cancelled or refunded order's tickets are
-        -- never kitchen work, and can't be tapped (advanceTicket).
-        AND o.status NOT IN ('paid','cancelled','refunded')
+      WHERE t.station_code = ANY($1::text[])
+        AND ${ON_BOARD_SQL}
         AND (t.status <> 'served' OR t.served_at > now() - interval '2 hours')
         -- A ticket that went straight to served (the kitchen screen was off
         -- when it was sent) was never kitchen work, so it is not shown as such.
         AND (t.status <> 'served' OR t.ready_at IS NOT NULL)
-      ORDER BY s.sent_at ASC`, [stationCode]);
+      ORDER BY s.sent_at ASC`, [stationCodes]);
   if (!r.rows.length) return [];
 
   const sendIds = [...new Set(r.rows.map(x => x.send_id))];
@@ -308,7 +345,7 @@ async function listStationTickets(stationCode) {
         voided: !!i.voided_at, void_reason: i.void_reason || null,
         mods: modsByItem.get(i.id) || [],
       })),
-  })).filter(t => t.items.length);
+  }));
 
   return tickets;
 }
@@ -337,7 +374,8 @@ async function listPendingSends() {
 
 module.exports = {
   TICKET_STATUSES, TERMINAL_ORDER_STATUSES, TICKET_TRANSITIONS, BACKWARD_TICKET,
-  HELD_MESSAGE, TICKET_CLOSED_MESSAGE, refuseWhileHeld,
+  HELD_MESSAGE, TICKET_CANCELLED_MESSAGE, ON_BOARD_SQL, refuseWhileHeld,
   listStations, createSend, openTickets, deriveOrderStatus, ticketStatusForLine,
-  ticketTransitionError, advanceTicket, attachSends, listStationTickets, listPendingSends,
+  ticketTransitionError, advanceTicket, boardHasUnfinished, cancelOpenTickets,
+  attachSends, listStationTickets, listPendingSends,
 };

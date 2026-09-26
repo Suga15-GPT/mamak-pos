@@ -31,7 +31,13 @@ router.get('/api/kitchen/tickets', requireRole('admin', 'staff', 'kitchen'), req
   const stations = (await activeStations()).map(s => s.code);
   const station = stations.includes(req.query.station) ? req.query.station : stations[0];
   if (!station) return res.json({ station: null, tickets: [] });
-  const tickets = await rounds.listStationTickets(station);
+  // The first screen also carries every station without one of its own —
+  // drinks sent before stations were switched off — so nothing still to make
+  // is left where no screen shows it.
+  const codes = station === stations[0]
+    ? [station, ...(await rounds.listStations()).map(s => s.code).filter(c => !stations.includes(c))]
+    : [station];
+  const tickets = await rounds.listStationTickets(codes);
   // Recently-served is context, not work: keep the last dozen so a cook can
   // undo a mis-tap, and drop the rest.
   const served = tickets.filter(t => t.status === 'served').slice(-12);
@@ -138,6 +144,9 @@ router.post('/api/kitchen/sends/:id/reject', requireRole('admin', 'staff'), requ
       await client.query(
         "UPDATE orders SET status = 'cancelled', closed_by = $1, updated_at = now() WHERE id = $2",
         [req.user.id, s.order_id]);
+      // An earlier round whose lines were all voided can still have a ticket
+      // on the board: it goes with the bill, like any cancel.
+      await rounds.cancelOpenTickets(client, s.order_id);
       await writeAudit(client, {
         userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: s.order_id,
         detail: { reason: 'every item on this order was rejected' },

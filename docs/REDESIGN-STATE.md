@@ -243,13 +243,18 @@ mamak; a table number never reliably named a bill.
   `WHERE status NOT IN ('paid','cancelled','refunded')`; and migration 015's
   trigger rejects any status change out of `paid`, `cancelled` or `refunded`
   except paid → refunded. A kitchen tap that read "ready" before a payment
-  once wrote "served" over "paid" (PR #16 re-check 2, K). **A closed bill's
-  tickets are off the kitchen board and can't be tapped** (409 "This order is
-  paid or closed, so its kitchen ticket can no longer be moved."): the board
-  lists open orders only, and a tap re-reads the order under the bill lock
-  (setup-and-features review, A2). This replaced an earlier rule that let a
-  ticket be advanced after its order was paid — so a bill paid before its food
-  is made (a takeaway paid at the counter) leaves the board when it is paid.
+  once wrote "served" over "paid" (PR #16 re-check 2, K). **A bill paid
+  before its food is made stays on the kitchen board until it is served** —
+  a takeaway paid at the counter, a table that pays mid-cook ("Take payment
+  anyway?"). The board lists every unfinished ticket whose order isn't
+  cancelled, paid and refunded bills included, and the kitchen taps it
+  along: a tap writes only the ticket, so the paid bill's row (status, money,
+  `paid_at`) never changes. Only a cancelled order's ticket is refused (409
+  "This order has been cancelled, so its kitchen ticket can no longer be
+  moved."), read under the bill lock; cancelling — the till's cancel, or
+  rejecting the last round a bill has left — cancels every unfinished ticket,
+  so none lingers. (The A2 fix took paid bills off the board and refused
+  their taps; the setup-and-features re-check, K-P, put them back.)
 - **Move re-checks under the lock** and refuses (409) a bill that closed while
   it waited; a refund reads the open shift under the lock. "Has a payment" for
   combine, un-combine and adding items always means paid net of refunds > 0.
@@ -290,10 +295,14 @@ everything on. Built on card mode.
   `served`; no chit or void slip is queued; a ticket that went straight to
   served (no `ready_at`) never shows on the board if the kitchen comes back.
   Stations off: every line is snapshotted to `kitchen` (the item keeps its own
-  `station_code`). Shifts off: `features.moneyShift()` skips the open-shift
-  check and payments, refunds, combined-bill legs, orders and
-  `closed_shift_id` all record NULL; switching shifts back on affects only
-  later rows, nothing is back-filled. Printing off: `enqueueForRole` queues
+  `station_code`), and the one kitchen screen also carries tickets sent to
+  another station before the switch, so nothing still to make is off every
+  screen. Kitchen health (the dashboard, Admin → System) counts exactly the
+  board's New and Cooking columns — one rule, `rounds.ON_BOARD_SQL`, for the
+  board, the switch-off guard and both counts. Shifts off:
+  `features.moneyShift()` skips the open-shift check and payments, refunds,
+  combined-bill legs, orders and `closed_shift_id` all record NULL;
+  switching shifts back on affects only later rows, nothing is back-filled. Printing off: `enqueueForRole` queues
   nothing, not even a failed job. Dashboard off: `GET /api/dashboard` and
   `GET /api/summary` both 404 and the 💰 Sales tab is not shown (review A3;
   the one-figure Sales view it used to show read `/api/summary`).
@@ -306,10 +315,11 @@ everything on. Built on card mode.
     A1). Switched on with no shift open, the Features screen and the wizard
     warn that every payment is refused until someone opens one
     (`shift_open`, in every `/api/features` and `/api/setup` answer).
-  - `kitchen` while a ticket on an open bill is unfinished — "Finish or clear
-    the kitchen board before switching the kitchen screen off." Otherwise it
-    sat on a board nobody saw and came back as work when the kitchen did
-    (review A2).
+  - `kitchen` while the kitchen board has any unfinished ticket, a paid or
+    refunded bill's included — "Finish or clear the kitchen board before
+    switching the kitchen screen off." Otherwise it sat on a board nobody saw
+    and came back as work when the kitchen did (review A2; paid bills since
+    the re-check, K-P).
   - `split_combine` under an open bill group, and `qr` under rounds still
     awaiting approval.
 - **The wizard's Finish is all or nothing** (review A5): every field is
@@ -418,6 +428,22 @@ existing shop is one with users, not orders. A fresh database runs 015, 016,
   were fixed by lockfile bumps within express 4 (express 4.22.3, qs 6.16.0).
 
 ## Latest test state
+
+After the setup-and-features re-check fix (K-P, on `d401570`): `npm test`
+193/193 — the two A2 tests that took paid and refunded bills off the kitchen
+board are replaced by 7 in `test/unit/features.test.js`, each failing on
+`d401570`: a takeaway paid as it is sent, and a card paid mid-cook then
+refunded, stay on the board and tap through, with the bill's whole row
+unchanged; 40 runs of a tap racing a payment (both always accepted, both
+orderings seen, the bill still paid and on the board), and a tap queued
+behind the payment leaving the row as the payment wrote it; both ways of
+cancelling cancel every unfinished ticket; the kitchen switch-off refused
+while a paid or refunded bill's ticket is unfinished; with stations off,
+earlier drinks on the kitchen screen; the dashboard and Admin → System
+counting exactly the board's New and Cooking columns. K1–K3
+(`card_recheck2.test.js`) stay at 0 reopened in 40 runs each. Playwright
+19/19: a new journey pays a takeaway at the counter through the UI, then
+serves it from the kitchen screen (it fails on `d401570`).
 
 After the setup-and-features review fixes (A1–A5, on `c78a20c`): `npm test`
 188/188 — 9 new in `test/unit/features.test.js`, each failing on `c78a20c`:

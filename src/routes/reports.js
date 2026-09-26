@@ -5,6 +5,7 @@ const { awaitH } = require('../lib/errors');
 const { cents2rm, rm2cents } = require('../lib/money');
 const shifts = require('../services/shifts');
 const printing = require('../services/printing');
+const rounds = require('../services/rounds');
 const { requireFeature } = require('../services/features');
 
 const router = express.Router();
@@ -95,20 +96,26 @@ router.get('/api/dashboard', requireRole('admin', 'staff'), requireFeature('dash
 
     // Kitchen health, measured off the round tickets that actually record it.
     // Preparation time is sent -> ready; a ticket that never reached 'ready'
-    // contributes nothing rather than a guess.
+    // contributes nothing rather than a guess. Active and late count exactly
+    // the kitchen board's New and Cooking columns (rounds.ON_BOARD_SQL), a
+    // paid bill's tickets included, so a ticket no screen shows is never
+    // counted as waiting.
     pool.query(`
-      WITH t AS (
+      WITH prep AS (
         SELECT tk.*, s.sent_at FROM order_send_tickets tk JOIN order_sends s ON s.id = tk.send_id
          WHERE s.approval_state = 'approved' AND tk.status <> 'cancelled'
+      ),
+      active AS (
+        SELECT s.sent_at FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id JOIN orders o ON o.id = s.order_id
+         WHERE ${rounds.ON_BOARD_SQL} AND t.status IN ('sent','preparing')
       )
       SELECT
         (SELECT COALESCE(ROUND(AVG(EXTRACT(epoch FROM (ready_at - sent_at)) / 60))::int, 0)
-           FROM t WHERE ready_at IS NOT NULL AND (sent_at AT TIME ZONE '${KL}')::date = ${today}) AS avg_prep_minutes,
-        (SELECT COUNT(*)::int FROM t WHERE status IN ('sent','preparing'))                        AS active_tickets,
+           FROM prep WHERE ready_at IS NOT NULL AND (sent_at AT TIME ZONE '${KL}')::date = ${today}) AS avg_prep_minutes,
+        (SELECT COUNT(*)::int FROM active)                                                        AS active_tickets,
         (SELECT COALESCE(MAX(FLOOR(EXTRACT(epoch FROM (now() - sent_at)) / 60))::int, 0)
-           FROM t WHERE status IN ('sent','preparing'))                                          AS longest_active_minutes,
-        (SELECT COUNT(*)::int FROM t
-          WHERE status IN ('sent','preparing') AND sent_at < now() - interval '10 minutes')       AS late_tickets,
+           FROM active)                                                                          AS longest_active_minutes,
+        (SELECT COUNT(*)::int FROM active WHERE sent_at < now() - interval '10 minutes')          AS late_tickets,
         (SELECT COUNT(*)::int FROM order_sends s2 WHERE s2.approval_state = 'pending')            AS pending_approval`),
 
     pool.query(`

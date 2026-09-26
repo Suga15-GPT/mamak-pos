@@ -712,85 +712,13 @@ test('A2 race: switching the kitchen off and sending an order never leave the ki
       const off = await flagRow(db, 'kitchen') === '0';
       const unfinished = await count(db,
         `SELECT count(*)::int n FROM order_send_tickets t JOIN order_sends x ON x.id = t.send_id JOIN orders o ON o.id = x.order_id
-          WHERE t.status NOT IN ('served', 'cancelled') AND o.status NOT IN ('paid', 'cancelled', 'refunded')`);
+          WHERE t.status NOT IN ('served', 'cancelled') AND o.status <> 'cancelled'`);
       assert.ok(!(off && unfinished), `run ${i}: kitchen switched off with ${unfinished} unfinished ticket(s)`);
       assert.equal(sw.status === 200, off, `run ${i}: the switch's answer matches the stored flag`);
       assert.equal((await call(base, s, 'PATCH', `/api/orders/${(await json(sent)).id}`, { status: 'cancelled' })).status, 200);
       if (off) await setFeatures(base, s, { kitchen: true });
     }
     assert.deepEqual([...seen].sort(), [200, 409], 'both orderings happened: the switch first, and the order first');
-  });
-});
-
-test('A2 a paid, refunded or cancelled order\'s tickets are never on the kitchen board, and a tap on one is refused', async () => {
-  await withDb(async db => {
-    const base = await startApp();
-    const s = await setup(base);
-    assert.equal((await post(base, s, '/api/shift/open', { float: 0 })).status, 201);
-    const tap = (ticketId, status) => call(base, s, 'PATCH', `/api/kitchen/tickets/${ticketId}`, { status });
-    const ticketStatus = async ticketId => (await db.query('SELECT status FROM order_send_tickets WHERE id = $1', [ticketId])).rows[0].status;
-    const refusedTap = async (ticketId, label) => {
-      const r = await tap(ticketId, 'ready');
-      assert.equal(r.status, 409, label);
-      assert.match((await json(r)).error, /kitchen ticket can no longer be moved/);
-    };
-
-    // Paid while it was cooking: off the board, and it stays where it was.
-    const paid = await openCard(base, s, 32);
-    const tp = (await kitchenTicket(base, s, paid)).id;
-    assert.equal((await tap(tp, 'preparing')).status, 200);
-    assert.equal((await post(base, s, `/api/orders/${paid}/pay`, { method: 'Card' })).status, 200);
-    assert.equal(await kitchenTicket(base, s, paid), undefined, 'paid: not on the board');
-    await refusedTap(tp, 'paid');
-    assert.equal(await ticketStatus(tp), 'preparing');
-
-    // Refunded in full.
-    const payment = (await db.query('SELECT id, amount_cents FROM payments WHERE order_id = $1', [paid])).rows[0];
-    assert.equal((await post(base, s, `/api/orders/${paid}/refunds`, { payment_id: payment.id, amount: payment.amount_cents / 100, reason: 'never came' })).status, 200);
-    assert.equal((await orderRow(db, paid)).status, 'refunded');
-    assert.equal(await kitchenTicket(base, s, paid), undefined, 'refunded: not on the board');
-    await refusedTap(tp, 'refunded');
-
-    // Cancelled.
-    const cancelled = await openCard(base, s, 33);
-    const tc = (await kitchenTicket(base, s, cancelled)).id;
-    assert.equal((await call(base, s, 'PATCH', `/api/orders/${cancelled}`, { status: 'cancelled' })).status, 200);
-    assert.equal(await kitchenTicket(base, s, cancelled), undefined, 'cancelled: not on the board');
-    await refusedTap(tc, 'cancelled');
-
-    // A tap queued behind the payment that closes the bill is refused too.
-    const q = await openCard(base, s, 34);
-    const tq = (await kitchenTicket(base, s, q)).id;
-    const late = await behindLock(db, () => tap(tq, 'preparing'), async tx => {
-      const { total_cents: total } = (await tx.query('SELECT total_cents FROM orders WHERE id = $1', [q])).rows[0];
-      await tx.query("INSERT INTO payments (order_id, method, amount_cents) VALUES ($1, 'Card', $2)", [q, total]);
-      await tx.query("UPDATE orders SET status = 'paid', paid_at = now() WHERE id = $1", [q]);
-    });
-    assert.equal(late.status, 409);
-    assert.equal(await ticketStatus(tq), 'sent');
-  });
-});
-
-test('A2 race: a kitchen tap and a payment never leave a paid bill on the board, or its ticket moved by a refused tap: 40 concurrent runs', async () => {
-  await withDb(async db => {
-    const base = await startApp();
-    const s = await setup(base);
-    assert.equal((await post(base, s, '/api/shift/open', { float: 0 })).status, 201);
-    const seen = new Set();
-    for (let i = 0; i < 40; i++) {
-      const id = await openCard(base, s, (i % 50) + 1);
-      const t = await kitchenTicket(base, s, id);
-      const [tapped, paid] = await race(i,
-        () => call(base, s, 'PATCH', `/api/kitchen/tickets/${t.id}`, { status: 'preparing' }),
-        () => post(base, s, `/api/orders/${id}/pay`, { method: 'Card' }));
-      assert.ok([200, 409].includes(tapped.status) && paid.status === 200, `run ${i}: tap ${tapped.status}, pay ${paid.status}`);
-      seen.add(tapped.status);
-      const status = (await db.query('SELECT status FROM order_send_tickets WHERE id = $1', [t.id])).rows[0].status;
-      assert.equal(status, tapped.status === 200 ? 'preparing' : 'sent', `run ${i}: the ticket moved only on an accepted tap`);
-      assert.equal((await orderRow(db, id)).status, 'paid', `run ${i}`);
-      assert.equal(await kitchenTicket(base, s, id), undefined, `run ${i}: the paid bill is on the kitchen board`);
-    }
-    assert.deepEqual([...seen].sort(), [200, 409], 'both orderings happened: the tap first, and the payment first');
   });
 });
 
@@ -957,5 +885,311 @@ test('A4 an installed shop that never took an order keeps every module on and sk
     const f = await get(base, s, '/api/features');
     assert.equal(f.setup_completed, true, 'no wizard');
     assert.deepEqual(f.features, allFlags(true));
+  });
+});
+
+/* ===== the setup-and-features re-check: K-P, a bill paid before its food is ready =====
+   Paying first is normal — a takeaway paid at the counter, a table that pays
+   mid-cook — so the kitchen board keeps every unfinished ticket whose order
+   isn't cancelled, and the kitchen taps it along. A tap writes only the
+   ticket: the paid bill's row does not change at all. */
+
+const TICKET_CANCELLED = 'This order has been cancelled, so its kitchen ticket can no longer be moved.';
+const tap = (base, s, ticketId, status) => call(base, s, 'PATCH', `/api/kitchen/tickets/${ticketId}`, { status });
+const ticketStatus = async (db, ticketId) => (await db.query('SELECT status FROM order_send_tickets WHERE id = $1', [ticketId])).rows[0].status;
+
+// Every station's screen together: everything the kitchen board shows.
+async function wholeBoard(base, s) {
+  const tickets = [];
+  for (const st of await get(base, s, '/api/kitchen/stations')) {
+    tickets.push(...(await get(base, s, `/api/kitchen/tickets?station=${st.code}`)).tickets);
+  }
+  return tickets;
+}
+
+async function payByCard(base, s, id) {
+  const r = await post(base, s, `/api/orders/${id}/pay`, { method: 'Card' });
+  assert.equal(r.status, 200, `paying order ${id}`);
+  assert.equal((await json(r)).settled, true);
+}
+
+async function refundInFull(base, s, db, id) {
+  const p = (await db.query('SELECT id, amount_cents FROM payments WHERE order_id = $1', [id])).rows[0];
+  const r = await post(base, s, `/api/orders/${id}/refunds`, { payment_id: p.id, amount: p.amount_cents / 100, reason: 'customer left' });
+  assert.equal(r.status, 200);
+  assert.equal((await orderRow(db, id)).status, 'refunded');
+}
+
+// Taps a ticket along; each tap is accepted and finds the bill still closed.
+async function tapThrough(base, s, ticketId, steps, closedAs) {
+  for (const st of steps) {
+    const r = await tap(base, s, ticketId, st);
+    assert.equal(r.status, 200, `tap ${st}`);
+    assert.equal((await json(r)).order_status, closedAs, `tap ${st}: the bill still reads ${closedAs}`);
+  }
+}
+
+test('K-P a takeaway paid as it is sent stays on the kitchen board and taps through to served; its bill row never changes', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    assert.equal((await post(base, s, '/api/shift/open', { float: 0 })).status, 201);
+    const r = await post(base, s, '/api/orders', { order_type: 'takeaway', items: [{ item_id: s.roti.id, qty: 1 }] });
+    assert.equal(r.status, 201);
+    const id = (await json(r)).id;
+    const ticket = await kitchenTicket(base, s, id);
+    assert.equal(ticket.status, 'sent');
+
+    await payByCard(base, s, id);
+    const paid = await orderRow(db, id);
+    assert.equal(paid.status, 'paid');
+    const onBoard = await kitchenTicket(base, s, id);
+    assert.ok(onBoard, 'the paid takeaway is still on the kitchen board');
+    assert.equal(onBoard.status, 'sent');
+    assert.equal(onBoard.order_status, 'paid');
+
+    await tapThrough(base, s, ticket.id, ['preparing', 'ready', 'served'], 'paid');
+    assert.equal(await ticketStatus(db, ticket.id), 'served');
+    assert.equal((await kitchenTicket(base, s, id)).status, 'served', 'in the served column');
+    assert.deepEqual(await orderRow(db, id), paid, 'the taps wrote nothing on the bill: status, money, paid_at');
+  });
+});
+
+test('K-P a card paid mid-cook, then refunded, keeps its ticket on the kitchen board and tappable; its bill row never changes', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    assert.equal((await post(base, s, '/api/shift/open', { float: 0 })).status, 201);
+    const id = await openCard(base, s, 1);
+    const ticket = await kitchenTicket(base, s, id);
+    assert.equal((await tap(base, s, ticket.id, 'preparing')).status, 200);
+
+    await payByCard(base, s, id);
+    const paid = await orderRow(db, id);
+    const onBoard = await kitchenTicket(base, s, id);
+    assert.ok(onBoard, 'Card 1 is still on the kitchen board once paid');
+    assert.equal(onBoard.status, 'preparing');
+    assert.equal(onBoard.order_status, 'paid');
+    await tapThrough(base, s, ticket.id, ['ready'], 'paid');
+    assert.deepEqual(await orderRow(db, id), paid, 'the tap wrote nothing on the bill');
+
+    // Refunded in full while the food still waits: still the kitchen's to finish.
+    await refundInFull(base, s, db, id);
+    const refunded = await orderRow(db, id);
+    assert.equal((await kitchenTicket(base, s, id)).order_status, 'refunded');
+    await tapThrough(base, s, ticket.id, ['served'], 'refunded');
+    assert.equal(await ticketStatus(db, ticket.id), 'served');
+    assert.deepEqual(await orderRow(db, id), refunded, 'nor on the refunded one');
+    assert.equal((await get(base, s, '/api/cards')).find(c => c.number === 1).in_use, false, 'Card 1 is free');
+  });
+});
+
+test('K-P race: a kitchen tap and a payment are both accepted, the bill stays paid, and its ticket stays on the board: 40 concurrent runs', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    assert.equal((await post(base, s, '/api/shift/open', { float: 0 })).status, 201);
+    const seen = new Set();
+    for (let i = 0; i < 40; i++) {
+      const id = await openCard(base, s, (i % 50) + 1);
+      const t = await kitchenTicket(base, s, id);
+      const [tapped, paid] = await race(i,
+        () => tap(base, s, t.id, 'preparing'),
+        () => post(base, s, `/api/orders/${id}/pay`, { method: 'Card' }));
+      assert.equal(tapped.status, 200, `run ${i}: the tap was refused`);
+      assert.equal(paid.status, 200, `run ${i}: the payment was refused`);
+      // What the tap found under the bill lock: an open bill it rolled up to
+      // 'preparing' (the tap first), or the paid one it left alone.
+      seen.add((await json(tapped)).order_status);
+      assert.equal(await ticketStatus(db, t.id), 'preparing', `run ${i}`);
+      const row = await orderRow(db, id);
+      assert.equal(row.status, 'paid', `run ${i}: the paid bill was reopened as '${row.status}'`);
+      assert.ok(row.paid_at, `run ${i}`);
+      const payments = await count(db, 'SELECT COALESCE(SUM(amount_cents), 0)::int n FROM payments WHERE order_id = $1', [id]);
+      assert.equal(payments, row.total_cents, `run ${i}: the paid bill is exactly its payment`);
+      assert.equal((await kitchenTicket(base, s, id))?.status, 'preparing', `run ${i}: the ticket left the kitchen board`);
+    }
+    assert.deepEqual([...seen].sort(), ['paid', 'preparing'], 'both orderings happened: the tap first, and the payment first');
+
+    // Forced: a tap queued behind the payment that closes the bill is
+    // accepted, moves only the ticket, and leaves the row as the payment wrote it.
+    const q = await openCard(base, s, 45);
+    const tq = (await kitchenTicket(base, s, q)).id;
+    let asPaid;
+    const queued = await behindLock(db, () => tap(base, s, tq, 'preparing'), async tx => {
+      const { total_cents: total } = (await tx.query('SELECT total_cents FROM orders WHERE id = $1', [q])).rows[0];
+      await tx.query("INSERT INTO payments (order_id, method, amount_cents) VALUES ($1, 'Card', $2)", [q, total]);
+      await tx.query("UPDATE orders SET status = 'paid', paid_at = now(), updated_at = now() WHERE id = $1", [q]);
+      asPaid = (await tx.query('SELECT * FROM orders WHERE id = $1', [q])).rows[0];
+    });
+    assert.equal(queued.status, 200);
+    assert.equal((await json(queued)).order_status, 'paid');
+    assert.equal(await ticketStatus(db, tq), 'preparing');
+    assert.deepEqual(await orderRow(db, q), asPaid, 'the queued tap wrote nothing on the bill');
+  });
+});
+
+test('K-P cancelling a bill cancels its unfinished tickets, from the till or by rejecting its last round; none lingers, and a tap on one is refused', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+
+    // Rejecting the last round a bill has left cancels the bill: round 1's
+    // line was voided while its ticket was cooking, then the customer's round
+    // is turned away.
+    assert.equal((await call(base, s, 'PATCH', '/api/settings', { qr_require_approval: true })).status, 200);
+    const b = await openCard(base, s, 2);
+    const first = (await kitchenTicket(base, s, b)).id;
+    assert.equal((await tap(base, s, first, 'preparing')).status, 200);
+    assert.equal(await customerOrder(base, s, db, 2), b, 'the customer\'s round joins the open bill');
+    const held = await pendingRound(db, b);
+    const line = (await db.query('SELECT id FROM order_items WHERE order_id = $1 AND send_id <> $2', [b, held])).rows[0].id;
+    assert.equal((await post(base, s, `/api/orders/${b}/items/${line}/void`, { reason: 'out of roti' })).status, 200);
+    assert.equal((await post(base, s, `/api/kitchen/sends/${held}/reject`, { reason: 'kitchen closing' })).status, 200);
+    assert.equal((await orderRow(db, b)).status, 'cancelled');
+    assert.equal(await ticketStatus(db, first), 'cancelled', 'round 1\'s ticket went with the bill');
+    assert.equal((await wholeBoard(base, s)).some(t => t.order_id === b), false, 'off the board');
+    const late = await tap(base, s, first, 'ready');
+    assert.equal(late.status, 409);
+    assert.equal((await json(late)).error, TICKET_CANCELLED);
+
+    // The till's cancel, with round 1 served and round 2 cooking.
+    const a = await openCard(base, s, 1);
+    const served = (await kitchenTicket(base, s, a)).id;
+    for (const st of ['preparing', 'ready', 'served']) assert.equal((await tap(base, s, served, st)).status, 200);
+    assert.equal((await post(base, s, `/api/orders/${a}/items`, { items: [{ item_id: s.roti.id, qty: 1 }] })).status, 200);
+    const cooking = (await wholeBoard(base, s)).find(t => t.order_id === a && t.status === 'sent').id;
+    assert.equal((await tap(base, s, cooking, 'preparing')).status, 200);
+    assert.equal((await call(base, s, 'PATCH', `/api/orders/${a}`, { status: 'cancelled' })).status, 200);
+    assert.equal(await ticketStatus(db, cooking), 'cancelled');
+    assert.equal(await ticketStatus(db, served), 'served', 'what was served stays served');
+    assert.equal((await wholeBoard(base, s)).some(t => t.order_id === a), false, 'off the board');
+    // Not even an undo puts a cancelled bill's ticket back to work.
+    const undo = await tap(base, s, served, 'ready');
+    assert.equal(undo.status, 409);
+    assert.equal((await json(undo)).error, TICKET_CANCELLED);
+    assert.equal(await ticketStatus(db, served), 'served');
+
+    assert.equal(await count(db,
+      `SELECT count(*)::int n FROM order_send_tickets t JOIN order_sends x ON x.id = t.send_id JOIN orders o ON o.id = x.order_id
+        WHERE o.status = 'cancelled' AND t.status IN ('sent', 'preparing', 'ready')`), 0, 'nothing unfinished on a cancelled bill');
+    assert.equal((await get(base, s, '/api/dashboard')).kitchen.active_tickets, 0, 'and nothing counted as waiting');
+  });
+});
+
+test('K-P the kitchen screen can\'t be switched off while the board has an unfinished ticket, a paid or refunded bill\'s included, in Admin or in the wizard', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    assert.equal((await post(base, s, '/api/shift/open', { float: 0 })).status, 201);
+    const refusedOff = async label => {
+      const r = await call(base, s, 'PATCH', '/api/features', { features: { kitchen: false } });
+      assert.equal(r.status, 409, label);
+      assert.equal((await json(r)).error, KITCHEN_BUSY_REFUSAL, label);
+      const finish = await post(base, s, '/api/setup', { features: { ...allFlags(true), kitchen: false } });
+      assert.equal(finish.status, 409, `${label}, in the wizard`);
+      assert.equal((await json(finish)).error, KITCHEN_BUSY_REFUSAL, `${label}, in the wizard`);
+      assert.equal((await get(base, s, '/api/features')).features.kitchen, true, `${label}: nothing switched`);
+    };
+
+    // A takeaway paid as it was sent, its food not yet made.
+    const r = await post(base, s, '/api/orders', { order_type: 'takeaway', items: [{ item_id: s.roti.id, qty: 1 }] });
+    const takeaway = (await json(r)).id;
+    await payByCard(base, s, takeaway);
+    await refusedOff('a paid bill\'s ticket, new');
+    const t1 = (await kitchenTicket(base, s, takeaway)).id;
+    await tapThrough(base, s, t1, ['preparing', 'ready'], 'paid');
+    await refusedOff('a paid bill\'s ticket, ready but not served');
+    await tapThrough(base, s, t1, ['served'], 'paid');
+    assert.equal((await setFeatures(base, s, { kitchen: false })).features.kitchen, false, 'served: the switch goes through');
+    await setFeatures(base, s, { kitchen: true });
+
+    // A card paid and refunded in full with its food still waiting.
+    const card = await openCard(base, s, 3);
+    await payByCard(base, s, card);
+    await refundInFull(base, s, db, card);
+    await refusedOff('a refunded bill\'s ticket');
+    await tapThrough(base, s, (await kitchenTicket(base, s, card)).id, ['preparing', 'ready', 'served'], 'refunded');
+    assert.equal((await setFeatures(base, s, { kitchen: false })).features.kitchen, false);
+  });
+});
+
+test('K-P drinks still to make when stations are switched off move to the one kitchen screen, where they tap through', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    const id = await openCard(base, s, 4, s.milo);
+    const drinks = (await get(base, s, '/api/kitchen/tickets?station=drinks')).tickets.find(t => t.order_id === id);
+    assert.equal(drinks.status, 'sent');
+
+    await setFeatures(base, s, { stations: false });
+    assert.deepEqual((await get(base, s, '/api/kitchen/stations')).map(x => x.code), ['kitchen']);
+    const moved = await kitchenTicket(base, s, id);
+    assert.equal(moved?.id, drinks.id, 'the drinks are on the kitchen screen, the only one left');
+    assert.deepEqual(moved.items.map(i => i.name), ['Milo Panas']);
+    // The screen shows it, so it is what stops the kitchen switching off.
+    assert.equal((await call(base, s, 'PATCH', '/api/features', { features: { kitchen: false } })).status, 409);
+    for (const st of ['preparing', 'ready', 'served']) assert.equal((await tap(base, s, drinks.id, st)).status, 200);
+    assert.equal((await kitchenTicket(base, s, id)).status, 'served');
+    assert.equal((await setFeatures(base, s, { kitchen: false })).features.kitchen, false);
+  });
+});
+
+test('K-P kitchen health counts exactly what the kitchen board shows: open, paid and refunded bills and a station without a screen, never a cancelled bill', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    assert.equal((await post(base, s, '/api/shift/open', { float: 0 })).status, 201);
+    // Sent this many seconds ago: mid-minute, so the board's minutes and the
+    // server's can't straddle a boundary.
+    const sentAgo = (id, secs) => db.query('UPDATE order_sends SET sent_at = now() - make_interval(secs => $2) WHERE order_id = $1', [id, secs]);
+    const firstTicket = async id => (await kitchenTicket(base, s, id)).id;
+
+    const open = await openCard(base, s, 1);                 // New, late
+    await sentAgo(open, 930);
+    const takeaway = (await json(await post(base, s, '/api/orders', { order_type: 'takeaway', items: [{ item_id: s.roti.id, qty: 1 }] }))).id;
+    await payByCard(base, s, takeaway);                     // paid as it was sent: New
+    const midCook = await openCard(base, s, 2);              // paid while cooking: Cooking, late
+    assert.equal((await tap(base, s, await firstTicket(midCook), 'preparing')).status, 200);
+    await payByCard(base, s, midCook);
+    await sentAgo(midCook, 750);
+    const refunded = await openCard(base, s, 3);             // paid, then refunded in full: New
+    await payByCard(base, s, refunded);
+    await refundInFull(base, s, db, refunded);
+    const ready = await openCard(base, s, 4);                // Ready: cooked, not waiting on the kitchen
+    const readyTicket = await firstTicket(ready);
+    for (const st of ['preparing', 'ready']) assert.equal((await tap(base, s, readyTicket, st)).status, 200);
+    const cancelled = await openCard(base, s, 5);            // cancelled, and a leftover unfinished
+    assert.equal((await call(base, s, 'PATCH', `/api/orders/${cancelled}`, { status: 'cancelled' })).status, 200);
+    // ticket on it, as rejecting a bill's last round left them before this fix.
+    await db.query(
+      "UPDATE order_send_tickets SET status = 'sent' WHERE send_id IN (SELECT id FROM order_sends WHERE order_id = $1)", [cancelled]);
+    // A ticket with nothing to make at its station (migration 012 gave some
+    // old rounds one): on no screen.
+    await db.query(
+      "INSERT INTO order_send_tickets (send_id, station_code) SELECT id, 'drinks' FROM order_sends WHERE order_id = $1", [open]);
+    const drinks = await openCard(base, s, 6, s.milo);       // New, on the drinks screen until
+    await setFeatures(base, s, { stations: false });         // stations go off: then on the kitchen's
+
+    // Active and late are the board's New and Cooking columns, and those of
+    // them sent over ten minutes ago.
+    const board = await wholeBoard(base, s);
+    const waiting = board.filter(t => ['sent', 'preparing'].includes(t.status));
+    const minutes = t => Math.floor((Date.now() - new Date(t.sent_at)) / 60000);
+    const shown = {
+      active: waiting.length,
+      late: waiting.filter(t => minutes(t) >= 10).length,
+      oldest: Math.max(0, ...waiting.map(minutes)),
+    };
+    const k = (await get(base, s, '/api/dashboard')).kitchen;
+    assert.deepEqual({ active: k.active_tickets, late: k.late_tickets, oldest: k.longest_active_minutes }, shown, 'the dashboard');
+    const h = (await get(base, s, '/api/admin/system')).kitchen;
+    assert.deepEqual({ active: h.active, late: h.late, oldest: h.oldest_minutes }, shown, 'Admin → System');
+
+    const onBoard = id => board.filter(t => t.order_id === id).length;
+    assert.deepEqual(
+      [open, takeaway, midCook, refunded, ready, cancelled, drinks].map(onBoard), [1, 1, 1, 1, 1, 0, 1],
+      'one ticket each on the board, the cancelled bill none');
+    assert.deepEqual(shown, { active: 5, late: 2, oldest: 15 }, 'New and Cooking: Card 1, the takeaway, Card 2, Card 3 and the drinks');
   });
 });

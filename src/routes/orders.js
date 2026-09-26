@@ -265,9 +265,7 @@ router.patch('/api/orders/:id', requireRole('admin', 'staff', 'kitchen'), awaitH
       await client.query('UPDATE orders SET status = $1, closed_by = $2, updated_at = now() WHERE id = $3', [status, req.user.id, o.rows[0].id]);
       // Cancelling the bill stops every station: a cancelled ticket drops off
       // the kitchen display instead of being cooked for nobody.
-      await client.query(
-        `UPDATE order_send_tickets SET status = 'cancelled'
-          WHERE send_id IN (SELECT id FROM order_sends WHERE order_id = $1) AND status <> 'served'`, [o.rows[0].id]);
+      await rounds.cancelOpenTickets(client, o.rows[0].id);
       await writeAudit(client, {
         userId: req.user.id, action: 'order.cancel', entityType: 'order', entityId: o.rows[0].id,
         detail: { from: cur },

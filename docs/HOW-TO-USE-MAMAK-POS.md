@@ -309,6 +309,11 @@ On the **🍽 Tables** screen the table tile now says **💵 Ready to pay**.
 
 The receipt prints and the table goes back to being free.
 
+**Food not ready yet?** You can still take payment — a takeaway paid at the
+counter, say. The screen asks *Food is still being prepared. Take payment
+anyway?* Tap **OK**. The order stays on the kitchen screen until the kitchen
+taps **🍽 Served**.
+
 **Paying part now, part later?** Under **Pay a specific amount (RM)**, type the
 amount and tap **Apply cash** (or card, or eWallet). The screen shows what is
 still owed. Repeat until it reaches zero.
