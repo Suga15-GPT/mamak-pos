@@ -124,6 +124,68 @@ docker compose exec db psql -U postgres -c "DROP DATABASE restore_check;"
 An unrestored backup is a rumour — actually run this drill after setting up
 backups for the first time, and periodically afterward, not just once.
 
+## Restore cleared sales data
+
+**Admin → System → Clear sales data** (admin only: the admin's own PIN and the
+word `CLEAR`) starts every sales figure from RM0 — after staff training, or a
+trial day — without deleting anything. In one transaction under the bill lock
+it copies every sales row into a new schema in the same database, named for
+the shop's date and time, `archive_YYYYMMDD_HHMMSS`, then removes those rows
+from the live tables:
+
+- **moved:** `orders`, `order_items`, `order_item_mods`, `order_sends`
+  (rounds), `order_send_tickets` (kitchen tickets), `payments`, `discounts`,
+  `refunds`, `bill_groups`, `shifts`, `cash_movements`, `print_jobs` — and the
+  idempotency keys, which are columns of `orders` and `order_items`.
+  `src/services/sales_archive.js` holds the list; a unit test fails if a new
+  table is not classified.
+- **kept:** the menu, stations, staff and their logins, cards and tables,
+  printers, settings and feature switches, and `audit_log`, which gains one
+  `sales.clear` row saying who cleared, when, how many bills, what total
+  (payments less refunds) and the archive's name.
+
+It is refused while any bill, shift or kitchen ticket is still open. Bill,
+payment and shift numbers are not reset, so archived rows never collide with
+new ones, and an archive can be put back beside new trading at any time.
+
+Running the setup wizard again never clears sales — it changes settings only.
+
+### Putting an archive back
+
+1. **Back up first** (see Backups above): `docker compose exec backup /scripts/backup.sh`.
+2. Find the archive. Admin → Activity shows "Cleared sales data" with its
+   name, or list them with what each holds:
+
+   ```bash
+   docker compose exec app node scripts/restore-sales-archive.js --list
+   # archive_20260930_220501  412 bills  RM 8123.40
+   ```
+
+3. Restore it:
+
+   ```bash
+   docker compose exec app node scripts/restore-sales-archive.js archive_20260930_220501
+   ```
+
+   One transaction under the bill lock, parents before children: shifts,
+   combined bills, bills, rounds, lines, kitchen tickets, options, cash
+   movements, discounts, payments, refunds, print jobs. Only columns the live
+   table still has are copied (a column added since takes its default). It
+   restores everything or nothing, writes a `sales.restore` audit row, and
+   refuses an archive whose bills are already back ("looks restored already")
+   or a name that isn't `archive_YYYYMMDD_HHMMSS`.
+
+4. Check the Sales screen and a Z report from before the clear, then drop the
+   archive once you no longer need a copy of it:
+
+   ```bash
+   docker compose exec db psql -U postgres -c 'DROP SCHEMA "archive_20260930_220501" CASCADE;'
+   ```
+
+Nothing here goes near the triggers from migrations 015/017/019 that freeze a
+closed bill: they fire on `UPDATE`, and clearing and restoring only insert and
+delete whole rows.
+
 ## Off-device backups (do this before you need it)
 
 A nightly `pg_dump` on the same machine as the database protects against a bad

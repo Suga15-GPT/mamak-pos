@@ -38,6 +38,7 @@ export const STATE_WORDS = {
   pending:   { icon: '⏳', label: 'Waiting for staff' },
   cancelled: { icon: '❌', label: 'Cancelled' },
   refunded:  { icon: '↩', label: 'Refunded' },
+  merged:    { icon: '🔗', label: 'Combined into another card' },
   free:      { icon: '', label: 'Free' },
 };
 export function stateWords(status) { return STATE_WORDS[status] || { icon: '', label: status || '' }; }

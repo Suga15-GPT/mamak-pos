@@ -10,11 +10,13 @@ const printing = require('../services/printing');
 const rounds = require('../services/rounds');
 const { leaveGroupIfClosedTx } = require('../services/bill_groups');
 const { lockBills } = require('../lib/billlock');
+const { isClosed, openSql, closedBillError } = require('../lib/status');
 const { requireFeature, isOn } = require('../services/features');
+const merging = require('../services/merge');
 const {
   recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
   addRefund, listRefunds,
-  splitEvenly, splitBySeat, paidCentsFor, guardAgainstShortfall, settleIfMatchesPaid, previewBillExcludingLine,
+  splitEvenly, itemShare, paidCentsFor, guardAgainstShortfall, settleIfMatchesPaid, previewBillExcludingLine,
 } = require('../services/billing');
 
 const router = express.Router();
@@ -38,8 +40,8 @@ router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async
     // that already holds everything older.
     const sinceDate = req.query.since ? new Date(req.query.since) : null;
     orders = sinceDate && !isNaN(sinceDate)
-      ? await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled','refunded') AND o.updated_at > $1", [sinceDate], 'ORDER BY o.id ASC LIMIT 200')
-      : await ordersWithItems("WHERE o.status NOT IN ('paid','cancelled','refunded')", [], 'ORDER BY o.id ASC LIMIT 200');
+      ? await ordersWithItems(`WHERE ${openSql('o.status')} AND o.updated_at > $1`, [sinceDate], 'ORDER BY o.id ASC LIMIT 200')
+      : await ordersWithItems(`WHERE ${openSql('o.status')}`, [], 'ORDER BY o.id ASC LIMIT 200');
   }
 
   // Live payments-so-far + remaining balance, for the "RM X.XX remaining" display
@@ -57,7 +59,13 @@ router.get('/api/orders', requireRole('admin', 'staff', 'kitchen'), awaitH(async
       id: p.id, method: p.method, amount: cents2rm(p.amount_cents),
       tendered: p.tendered_cents == null ? null : cents2rm(p.tendered_cents), at: p.at,
       refundable: cents2rm(p.amount_cents - (refundedByPayment[p.id] || 0)),
+      item_ids: p.item_ids || null,
     }));
+    // Lines a "Split by items" share has paid for (a share refunded in full
+    // paid for nothing), so the till can grey them out.
+    o.paid_item_ids = [...new Set(payments
+      .filter(p => p.item_ids && p.amount_cents > (refundedByPayment[p.id] || 0))
+      .flatMap(p => p.item_ids))];
     o.amount_due = cents2rm(Math.max(0, dueCents));
     o.discounts = discounts.map(d => ({
       id: d.id, kind: d.kind, amount: cents2rm(d.amount_cents), reason: d.reason, at: d.at,
@@ -116,7 +124,7 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
     // Not a 500 — tell the client which order already exists so it can join it.
     if (e.code === '23505' && e.constraint === 'one_open_order_per_card') {
       const existing = await pool.query(
-        "SELECT id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled','refunded') ORDER BY id DESC LIMIT 1",
+        `SELECT id FROM orders WHERE card_id = $1 AND ${openSql()} ORDER BY id DESC LIMIT 1`,
         [cardId]);
       return res.status(409).json({ error: 'card already has an open order', order_id: existing.rows[0]?.id });
     }
@@ -136,8 +144,11 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
    the whole batch already landed. */
 router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async (req, res) => {
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
-  if (!o.rows[0] || ['paid', 'cancelled', 'refunded'].includes(o.rows[0].status))
-    return res.status(400).json({ error: 'order closed' });
+  if (!o.rows[0]) return res.status(400).json({ error: 'order closed' });
+  if (isClosed(o.rows[0].status)) {
+    const e = await closedBillError(pool, o.rows[0], 'order closed', 400);
+    return res.status(e.status).json({ error: e.message });
+  }
   // Once any payment is recorded against the order, its total is being settled —
   // adding more lines would make what was just paid for wrong.
   if (await hasPayments(o.rows[0].id)) return res.status(409).json({ error: 'order has a payment recorded; cannot add items' });
@@ -188,7 +199,7 @@ router.post('/api/orders/:id/items/:lineId/void', requireRole('admin', 'staff'),
     await lockBills(client);
     o = await client.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [req.params.id]);
     if (!o.rows[0]) throw Object.assign(new Error('not found'), { status: 404 });
-    if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw Object.assign(new Error('order closed'), { status: 409 });
+    if (isClosed(o.rows[0].status)) throw await closedBillError(client, o.rows[0], 'order closed');
 
     li = await client.query('SELECT * FROM order_items WHERE id = $1 AND order_id = $2', [req.params.lineId, o.rows[0].id]);
     if (!li.rows[0]) throw Object.assign(new Error('line not found'), { status: 404 });
@@ -325,7 +336,7 @@ router.post('/api/orders/:id/move', requireRole('admin', 'staff'), awaitH(async 
        FROM orders o LEFT JOIN cards c ON c.id = o.card_id LEFT JOIN tables t ON t.id = o.table_id WHERE o.id = $1`,
     [req.params.id]);
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
-  if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) return res.status(400).json({ error: 'order closed' });
+  if (isClosed(o.rows[0].status)) return res.status(400).json({ error: 'order closed' });
   if (!(targetId > 0)) return res.status(400).json({ error: 'card_id required' });
 
   if (o.rows[0].card_id === targetId) return res.status(400).json({ error: 'order is already on that card' });
@@ -345,7 +356,7 @@ router.post('/api/orders/:id/move', requireRole('admin', 'staff'), awaitH(async 
     // (a takeaway turned dine-in, a paid card moved). A bill closed by now is
     // refused.
     const now = (await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [o.rows[0].id])).rows[0];
-    if (['paid', 'cancelled', 'refunded'].includes(now.status)) {
+    if (isClosed(now.status)) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'This bill has just been closed, so it can no longer be moved.' });
     }
@@ -371,21 +382,54 @@ router.post('/api/orders/:id/move', requireRole('admin', 'staff'), awaitH(async 
   res.json({ ok: true, card_id: targetId, card_number: target.number, label: `Card ${target.number}` });
 }));
 
-/* One payment leg. Body: { method, amount?, tendered? } — amount (RM) defaults to
-   the full remaining balance, so the old "click a method to pay in full" flow keeps
-   working unchanged. tendered (RM, cash only) drives change due. Over-tendering in
-   cash settles the order and returns change; over-amount by card/e-wallet is 400. */
+/* Combine: { from_order_id } — that card's bill joins this one. Its rounds,
+   lines and kitchen tickets move here now, and its card is free (services/
+   merge.js). This is what the till's Combine does; POST /api/bill-groups, the
+   old pay-together grouping, stays for groups made before this shipped. */
+const positiveId = v => /^[1-9][0-9]{0,9}$/.test(String(v)) && Number(v) <= 2147483647;
+router.post('/api/orders/:id/merge', requireRole('admin', 'staff'), requireFeature('split_combine'), awaitH(async (req, res) => {
+  if (!positiveId(req.params.id)) return res.status(404).json({ error: 'not found' });
+  const r = await merging.merge(Number(req.params.id), req.body?.from_order_id, req.user.id);
+  publish('order.updated', { order_id: r.order_id });
+  publish('order.updated', { order_id: r.from_order_id, card_id: r.from_card_id });
+  res.json({ ok: true, ...r });
+}));
+
+/* Separate: { card_id } — the rounds on this bill that came from that card go
+   back to a new bill on it (services/merge.js). */
+router.post('/api/orders/:id/separate', requireRole('admin', 'staff'), requireFeature('split_combine'), awaitH(async (req, res) => {
+  if (!positiveId(req.params.id)) return res.status(404).json({ error: 'not found' });
+  const r = await merging.separate(Number(req.params.id), req.body?.card_id, req.user.id);
+  publish('order.updated', { order_id: r.order_id });
+  publish('order.created', { order_id: r.new_order_id, card_id: r.card_id });
+  res.json({ ok: true, ...r });
+}));
+
+/* One payment leg. Body: { method, amount?, tendered?, item_ids? } — amount (RM)
+   defaults to the full remaining balance, so the old "click a method to pay in
+   full" flow keeps working unchanged. tendered (RM, cash only) drives change due.
+   Over-tendering in cash settles the order and returns change; over-amount by
+   card/e-wallet is 400. item_ids makes the leg a "Split by items" share: the
+   server works out what those lines come to, and `amount`, when given, is what
+   the till showed — a bill that changed since is refused (409), not re-priced. */
 router.post('/api/orders/:id/pay', requireRole('admin', 'staff'), awaitH(async (req, res) => {
-  const { method, amount, tendered } = req.body || {};
+  const { method, amount, tendered, item_ids: itemIds } = req.body || {};
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
-  if (!['served', 'ready', 'preparing', 'sent'].includes(o.rows[0].status))
-    return res.status(400).json({ error: 'order already closed' });
+  if (isClosed(o.rows[0].status)) {
+    const e = await closedBillError(pool, o.rows[0], 'order already closed', 400);
+    return res.status(e.status).json({ error: e.message });
+  }
+  if (itemIds != null) {
+    if (!(await isOn('split_combine'))) return res.status(404).json({ error: 'feature_disabled' });
+    if (o.rows[0].bill_group_id) return res.status(409).json({ error: 'This card is on a combined bill. Remove it from the combined bill before splitting it.' });
+  }
 
   const result = await addPayment(o.rows[0].id, {
     method,
     amountCents: amount != null ? rm2cents(amount) : null,
     tenderedCents: tendered != null ? rm2cents(tendered) : null,
+    itemIds: itemIds != null ? itemIds : null,
     userId: req.user.id,
   });
 
@@ -420,17 +464,20 @@ router.post('/api/orders/:id/reprint-receipt', requireRole('admin'), requireFeat
 }));
 
 /* Preview only — does not record anything. ?ways=N for an even split of the
-   remaining balance, or ?by=seat for a per-seat breakdown. */
+   remaining balance, or ?by=items&items=12,13 for what those lines come to
+   with their share of the service charge and tax (the last share: whatever
+   is left). Paying it is POST /pay with item_ids. */
 router.get('/api/orders/:id/split', requireRole('admin', 'staff'), requireFeature('split_combine'), awaitH(async (req, res) => {
   const o = (await pool.query('SELECT bill_group_id FROM orders WHERE id = $1', [req.params.id])).rows[0];
   if (!o) return res.status(404).json({ error: 'not found' });
   if (o.bill_group_id) return res.status(409).json({ error: 'This card is on a combined bill. Remove it from the combined bill before splitting it.' });
-  if (req.query.by === 'seat') {
-    const bySeat = await splitBySeat(req.params.id);
-    return res.json({ seats: Object.fromEntries(Object.entries(bySeat).map(([k, v]) => [k, cents2rm(v)])) });
+  if (req.query.by === 'items') {
+    const ids = String(req.query.items || '').split(',').filter(Boolean).map(Number);
+    const s = await itemShare(Number(req.params.id), ids);
+    return res.json({ amount: cents2rm(s.share_cents), last: s.last, due: cents2rm(s.due_cents), item_ids: s.item_ids });
   }
   const ways = parseInt(req.query.ways);
-  if (!ways) return res.status(400).json({ error: 'ways or by=seat required' });
+  if (!ways) return res.status(400).json({ error: 'ways or by=items required' });
   const due = await amountDue(req.params.id);
   const shares = splitEvenly(due, ways);
   res.json({ shares: shares.map(cents2rm) });

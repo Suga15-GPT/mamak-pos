@@ -10,7 +10,9 @@
 // v5: card mode's combined-bill payment screen.
 // v6: feature modules and the setup wizard (features.js, setup.js) — past v5,
 // which card mode shipped separately with a different shell.
-const CACHE_VERSION = 'v6';
+// v7: Combine merges bills, split by items, the folded pay panel, and Clear
+// sales data — pos.js, admin.js and index.html all changed together.
+const CACHE_VERSION = 'v7';
 const CACHE_NAME = `mamak-pos-${CACHE_VERSION}`;
 
 const SHELL_URLS = [

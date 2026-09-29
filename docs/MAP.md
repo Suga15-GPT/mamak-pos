@@ -555,3 +555,43 @@ combine and a customer round re-check their switch and answer the same
 | `public/customer/customer.js` | — | `404 feature_disabled` shows "Please order at the counter", same as QR mode off |
 | `test/unit/features.test.js` | 1195 | **New.** Every module's routes 404 when off and not when on (each module off in turn, children following); kitchen off → served at once, add-on too, no chit, not on the board after re-enabling; stations off → one station; shifts off → payment and refund with `shift_id` NULL, shifts on → refused, nothing back-filled; parent/child rules; discount survives off→on; printing off queues nothing; split_combine refused under an open group; fresh DB → wizard + all on, then a Lite setup trades; upgrade with orders → all on, no wizard; upgrade without → nothing written. Against card mode's bill lock (`behindLock()` holds the lock, queues the request, commits what got there first): shifts off → a combined bill's legs with no shift; a refund, payment or combined payment queued behind a shift close is refused, and a payment queued behind shifts going back on lands in the open shift; the Split-and-combine switch and a combine, and the QR switch and a customer round, never cross; kitchen off → an accepted customer round is born served, an add-on or an approval queued behind a payment or a cancel never writes onto the closed bill, and an order queued behind the kitchen going off is born served. Under migration 017: kitchen and shifts off, a bill settled by cash rounding or by a comp stays frozen and a refund to zero changes only its status. Migrations: a fresh database applies 015, 016, 017 in that order; the upgrade tests start from main (every migration but 016) and apply 016 alone. Review fixes (A1–A5; the races run 40 times, a third with each side leading, and must see both outcomes): shifts not switched off with a shift open, in Admin or the wizard, and the no-open-shift answer; that switch racing a shift opening; the kitchen not switched off with an unfinished ticket, and that switch racing a send; `/api/summary` 404 with the dashboard off; a refused Finish changing nothing, the card count included; an installed shop with users but no orders skipping the wizard after upgrading (018). The re-check (K-P, each failing on `d401570`): a takeaway paid as it is sent stays on the board and taps through to served, and a card paid mid-cook, then refunded, stays on it and tappable — the bill's whole row unchanged by every tap; 40 runs of a tap racing a payment, both always accepted, the bill still paid and exactly its payment, the ticket still on the board, both orderings seen, and a tap queued behind the payment leaving the row as the payment wrote it; cancelling (the till's, and rejecting a bill's last round) cancels every unfinished ticket and a tap on one is 409; the kitchen not switched off while a paid or refunded bill's ticket is unfinished, in Admin or the wizard; with stations off, drinks sent before the switch on the kitchen screen; the dashboard and Admin → System counting exactly the board's New and Cooking columns |
 | `test/e2e/journeys.spec.js` | 664 | New first journey: wizard as a small stall (name required, child switched off with its parent and the owner told, the no-open-shift warning under Shifts, no QR step), then an order paid with no Shift, Kitchen or Sales tab. A `beforeEach` puts every other journey on Advanced with 50 cards. Re-check (K-P): a takeaway paid at the counter through the UI stays on the kitchen screen, is tapped through to served, and its bill is unchanged |
+
+---
+
+## Day-one fixes (`claude/day-one-fixes`)
+
+Three changes from the first days in a real shop: Clear sales data, Combine =
+merge, and a simpler pay panel with Split by items. docs/REDESIGN-STATE.md has
+the rules; this is where they live.
+
+New endpoints: `POST /api/orders/:id/merge {from_order_id}` and
+`POST /api/orders/:id/separate {card_id}` (admin/staff, `split_combine`) ·
+`GET /api/orders/:id/split?by=items&items=12,13` (preview) and `item_ids` on
+`POST /api/orders/:id/pay` · `GET|POST /api/admin/sales/clear` (admin;
+`{pin, confirm: 'CLEAR'}`). Changed: `GET /api/t/:token` carries `bill`
+(a card's own QR only); `GET /api/orders` carries `merged_from`, each line's
+`round_no` and `from_card`, each payment's `item_ids` and the order's
+`paid_item_ids`; `?by=seat` is gone (400). Stream event `sales.cleared`.
+
+| File | Lines | Contains |
+|---|---|---|
+| `migrations/019_merge_and_item_split.sql` | 90 | **New.** `'merged'` status (check, both one-open-order indexes, the 015/017 trigger function with `'merged'` closed and `merged_into_order_id` frozen); `orders.merged_into_order_id`; `order_sends.merged_from_card_id/_order_id/_seq_no`, `merged_at`; `payments.item_ids` |
+| `src/lib/status.js` | 38 | **New.** `CLOSED_STATUSES`, `isClosed()`, `openSql(col)` — the one definition of an open bill; `closedBillError(client, order, fallback)` names the bill a merged one went to ("This bill was combined into Card 1 — use Card 1's bill instead.") |
+| `src/services/merge.js` | 229 | **New.** `merge(into, from, userId)` and `separate(orderId, cardId, userId)`: bill lock, both orders locked in ascending id, every refusal re-read under it; rounds renumbered on the target with where they came from; the source closed as `merged` with zero money; the undo to a new order on the card |
+| `src/services/sales_archive.js` | 228 | **New.** `SALES_TABLES` (children first) and `KEPT_TABLES`; `preview()`, `blockers(client)`; `clearSales({userId})` (bill lock, `EXCLUSIVE` table locks, `archive_YYYYMMDD_HHMMSS`, copy then delete with counts checked, one `sales.clear` audit row); `restoreArchive(name)` (parents first, common columns, refuses twice) |
+| `scripts/restore-sales-archive.js` | 42 | **New.** `--list`, or restore one archive (the runbook's command) |
+| `src/services/billing.js` | — | `itemShare(orderId, ids)` and `itemIdsPaid`; `addPayment` takes `itemIds` (share worked out under the lock; `amountCents` must match) and records `payments.item_ids`; `splitBySeat` removed; a merged bill's refusals say where it went |
+| `src/services/rounds.js` | — | `roundLocationSql()` ("Card 1 (from 4)"); the board and `attachSends` carry each round's own number and the card it came from; `boardUnfinishedCount`; closed statuses from `lib/status` |
+| `src/services/orders.js` | — | `appendSend`'s `order_closed` error carries `order_status` (the QR route opens a fresh bill on a card merged away) |
+| `src/routes/orders.js` | — | merge/separate routes; `/pay` with `item_ids`; `/split?by=items`; open-bill checks from `lib/status` |
+| `src/routes/public.js` | — | `customerBill()` in `GET /api/t/:token`; a QR order re-reads the card's bill when it was merged away or raced open; the round page says "Card 1 (from 4)" |
+| `src/routes/admin.js` | — | `GET|POST /api/admin/sales/clear` (PIN re-check with the login-style limit) |
+| `src/services/cards.js`, `shifts.js`, `features.js`, `bill_groups.js`, `printing.js` | — | `'merged'` counts as closed (floor, card count, carried forward, QR switch-off guard); bill_groups marked as the grouping from before; a void slip for a moved line says "(from 4)" |
+| `public/js/pos.js` | 1354 | Combine picks one card and merges; "Separate Card N" on the bill; merged round headers and the floor tile; no Seat button; the pay panel's Split by items picker and folded Pay part of the bill |
+| `public/js/admin.js` | — | Admin → System's Clear sales data card and modal; activity words for merge, separate, clear, restore |
+| `public/js/setup.js` | — | The wizard's last page on a re-run: "Your sales history is kept…" |
+| `public/customer/customer.js` | 486 | "Your bill" from `GET /api/t/:token`, refreshed with the round statuses |
+| `public/index.html`, `style.css`, `i18n.js`, `help.js`, `state.js`, `main.js`, `sw.js` | — | Markup and styles for the above; every new string in EN and BM; Help topics `combine` and `clear-sales`; `merged` state words; reload on `sales.cleared`; cache `v7` |
+| `test/apphelper.js` | 115 | **New.** The in-process app and the calls the day-one tests share (`race()` runs a third of each race with either side leading) |
+| `test/unit/merge.test.js`, `sales_clear.test.js`, `split_items.test.js`, `day_one_copy.test.js` | 676, 415, 205, 65 | **New.** See REDESIGN-STATE "Latest test state" |
+| `test/e2e/journeys.spec.js` | 937 | New journeys: split by items, combine then a new group on Card 4, clear sales to RM0; the combine journey became "a combined bill from before" |

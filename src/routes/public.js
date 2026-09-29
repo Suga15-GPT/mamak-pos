@@ -4,12 +4,14 @@ const { pool } = require('../db');
 const { publicH } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
 const { rateLimit } = require('../lib/auth');
-const { buildOrderItems, insertOrder, appendSend, ORDERABLE_SQL } = require('../services/orders');
+const { buildOrderItems, insertOrder, appendSend, ordersWithItems, ORDERABLE_SQL } = require('../services/orders');
 const { hasPayments } = require('../services/billing');
 const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const voice = require('../services/voice');
-const { qrSettings, resolveQr, locationSql } = require('../services/cards');
+const { qrSettings, resolveQr } = require('../services/cards');
+const { roundLocationSql } = require('../services/rounds');
+const { openSql } = require('../lib/status');
 const { requireFeature, isOn } = require('../services/features');
 
 const router = express.Router();
@@ -50,18 +52,39 @@ router.get('/api/menu', publicH(async (req, res) => {
 router.get('/api/t/:token', requireFeature('qr'), publicH(async (req, res) => {
   const { settings, card } = await resolveQr(req.params.token, req.query.card, { requireCard: false });
   const open = card ? await pool.query(
-    "SELECT id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled','refunded') LIMIT 1", [card.id]) : { rows: [] };
+    `SELECT id FROM orders WHERE card_id = $1 AND ${openSql()} LIMIT 1`, [card.id]) : { rows: [] };
   res.json({
     mode: settings.mode,
     card: card ? { number: card.number } : null,
     needs_card_number: !card,
     ordering: { enabled: settings.enabled, approval_required: settings.approval_required },
     has_open_order: !!open.rows[0],
+    // What is on this card's bill right now. After Combine, the card that took
+    // the other card's bill shows everything on it, the other card's items
+    // marked with its number; the card that was combined away shows a fresh
+    // card. Only a card's own QR: with the shop poster anyone can type any
+    // card number, so it never shows a bill.
+    bill: open.rows[0] && settings.mode === 'per_card' ? await customerBill(open.rows[0].id) : null,
     // A half-configured deployment shows the menu and no microphone, rather
     // than a Speak to Order button that fails when somebody taps it.
     voice: { enabled: voice.isEnabled() && (await isOn('voice')) },
   });
 }));
+
+// The bill as a customer may see it: what they are having, not staff notes
+// or who rang it up. A round waiting for staff shows, marked, and counts in
+// no total (the same rule as the till).
+async function customerBill(orderId) {
+  const [o] = await ordersWithItems('WHERE o.id = $1', [orderId]);
+  if (!o) return null;
+  return {
+    total: o.grand_total ?? o.total,
+    lines: o.items.filter(i => !i.voided).map(i => ({
+      name: i.name, qty: i.qty, from_card: i.from_card ?? null,
+      status: i.held ? 'pending' : (i.round_status || 'sent'),
+    })),
+  };
+}
 
 /* Customer QR order (public, rate-limited).
 
@@ -85,49 +108,45 @@ router.post('/api/public/orders', requireFeature('qr'), publicH(async (req, res)
   const parsed = await buildOrderItems(pool, items);
   const approvalState = ordering.approval_required ? 'pending' : 'approved';
   const publicRef = crypto.randomBytes(12).toString('hex');
+  const BEING_PAID = { error: 'bill_being_paid', message: 'Your bill is being settled. Please order with our staff.' };
 
-  const open = await pool.query(
-    "SELECT id, bill_group_id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled','refunded') ORDER BY id DESC LIMIT 1",
-    [cardId]);
-
-  let orderId, sendId, seqNo;
-  if (open.rows[0]) {
-    // The bill is mid-settlement: adding to it would make what was just paid
-    // for wrong. Staff have to take over from here.
-    if (await hasPayments(open.rows[0].id)) {
-      return res.status(409).json({ error: 'bill_being_paid', message: 'Your bill is being settled. Please order with our staff.' });
-    }
-    orderId = open.rows[0].id;
-    try {
-      ({ sendId, seqNo } = await appendSend(orderId, parsed, 'qr', null, null, { approvalState, publicRef }));
-    } catch (e) {
-      // Settled or closed in the instant between looking the bill up and
-      // locking it: the same answer as the check above.
-      if (e.code === 'has_payment' || e.code === 'order_closed') {
-        return res.status(409).json({ error: 'bill_being_paid', message: 'Your bill is being settled. Please order with our staff.' });
+  // Onto the card's open bill, or a new one if it has none. Looked up again
+  // when the answer changed underneath: a second phone opened the card's
+  // first bill at the same instant (one_open_order_per_card — join it), or
+  // the bill was combined into another card's (Combine frees the card, so the
+  // order opens a fresh bill on it, as a new scan of the card would).
+  let placed = null;
+  for (let attempt = 0; attempt < 3 && !placed; attempt++) {
+    const open = (await pool.query(
+      `SELECT id FROM orders WHERE card_id = $1 AND ${openSql()} ORDER BY id DESC LIMIT 1`, [cardId])).rows[0];
+    if (open) {
+      // The bill is mid-settlement: adding to it would make what was just paid
+      // for wrong. Staff have to take over from here.
+      if (await hasPayments(open.id)) return res.status(409).json(BEING_PAID);
+      try {
+        const r = await appendSend(open.id, parsed, 'qr', null, null, { approvalState, publicRef });
+        placed = { orderId: open.id, sendId: r.sendId, seqNo: r.seqNo, created: false };
+      } catch (e) {
+        if (e.code === 'order_closed' && e.order_status === 'merged') continue;
+        // Settled or closed in the instant between looking the bill up and
+        // locking it: the same answer as the check above.
+        if (e.code === 'has_payment' || e.code === 'order_closed') return res.status(409).json(BEING_PAID);
+        throw e;
       }
-      throw e;
-    }
-  } else {
-    try {
-      ({ orderId, sendId, seqNo } = await insertOrder(
-        cardId, parsed, String(note || '').slice(0, 300), 'qr', null, null, { approvalState, publicRef }));
-    } catch (e) {
-      // Two phones on the same card submitting their first order at the same
-      // instant: one of them loses the one_open_order_per_card race. Append to
-      // the winner instead of failing the customer.
-      if (e.code === '23505' && e.constraint === 'one_open_order_per_card') {
-        const winner = await pool.query(
-          "SELECT id FROM orders WHERE card_id = $1 AND status NOT IN ('paid','cancelled','refunded') ORDER BY id DESC LIMIT 1",
-          [cardId]);
-        if (!winner.rows[0]) throw e;
-        orderId = winner.rows[0].id;
-        ({ sendId, seqNo } = await appendSend(orderId, parsed, 'qr', null, null, { approvalState, publicRef }));
-      } else throw e;
+    } else {
+      try {
+        const r = await insertOrder(cardId, parsed, String(note || '').slice(0, 300), 'qr', null, null, { approvalState, publicRef });
+        placed = { orderId: r.orderId, sendId: r.sendId, seqNo: r.seqNo, created: true };
+      } catch (e) {
+        if (e.code === '23505' && e.constraint === 'one_open_order_per_card') continue;
+        throw e;
+      }
     }
   }
+  if (!placed) return res.status(409).json({ error: 'busy', message: 'Your card is busy right now. Please try again, or order with our staff.' });
+  const { orderId, sendId, seqNo } = placed;
 
-  publish(open.rows[0] ? 'order.updated' : 'order.created', { order_id: orderId, card_id: cardId });
+  publish(placed.created ? 'order.created' : 'order.updated', { order_id: orderId, card_id: cardId });
   // A round awaiting staff approval reaches no printer and no station display
   // until someone accepts it.
   if (approvalState === 'approved') await printing.enqueueRoundChits(sendId);
@@ -146,12 +165,15 @@ router.post('/api/public/orders', requireFeature('qr'), publicH(async (req, res)
 router.get('/api/public/sends/:ref', requireFeature('qr'), publicH(async (req, res) => {
   if (!(await qrSettings()).enabled) return res.status(404).json({ error: 'Please order at the counter' });
   if (!rateLimit('sendref:' + req.ip, 240, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many requests' });
+  // A round Combine moved onto another card's bill says so: "Card 1 (from 4)".
   const s = await pool.query(
-    `SELECT s.id, s.seq_no, s.sent_at, s.approval_state, ${locationSql('cd', 't')} AS table_name
+    `SELECT s.id, COALESCE(s.merged_from_seq_no, s.seq_no) AS seq_no, s.sent_at, s.approval_state,
+            ${roundLocationSql('cd', 't', 'fc')} AS table_name
        FROM order_sends s
        JOIN orders o ON o.id = s.order_id
        LEFT JOIN tables t ON t.id = o.table_id
        LEFT JOIN cards cd ON cd.id = o.card_id
+       LEFT JOIN cards fc ON fc.id = s.merged_from_card_id
       WHERE s.public_ref = $1`, [req.params.ref]);
   if (!s.rows[0]) return res.status(404).json({ error: 'not found' });
   const send = s.rows[0];

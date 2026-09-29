@@ -1,6 +1,7 @@
 const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { lockBills } = require('../lib/billlock');
+const { openSql } = require('../lib/status');
 
 /* ===== switchable feature modules =====
    A small stall runs order-and-pay; a full restaurant switches everything on.
@@ -137,7 +138,7 @@ async function guardTurnOff(client, current, next) {
   if (current.qr && !next.qr) {
     const p = await client.query(
       `SELECT count(*)::int n FROM order_sends s JOIN orders o ON o.id = s.order_id
-        WHERE s.approval_state = 'pending' AND o.status NOT IN ('paid','cancelled','refunded')`);
+        WHERE s.approval_state = 'pending' AND ${openSql('o.status')}`);
     if (p.rows[0].n) throw AppError('Some QR orders are still waiting for approval. Accept or reject them before switching off QR ordering.', 409);
   }
 }

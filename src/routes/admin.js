@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireRole, hashPin, pinPolicyError } = require('../lib/auth');
+const { requireRole, hashPin, pinPolicyError, verifyPin, rateLimitExceeded, rateLimitRecord } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
 const { rm2cents } = require('../lib/money');
 const { writeAudit } = require('../services/orders');
@@ -9,7 +9,9 @@ const rounds = require('../services/rounds');
 const { qrHealth } = require('../lib/baseurl');
 const { systemHealth } = require('../services/health');
 const { publish } = require('../lib/events');
+const { openSql } = require('../lib/status');
 const { requireFeature } = require('../services/features');
+const salesArchive = require('../services/sales_archive');
 
 const router = express.Router();
 
@@ -30,7 +32,7 @@ router.get('/api/admin/menu', adminOnly, awaitH(async (req, res) => {
     SELECT i.*, ps.name AS station_name,
            (SELECT count(*)::int FROM order_items oi
               JOIN orders o ON o.id = oi.order_id
-             WHERE oi.item_id = i.id AND o.status NOT IN ('paid','cancelled','refunded')) AS open_order_lines,
+             WHERE oi.item_id = i.id AND ${openSql('o.status')}) AS open_order_lines,
            (SELECT count(*)::int FROM order_items oi WHERE oi.item_id = i.id) AS historical_lines
       FROM items i LEFT JOIN prep_stations ps ON ps.code = i.station_code
      ORDER BY i.sort, i.id`);
@@ -110,7 +112,7 @@ router.delete('/api/admin/items/:id', adminOnly, awaitH(async (req, res) => {
   if (!it) return res.status(404).json({ error: 'not found' });
   const open = await pool.query(
     `SELECT count(*)::int n FROM order_items oi JOIN orders o ON o.id = oi.order_id
-      WHERE oi.item_id = $1 AND o.status NOT IN ('paid','cancelled','refunded')`, [req.params.id]);
+      WHERE oi.item_id = $1 AND ${openSql('o.status')}`, [req.params.id]);
   if (open.rows[0].n > 0) {
     return res.status(409).json({
       error: `${it.name} is on ${open.rows[0].n} order that is still open. Finish or void those first, or switch the item off instead of deleting it.`,
@@ -515,6 +517,37 @@ router.post('/api/admin/print-jobs/:id/retry', adminOnly, requireFeature('printi
    be made honestly is omitted rather than shown green. */
 router.get('/api/admin/system', adminOnly, awaitH(async (req, res) => {
   res.json(await systemHealth(req));
+}));
+
+/* ===== Clear sales data (Admin -> System) =====
+   Moves every sales row into an archive schema so the figures start again
+   from RM0 (services/sales_archive.js). GET says what would move and what is
+   in the way; POST does it. Admin only, and deliberately awkward: the admin
+   types their own PIN again and the word CLEAR. */
+router.get('/api/admin/sales/clear', adminOnly, awaitH(async (req, res) => {
+  res.json(await salesArchive.preview());
+}));
+
+const CLEAR_TRIES = 5;
+const CLEAR_WINDOW_MS = 10 * 60 * 1000;
+router.post('/api/admin/sales/clear', adminOnly, awaitH(async (req, res) => {
+  if (String(req.body?.confirm ?? '').trim() !== 'CLEAR') return res.status(400).json({ error: 'Type CLEAR to confirm.' });
+  // A session left open on a till must not become a way to guess the admin's
+  // PIN: five wrong PINs and it waits. Like login, a right one costs nothing.
+  const key = `clear-sales:${req.user.id}`;
+  if (rateLimitExceeded(key, CLEAR_TRIES, CLEAR_WINDOW_MS)) {
+    return res.status(429).json({ error: 'Too many wrong PINs. Wait ten minutes and try again.' });
+  }
+  const me = (await pool.query('SELECT pin_hash FROM users WHERE id = $1', [req.user.id])).rows[0];
+  if (!me || !verifyPin(String(req.body?.pin ?? ''), me.pin_hash)) {
+    rateLimitRecord(key, CLEAR_WINDOW_MS);
+    return res.status(403).json({ error: 'That PIN is not right.' });
+  }
+  const r = await salesArchive.clearSales({ userId: req.user.id });
+  // Every screen showing a figure reloads it: the floor, the Sales screen,
+  // the shift screen.
+  publish('sales.cleared', {});
+  res.json({ ok: true, ...r });
 }));
 
 module.exports = router;

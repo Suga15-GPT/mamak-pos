@@ -151,10 +151,15 @@ async function buildChit(sendId, stationCode, width) {
 async function buildVoidChit(orderId, width, itemId) {
   const order = await loadOrderForPrint(orderId);
   const items = await loadItems(orderId, [itemId]);
+  // A line Combine brought over from another card is called what its kitchen
+  // ticket says: "Card 1 (from 4)".
+  const from = (await pool.query(
+    `SELECT fc.number FROM order_items oi JOIN order_sends s ON s.id = oi.send_id
+       JOIN cards fc ON fc.id = s.merged_from_card_id WHERE oi.id = $1`, [itemId])).rows[0]?.number;
   const p = createPrinter(width);
   p.init().align(1).bold(true).text('*** VOID ***\n').bold(false);
   p.align(0);
-  p.text(`Order #${order.id}  ${orderLabel(order)}\n`);
+  p.text(`Order #${order.id}  ${orderLabel(order)}${from != null ? ` (from ${from})` : ''}\n`);
   p.line('=');
   items.forEach(item => {
     chitLine(p, item);

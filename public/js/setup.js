@@ -169,7 +169,8 @@ function stepBody(step) {
       ? onList.map(m => `<span class="chip sage">${esc(name(m))}</span>`).join('')
       : `<span class="meta">${esc(t('setup.review.none'))}</span>`}</div>
     ${offList.length ? `<div class="bill-group-head">${esc(t('setup.review.off'))}</div>
-      <div class="chip-row">${offList.map(m => `<span class="chip">${esc(name(m))}</span>`).join('')}</div>` : ''}`;
+      <div class="chip-row">${offList.map(m => `<span class="chip">${esc(name(m))}</span>`).join('')}</div>` : ''}
+    ${mandatory ? '' : `<p class="meta setup-sales-kept" id="setup-sales-kept">${esc(t('setup.review.salesKept'))}</p>`}`;
 }
 
 function render() {

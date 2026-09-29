@@ -753,8 +753,9 @@ button.chip { min-height:38px; }
   color:var(--text-2); margin:18px 0 4px;
 }
 .bill-group-head:first-child { margin-top:6px; }
-/* Card mode: the "Combined bill: Card 1, Card 4" line on a card's bill, and
-   the card picker in the Combine dialog. */
+/* Card mode: "Card 4's items are on this bill · Separate Card 4" (and a
+   combined bill from before merge) on a card's bill, and the card picker in
+   the Combine dialog. */
 .bill-group-note {
   display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;
   margin:8px 0; padding:8px 12px; border-radius:var(--radius-md);
@@ -764,7 +765,31 @@ button.chip { min-height:38px; }
   display:flex; align-items:center; gap:12px; min-height:44px; padding:6px 4px;
   border-bottom:1px solid var(--light-gray); color:var(--text); cursor:pointer;
 }
+.combine-option input { width:21px; height:21px; accent-color:var(--brand); flex-shrink:0; }
 .combine-option span:nth-child(2) { flex:1; }
+
+/* Pay panel: split by items, and "Pay part of the bill" folded away. */
+.split-items { margin-top:4px; }
+.split-item {
+  display:flex; align-items:center; gap:12px; min-height:var(--tap); padding:8px 0;
+  border-bottom:1px solid var(--border); font-size:14.5px; cursor:pointer; color:var(--text);
+}
+.split-item:last-child { border-bottom:none; }
+.split-item input { width:21px; height:21px; accent-color:var(--brand); flex-shrink:0; cursor:pointer; }
+.split-item .si-name { flex:1; min-width:0; overflow-wrap:anywhere; }
+.split-item .si-price { font-weight:700; font-variant-numeric:tabular-nums; flex-shrink:0; }
+.split-item.paid { color:var(--text-3); cursor:default; }
+.split-item.paid .si-name { text-decoration:line-through; }
+.split-items-total { margin:10px 0 8px; font-size:14px; line-height:1.45; }
+.split-items-total .err { margin:0 0 6px; }
+.split-items-pay { display:flex; gap:8px; flex-wrap:wrap; }
+.pay-part-toggle { padding-left:4px; padding-right:10px; }
+
+/* Admin -> System: clearing sales is the one thing on that screen that
+   changes data, so it looks different from the health list above it. */
+.card.danger-zone { border-color:var(--danger); }
+.clear-sales-status { margin-bottom:12px; }
+.setup-sales-kept { margin-top:14px; }
 .bill-group-head.new {
   color:var(--brand-ink); background:var(--brand-tint);
   padding:7px 8px; border-radius:var(--radius-xs) var(--radius-xs) 0 0;
@@ -804,13 +829,6 @@ button.chip { min-height:38px; }
 .bl-actions .ln-btn:hover { border-color:var(--brand); }
 .bl-actions .ln-btn.del { color:var(--danger); }
 .bl-actions .ln-btn.del:hover { border-color:var(--danger); background:var(--danger-tint); }
-.bl-actions .seat-btn {
-  min-height:38px; min-width:0; padding:0 12px; border-radius:10px;
-  border:1px solid var(--border-strong); background:var(--surface);
-  font-size:13px; font-weight:700; color:var(--text-2); white-space:nowrap;
-}
-.bl-actions .seat-btn:hover { border-color:var(--brand); color:var(--brand-ink); }
-.bl-actions .seat-btn.on { background:var(--brand-tint); color:var(--brand-ink); border-color:var(--brand-tint-2); }
 .bl-actions [data-action="void-line"] { min-height:38px; padding:7px 12px; font-size:13px; }
 
 .qty { display:flex; gap:5px; align-items:center; }

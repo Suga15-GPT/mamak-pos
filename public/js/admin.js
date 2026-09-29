@@ -1,6 +1,7 @@
 import { $, fmt, esc, toast, ask } from './state.js';
 import { refreshStaff } from './staff.js';
-import { on } from './features.js';
+import { on, fill } from './features.js';
+import { t } from './i18n.js';
 import { renderFeaturesSection } from './setup.js';
 
 /* ===== ADMIN =====
@@ -600,6 +601,7 @@ function healthItem(dot, name, detail) {
 }
 
 async function refreshSystem() {
+  refreshClearSales();
   $('system-health').innerHTML = '<div class="empty">Checking…</div>';
   try {
     const h = await API.get('/api/admin/system');
@@ -655,6 +657,61 @@ async function refreshSystem() {
   }
 }
 
+/* ===== CLEAR SALES DATA =====
+   Starts the figures from RM0: the server moves every sales row into an
+   archive schema (nothing is deleted) and refuses while a bill, a shift or a
+   kitchen ticket is still open. Shown here with what would move and anything
+   in the way; done only with the admin's PIN typed again and the word CLEAR. */
+let clearPreview = null;
+
+async function refreshClearSales() {
+  const box = $('clear-sales-status');
+  try {
+    clearPreview = await API.get('/api/admin/sales/clear');
+    const p = clearPreview;
+    const what = p.rows
+      ? fill(t('clear.what'), { bills: p.bills, amount: fmt(p.total_cents / 100) })
+      : t('clear.nothing');
+    box.innerHTML = `<div class="meta">${esc(what)}</div>`
+      + (p.reasons.length ? `<div class="banner warn" style="margin-top:8px">${p.reasons.map(esc).join('<br>')}</div>` : '');
+    $('clear-sales-open').disabled = !p.rows || p.reasons.length > 0;
+  } catch (e) {
+    box.innerHTML = `<div class="banner danger">${esc(e.message)}</div>`;
+    $('clear-sales-open').disabled = true;
+  }
+}
+
+function openClearSales() {
+  if (!clearPreview) return;
+  $('clear-sales-summary').textContent = fill(t('clear.summary'), {
+    bills: clearPreview.bills, amount: fmt(clearPreview.total_cents / 100),
+  });
+  ['clear-sales-pin', 'clear-sales-confirm'].forEach(id => { $(id).value = ''; });
+  $('clear-sales-err').textContent = '';
+  $('clear-sales-modal').classList.add('show');
+  setTimeout(() => $('clear-sales-pin').focus(), 50);
+}
+function closeClearSales() { $('clear-sales-modal').classList.remove('show'); }
+
+async function confirmClearSales() {
+  const pin = $('clear-sales-pin').value.trim();
+  const confirmText = $('clear-sales-confirm').value.trim();
+  if (!pin) { $('clear-sales-err').textContent = t('clear.needPin'); return; }
+  if (confirmText !== 'CLEAR') { $('clear-sales-err').textContent = t('clear.needWord'); return; }
+  try {
+    const r = await API.post('/api/admin/sales/clear', { pin, confirm: confirmText });
+    closeClearSales();
+    toast(fill(t('clear.done'), { archive: r.archive }));
+    refreshSystem();
+  } catch (e) { $('clear-sales-err').textContent = e.message; }
+}
+
+$('clear-sales-modal').addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (el?.dataset.action === 'close-clear-sales' || e.target === $('clear-sales-modal')) closeClearSales();
+  else if (el?.dataset.action === 'confirm-clear-sales') confirmClearSales();
+});
+
 /* ===== ACTIVITY =====
    Collapsed by default, and written as sentences. Raw JSON is available behind
    a disclosure for whoever actually needs it. */
@@ -668,6 +725,8 @@ const ACTION_WORDS = {
   'order.void_line': 'Voided an item',
   'order.refund': 'Issued a refund',
   'order.move': 'Moved an order to another card',
+  'order.merge': 'Combined another card into a bill', 'order.separate': 'Separated a card from a bill',
+  'sales.clear': 'Cleared sales data', 'sales.restore': 'Restored cleared sales data',
   'bill_group.combine': 'Combined bills', 'bill_group.remove': 'Took a card off a combined bill',
   'bill_group.dissolve': 'Split a combined bill apart', 'bill_group.pay': 'Took a payment on a combined bill',
   'cards.count': 'Changed how many cards are in use',
@@ -702,6 +761,7 @@ function auditContext(a) {
   if (d.amount_cents != null) bits.push(fmt(d.amount_cents / 100));
   if (d.method) bits.push(d.method);
   if (d.from && d.to) bits.push(`${d.from} → ${d.to}`);
+  if (d.archive) bits.push(`${d.bills} bills · ${fmt((d.total_cents || 0) / 100)} · ${d.archive}`);
   return bits.join(' · ');
 }
 
@@ -770,6 +830,7 @@ $('tab-admin').addEventListener('click', e => {
     'retry-job': () => retryJob(id),
     'refresh-print-jobs': refreshPrintJobs,
     'refresh-system': refreshSystem,
+    'open-clear-sales': openClearSales,
     'toggle-audit': toggleAudit,
   };
   if (map[a]) map[a]();
