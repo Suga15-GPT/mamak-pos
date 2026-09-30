@@ -6,7 +6,8 @@ const { cents2rm, rm2cents } = require('../lib/money');
 const shifts = require('../services/shifts');
 const printing = require('../services/printing');
 const rounds = require('../services/rounds');
-const { requireFeature } = require('../services/features');
+const { requireFeature, isOn } = require('../services/features');
+const analytics = require('../services/analytics');
 
 const router = express.Router();
 
@@ -169,6 +170,14 @@ router.get('/api/dashboard', requireRole('admin', 'staff'), requireFeature('dash
     payment_mix: mix.rows.map(r => ({ method: r.method, sales: cents2rm(r.cents), count: r.n })),
     top_items: top.rows.map(r => ({ name: r.name, sold: r.sold, sales: cents2rm(r.cents) })),
   });
+}));
+
+/* The Sales explorer: any date range (KL dates, inclusive), by hour, day or
+   month, filtered, with the previous period of the same length. See
+   services/analytics.js for what each figure means. */
+router.get('/api/analytics', requireRole('admin', 'staff'), requireFeature('dashboard'), awaitH(async (req, res) => {
+  const withExpenses = req.user.role === 'admin' && await isOn('expenses');
+  res.json(await analytics.explore(req.query, { withExpenses }));
 }));
 
 const SETTING_KEYS = [

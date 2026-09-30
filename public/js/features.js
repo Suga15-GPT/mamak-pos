@@ -9,11 +9,11 @@
    control drawn later by any renderer is hidden without that renderer knowing
    about features at all. */
 
-export const MODULES = ['kitchen', 'stations', 'printing', 'shifts', 'discounts', 'refunds', 'split_combine', 'qr', 'voice', 'dashboard'];
+export const MODULES = ['kitchen', 'stations', 'printing', 'shifts', 'discounts', 'refunds', 'split_combine', 'qr', 'voice', 'dashboard', 'expenses'];
 export const PARENT = { stations: 'kitchen', voice: 'qr' };
 export const PRESETS = {
   lite: [],
-  medium: ['kitchen', 'printing', 'shifts', 'discounts', 'split_combine'],
+  medium: ['kitchen', 'printing', 'shifts', 'discounts', 'split_combine', 'expenses'],
   advanced: MODULES,
 };
 

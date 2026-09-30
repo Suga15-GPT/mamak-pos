@@ -17,7 +17,9 @@
 // v9: pay-in-full sends the total it showed, failed sends are listed on the
 // till, and Send marks its lines before awaiting — pos.js, outbox.js,
 // index.html and style.css changed together.
-const CACHE_VERSION = 'v9';
+// v10: the server now appends its build hash to this name when it serves
+// this file (server.js), so every update gets a fresh cache on its own.
+const CACHE_VERSION = 'v10';
 const CACHE_NAME = `mamak-pos-${CACHE_VERSION}`;
 
 const SHELL_URLS = [
@@ -38,6 +40,8 @@ const SHELL_URLS = [
   '/js/i18n.js',
   '/js/features.js',
   '/js/setup.js',
+  '/js/version.js',
+  '/js/expenses.js',
 ];
 
 self.addEventListener('install', event => {

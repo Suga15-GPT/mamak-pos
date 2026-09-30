@@ -48,6 +48,8 @@ const KEPT_TABLES = [
   'users', 'sessions', 'categories', 'items', 'modifier_groups', 'modifier_options',
   'item_modifier_groups', 'prep_stations', 'tables', 'cards', 'printers',
   'settings', 'audit_log', 'schema_migrations', 'archived_idempotency_keys',
+  // Expenses are not sales: Clear sales data leaves them alone.
+  'expense_categories', 'expenses', 'expense_receipts', 'recurring_expenses',
 ];
 
 const ARCHIVE_NAME = /^archive_\d{8}_\d{6}(_\d+)?$/;

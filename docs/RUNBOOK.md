@@ -340,3 +340,28 @@ watch a service, and change it back if the corrections get annoying.
 Unset `VOICE_ORDERING` and restart. To stop **all** customer ordering
 (voice and tapping) without a restart, use Admin → Tables & QR → Accept QR
 orders instead.
+
+
+## Reading receipts for Expenses (Gemini)
+
+Optional. Without it, 🧾 Expenses works by typing.
+
+1. Sign in at https://aistudio.google.com with a Google account → **Get API key**
+   → **Create API key**. The free tier needs no card and is plenty for a few
+   receipts a day.
+2. Add it to `.env`: `GEMINI_API_KEY=...` (and, only if Google retires the
+   default model, `GEMINI_MODEL=<a current model that reads images and audio>`).
+3. `docker compose up -d` (the app restarts with the key; nothing else changes).
+4. 🧾 Expenses → Photo of receipt: the form should fill itself in.
+
+The key stays on the server; phones never see it. On the free tier Google may
+use what is sent to improve its products — receipts from suppliers only.
+If reading fails ("free reading limit used up", "could not reach"), the form
+opens empty and you type it.
+
+## Tills after an update
+
+Every screen checks every 30 seconds which version the server is running. After
+an update it reloads itself at the first quiet moment (no dialog open, nothing
+unsent on the bill); until then a blue bar says it will. The very first update
+that adds this needs one manual reload of every till; after that it is automatic.

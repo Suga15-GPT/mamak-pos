@@ -34,6 +34,17 @@ services:
       PORT: "${PORT:-3000}"
       TZ: ${TZ:-Asia/Kuala_Lumpur}
       TRUST_PROXY: "${TRUST_PROXY:-0}"
+      # Optional services, all off unless set in .env (see .env.example).
+      # Reading receipts and voice notes for 🧾 Expenses:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      # Speak to Order:
+      VOICE_ORDERING: ${VOICE_ORDERING:-}
+      VOICE_STT_URL: ${VOICE_STT_URL:-}
+      VOICE_STT_MODEL: ${VOICE_STT_MODEL:-}
+      VOICE_STT_API_KEY: ${VOICE_STT_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      VOICE_LLM_MODEL: ${VOICE_LLM_MODEL:-}
     ports:
       - "3000:3000"
     depends_on:

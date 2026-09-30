@@ -598,6 +598,54 @@ Found by the reviewer on main after PR #18.
 - **P4** — Send marks its lines before the outbox write is awaited, so a
   second Send in the same instant finds nothing new.
 
+## Owner requests (after PR #19)
+
+- **Sales explorer** (`services/analytics.js`, `GET /api/analytics`,
+  `dashboard.js`). Any KL date range by hour (≤ 7 days), day (≤ 366) or month,
+  zero-filled, with the previous period of the same length. "Sales" is the Z
+  report's: bills settled (paid_at) in range at total_cents, paid or later
+  refunded; refunds by refunds.at; net = sales − refunds — a one-day range
+  equals that day's Z to the sen (test). Filters: order type (which bills);
+  category (item line value before SST/discounts); payment method (payments by
+  time less that method's refunds); category + method refused. Hand-drawn SVG
+  at the container's width (labels stay 10px on a phone), a previous-period
+  tick per bar, a full-height tap target per slot that drills month → days →
+  hours, ‹ Back, a figures table (sticky head and total), client-side CSV.
+  Top items / payment mix / sales by category follow the range. The old
+  "Sales by hour (today)" card is gone; /api/dashboard is unchanged.
+- **Customer bill, split and NFC.** `customerBill` (routes/public.js) now
+  carries line prices (price + options × qty, held lines 0), the breakdown,
+  paid (net of refunds) and due, and marks lines paid by a "Split by items"
+  share. `public/customer/split.js` (+ `split-math.js`, unit-tested): split
+  evenly or by names ↔ dishes, shared dishes divide, the rest (SST, service,
+  discount, earlier part payments) proportional, largest-remainder rounding so
+  shares sum to what is due exactly. Names live in sessionStorage; nothing is
+  sent. WhatsApp share / copy. "Pay now" is aria-disabled with "Coming soon".
+  Admin → Cards & QR: Copy link per card, Copy all links, NFC how-to (per-card
+  QR mode only); the New QR confirm mentions rewriting the tag.
+- **Expenses** (module `expenses`, admin only; migration 021; `services/
+  expenses.js`, `routes/expenses.js`, `public/js/expenses.js`). Categories,
+  expenses (void with reason, never delete; edit audited), receipt photos as
+  bytea (downscaled to 1600px JPEG on the phone, so pg_dump backs them up;
+  unsaved ones dropped after a day), regular costs (monthly day N clamped to
+  short months, or weekly ISO weekday) confirmed oldest-first under a row lock
+  (unique index per due date), "Buy it again". A photo or voice note goes to
+  Gemini `generateContent` (key in `x-goog-api-key`, `responseSchema`, 45 s
+  timeout) and comes back as a *draft*: every field re-checked (date within a
+  year and not future, amount ≤ RM100k, category matched to a real one, method
+  from the list), nothing saved until Save. `GEMINI_MODEL` defaults to
+  `gemini-3.1-flash-lite`; `EXPENSE_AI_MODE=mock` for development/e2e. Kept
+  tables for Clear sales data. The explorer adds Expenses and Sales − expenses
+  per day/month for the owner with no filter (hour view: total only).
+- **Follow-ups.** N1: one payment in flight per till (`payBusy`) for shares,
+  item shares and combined bills. N2: `/api/version` (hash of public/) and
+  `/sw.js` served with that hash in its cache name; `version.js` reloads a till
+  at the first quiet moment after an update (blue bar until then). N3:
+  combined-bill pay takes `expected_due` too. N4: `withDb` drops the archive
+  schemas its test made. The pay button is reset when a card's workspace opens.
+  docker-compose now passes GEMINI_* and the VOICE_*/ANTHROPIC_API_KEY
+  settings through (Speak to Order's were never passed before).
+
 ## Migrations added
 
 None in V2. Speak to Order needed no schema change — it produces the same rows
@@ -619,7 +667,8 @@ frozen), `orders.merged_into_order_id`, `order_sends.merged_from_card_id /
 merged_from_order_id / merged_from_seq_no / merged_at`, and `payments.item_ids`.
 No existing row is rewritten. Clear sales data needs no migration for its
 archives, which are schemas made at run time; its review fix added
-`020_archived_idempotency_keys.sql` (one new table, forward-only).
+`020_archived_idempotency_keys.sql` (one new table, forward-only). Expenses
+added `021_expenses.sql` (four new tables and the default categories).
 
 ## Files materially changed in V2
 
@@ -650,6 +699,12 @@ archives, which are schemas made at run time; its review fix added
   corrections properly and replaces the draft outright.
 - Off-device backup is still prepared, not configured (`BACKUP_REMOTE_TARGET`).
 - Stations are still `kitchen` and `drinks` with no management UI.
+- **Pay now on the customer's phone** is shown but off: it needs a payment
+  provider (DuitNow QR / FPX through a gateway), not built yet.
+- **Expenses are owner-only.** Staff buying groceries can't record them yet.
+- **Card lights (red unpaid / green clear)** were not built: per-card
+  electronics cost far more than they return. A counter rack with one LED strip
+  driven by the POS is the cheap version, in the backlog.
 - **Help topics are filtered by role, not by module.** A shop with shifts off
   still sees the "Opening and closing the shift" topic.
 - **Switching the kitchen off mid-service** leaves tickets already on the board
@@ -674,6 +729,25 @@ archives, which are schemas made at run time; its review fix added
   is no longer wanted.
 
 ## Latest test state
+
+After the owner requests (on `d947fab`): `npm test` 260/260 — 16 new:
+`analytics.test.js` (3: one day's explorer figures equal that day's Z report —
+sales, refunds, bills, payment mix — and the order-type, payment-method and
+category measures; open bills excluded, settled-day bucketing, previous
+period and bucket choice; refusals), `customer_split.test.js` (3: even and
+by-items splits sum to the sen, shared dishes, paid lines, a 500-run fuzz; the
+card QR's bill fields and nothing more), `expenses.test.js` (7: record, list,
+edit, void, audit; owner-only and module-off 404; photo and voice drafts
+checked field by field with nothing saved; due dates for short months and
+weekdays; regular costs oldest-first with 10 simultaneous Records making one
+expense; Sales − expenses for the owner only, not for filters or staff, and
+Clear sales data keeping expenses; the Gemini request shape against a local
+stand-in, key in a header, and the 429 sentence), `followups.test.js` (3: N2
+version, stamped page and cache name; N3; N4). Playwright 28/28, 4 new: the
+Sales explorer (This year → month → day → hours, Back, CSV), the customer's
+split and Pay now, Expenses (photo → checked draft → saved, a weekly cost
+recorded when due, Sales − expenses), and a double-tapped split share taking
+one payment.
 
 After the review fixes D1–D7 (on `bf15f66`): `npm test` 244/244 — 11 new in
 `test/unit/day_one_review.test.js`, all 11 failing on `bf15f66`: a stale

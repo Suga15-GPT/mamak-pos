@@ -51,7 +51,7 @@ async function addItem(page, category, item) {
   await page.locator('#pos-workspace').getByRole('button', { name: new RegExp(item) }).first().click();
 }
 
-const MODULES = ['kitchen', 'stations', 'printing', 'shifts', 'discounts', 'refunds', 'split_combine', 'qr', 'voice', 'dashboard'];
+const MODULES = ['kitchen', 'stations', 'printing', 'shifts', 'discounts', 'refunds', 'split_combine', 'qr', 'voice', 'dashboard', 'expenses'];
 const LITE_JOURNEY = 'first run: the setup wizard with Small stall, then order and pay with no shift and no kitchen';
 
 /* Every journey except the first-run one runs as a full restaurant (Advanced),
@@ -712,6 +712,148 @@ test('an add-on for a card combined meanwhile is listed as not sent, never silen
   expect(open.find(o => o.id === c34).items.map(i => i.name).sort()).toEqual(['Roti Canai', 'Roti Telur']);
 });
 
+/* The Sales explorer: a timeframe, drill from months to days to hours, the
+   table's total agrees with the headline, and the CSV has the same figures. */
+test('sales explorer: pick a timeframe, drill down month → day → hour, export the table', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  await freeCard(request, csrfToken, 36);
+  await ensureShift(request, csrfToken);
+  const id = await openByApi(request, csrfToken, 36, 'Mee Goreng Mamak');
+  expect((await request.post(`/api/orders/${id}/pay`, { ...withCsrf(csrfToken), data: { method: 'Card' } })).status()).toBe(200);
+
+  await login(page);
+  await navTab(page, 'Sales').click();
+  const ex = page.locator('#sales-explorer');
+  await expect(ex.locator('#ex-summary')).toContainText('Net sales');
+  await ex.getByRole('button', { name: 'This year' }).click();
+  await expect(ex.locator('#ex-table thead')).toContainText('Period');
+  const yearTotal = await ex.locator('#ex-table tfoot td').nth(4).textContent();
+  await expect(ex.locator('.ex-hero')).toHaveText(yearTotal.trim());
+
+  // Drill: the current month (the last row with sales), then today.
+  await ex.locator('#ex-table tbody tr:not(.zero)').last().click();
+  await expect(ex.locator('#ex-back')).toBeVisible();
+  await expect(ex.locator('#ex-table tbody tr').first()).toContainText(/(Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d/);
+  await ex.locator('#ex-table tbody tr:not(.zero)').last().click();
+  await expect(ex.locator('#ex-table tbody tr')).toHaveCount(24);
+  await expect(ex.locator('#ex-note')).toHaveText('');
+  await ex.getByRole('button', { name: '‹ Back' }).click();
+  await expect(ex.locator('#ex-table tbody tr').first()).toContainText(/(Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d/);
+
+  const [download] = await Promise.all([page.waitForEvent('download'), ex.getByRole('button', { name: /Export CSV/ }).click()]);
+  expect(download.suggestedFilename()).toMatch(/^sales_\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}_by_day\.csv$/);
+  const csv = require('fs').readFileSync(await download.path(), 'utf8').trim().split('\n');
+  expect(csv[0]).toBe('Period,Bills,Sales (RM),Refunds (RM),Net (RM),Average bill (RM)' + (csv[0].includes('Expenses') ? ',Expenses (RM),Sales − expenses (RM)' : ''));
+  expect(csv[csv.length - 1]).toMatch(/^Total,\d+,/);
+});
+
+/* The customer's bill on a card's own QR: prices, the split calculator (by
+   names and dishes, and evenly), and Pay now switched off for now. */
+test('customer splits the bill on their phone; Pay now says it is coming soon', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  await freeCard(request, csrfToken, 37);
+  const cards = await request.get('/api/admin/cards').then(r => r.json());
+  const menu = await request.get('/api/menu').then(r => r.json());
+  const item = n => menu.items.find(i => i.name === n).id;
+  const r = await request.post('/api/orders', { ...withCsrf(csrfToken), data: { card_id: cards.find(c => c.number === 37).id,
+    items: [{ item_id: item('Roti Canai'), qty: 2 }, { item_id: item('Mee Goreng Mamak'), qty: 1 }, { item_id: item('Teh Tarik'), qty: 2 }] } });
+  expect(r.status()).toBe(201);
+
+  await page.goto(cards.find(c => c.number === 37).url);
+  const bill = page.locator('#card-bill');
+  await expect(bill).toContainText('2× Roti Canai');
+  await expect(bill).toContainText('SST');
+  const total = (await bill.locator('.row.grand span').last().textContent()).trim();
+
+  // Marked aria-disabled (greyed, and read as unavailable), but a tap still
+  // explains why — so the test taps it the way a thumb would.
+  await expect(bill.getByRole('button', { name: /Pay now/ })).toHaveAttribute('aria-disabled', 'true');
+  await bill.getByRole('button', { name: /Pay now/ }).click({ force: true });
+  await expect(page.locator('#toast')).toContainText('coming soon');
+
+  await bill.getByRole('button', { name: /Split the bill/ }).click();
+  const m = page.locator('#split-modal');
+  for (const n of ['Ali', 'Siti']) { await m.locator('#split-name').fill(n); await m.getByRole('button', { name: 'Add', exact: true }).click(); }
+  await m.locator('.split-line', { hasText: 'Roti Canai' }).getByRole('button', { name: 'Ali' }).click();
+  await m.locator('.split-line', { hasText: 'Mee Goreng' }).getByRole('button', { name: 'Siti' }).click();
+  await expect(m.locator('.split-row.warn')).toContainText('Not claimed yet');
+  const tea = m.locator('.split-line', { hasText: 'Teh Tarik' });
+  await tea.getByRole('button', { name: 'Ali' }).click();
+  await tea.getByRole('button', { name: 'Siti' }).click();
+  await expect(m.locator('.split-row.warn')).toHaveCount(0);
+  const amounts = await m.locator('.split-row b').allTextContents();
+  const cents = amounts.map(a => Math.round(Number(a.replace(/[^\d.]/g, '')) * 100));
+  expect(cents.reduce((a, b) => a + b, 0)).toBe(Math.round(Number(total.replace(/[^\d.]/g, '')) * 100));
+
+  await m.getByRole('button', { name: 'Evenly' }).click();
+  await m.getByRole('button', { name: 'One person more' }).click();
+  await expect(m.locator('.split-row')).toHaveCount(3);
+  // Names are remembered on this phone only, and nothing about the split was sent.
+  await m.getByRole('button', { name: 'By what each person had' }).click();
+  await expect(m.locator('.split-people')).toContainText('Siti');
+});
+
+/* 🧾 Expenses: a receipt photo fills the form (a fixed reader here), the
+   owner checks it and saves; a regular cost falls due and is recorded; the
+   Sales explorer then shows Sales − expenses. */
+test('expenses: a receipt photo fills the form, it is saved, a regular cost is recorded when due', async ({ page }) => {
+  await login(page);
+  await navTab(page, 'Expenses').click();
+  await expect(page.locator('#exp-ai-off')).toBeHidden();
+  const jpeg = await page.screenshot({ type: 'jpeg', clip: { x: 0, y: 0, width: 200, height: 260 } });
+  await page.setInputFiles('#exp-photo-input', { name: 'receipt.jpg', mimeType: 'image/jpeg', buffer: jpeg });
+  await expect(page.locator('#exp-form')).toBeVisible();
+  await expect(page.locator('#exp-draft-note')).toContainText('Filled in from your photo');
+  await expect(page.locator('#exp-supplier')).toHaveValue('Pasar Borong Selayang');
+  await expect(page.locator('#exp-amount')).toHaveValue('186.40');
+  await expect(page.locator('#exp-items')).toContainText('Bawang merah 10kg');
+  await page.locator('#exp-amount').fill('180.00'); // the owner corrects it
+  await page.getByRole('button', { name: 'Save expense' }).click();
+  await expect(page.locator('#toast')).toContainText('Saved — RM 180.00');
+  await expect(page.locator('#exp-table')).toContainText('Pasar Borong Selayang');
+  await expect(page.locator('#exp-table')).toContainText('RM 180.00');
+  await expect(page.locator('#exp-recent')).toContainText('Pasar Borong Selayang');
+
+  // A regular cost that fell due today.
+  await page.locator('#rec-name').fill('Gas delivery');
+  await page.locator('#rec-amount').fill('120');
+  await page.locator('#rec-every').selectOption('week');
+  const isoDay = ((new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kuala_Lumpur' })).getDay() + 6) % 7) + 1;
+  await page.locator('#rec-day').selectOption(String(isoDay));
+  await page.getByRole('button', { name: 'Add regular cost' }).click();
+  const due = page.locator('#exp-due .exp-due-row', { hasText: 'Gas delivery' });
+  await expect(due).toBeVisible();
+  await due.getByRole('button', { name: 'Record' }).click();
+  await expect(page.locator('#toast')).toContainText('Recorded');
+  await expect(page.locator('#exp-due-card')).toBeHidden();
+  await expect(page.locator('#exp-table')).toContainText('Gas delivery');
+
+  await navTab(page, 'Sales').click();
+  await page.locator('#sales-explorer').getByRole('button', { name: 'Last 7 days' }).click();
+  await expect(page.locator('#ex-summary')).toContainText('Sales − expenses');
+  await expect(page.locator('#ex-table thead')).toContainText('Expenses');
+});
+
+/* Review N1: a double tap on one person's share of an even split takes it once. */
+test('a double tap on a split share records one payment', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  await freeCard(request, csrfToken, 38);
+  await ensureShift(request, csrfToken);
+  const id = await openByApi(request, csrfToken, 38, 'Mee Goreng Mamak');
+  page.on('dialog', dialog => dialog.accept());
+  await login(page);
+  await openCard(page, 38);
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
+  await page.getByRole('button', { name: 'Split evenly' }).click();
+  await page.locator('#ask-input').fill('3');
+  await page.locator('#ask-ok').click();
+  const share = page.locator('#pay-split-result [data-action="pay-share"][data-method="Card"]').first();
+  await share.evaluate(b => { b.click(); b.click(); });
+  await expect(page.locator('#toast')).toContainText('left');
+  const recent = await request.get('/api/orders').then(r => r.json());
+  expect(recent.find(o => o.id === id).payments).toHaveLength(1);
+});
+
 /* Clear sales data: with every bill, shift and kitchen ticket finished, the
    owner clears from Admin -> System with their PIN and the word CLEAR, and
    the Sales screen reads RM0. Running the wizard again first changes settings
@@ -763,7 +905,8 @@ test('clear sales data: running setup keeps the sales, clearing starts every fig
   await expect(kpi('Orders')).toHaveText('0');
   await expect(kpi('This month')).toHaveText('RM 0.00');
   await expect(kpi('This year')).toHaveText('RM 0.00');
-  await expect(page.locator('#dash-top')).toContainText('Nothing yet today');
+  await expect(page.locator('#dash-top')).toContainText('Nothing in this period');
+  await expect(page.locator('#sales-explorer .ex-hero')).toHaveText('RM 0.00');
 
   const dash = await request.get('/api/dashboard').then(r => r.json());
   expect([dash.today.sales, dash.today.orders, dash.month.sales, dash.year.sales]).toEqual([0, 0, 0, 0]);

@@ -128,6 +128,10 @@ function openWorkspace(sel) {
   $('bill-badge').innerHTML = '';
   $('move-order-btn').style.display = 'none';
   $('combine-btn').style.display = 'none';
+  // Until this card's own bill is looked up, Take Payment must not open the
+  // previous card's bill (review follow-up: the button kept the last order id).
+  $('pay-btn').style.display = 'none';
+  delete $('pay-btn').dataset.orderId;
   $('bill-group').innerHTML = '';
   renderCart();
   renderMenu();
@@ -1021,12 +1025,19 @@ function updateGroupLegsSummary() {
 
 async function payGroup(legs) {
   if (!navigator.onLine) return toast('Cannot take payment while offline');
+  if (payBusy) return;
+  payBusy = true;
   try {
-    const r = await API.post(`/api/bill-groups/${currentGroupId}/pay`, { legs });
+    // The total this screen shows: a combined bill that grew since (an
+    // add-on on one of its cards) is refused, not charged unseen (N3).
+    const r = await API.post(`/api/bill-groups/${currentGroupId}/pay`, { legs, expected_due: currentOrder.amount_due });
     closePayModal();
     toast(r.change > 0 ? `Paid — change ${fmt(r.change)}` : 'Paid in full');
     backToTables();
-  } catch (e) { toast('Payment failed: ' + e.message); }
+  } catch (e) {
+    toast('Payment failed: ' + e.message);
+    if (e.status === 409) await refreshPayOrClose();
+  } finally { payBusy = false; }
 }
 
 function payGroupLegs() {
@@ -1069,12 +1080,16 @@ async function paySplitShare(idx, method) {
   const share = pendingShares?.items[idx];
   if (!share) return;
   if (!navigator.onLine) return toast('Cannot take payment while offline');
+  // One payment at a time: a double tap on a share recorded it twice (N1).
+  if (payBusy) return;
+  payBusy = true;
   try {
     const r = await API.post(`/api/orders/${$('pay-btn').dataset.orderId}/pay`, { method, amount: share.amount });
-    pendingShares.items.splice(idx, 1);
+    pendingShares.items.splice(pendingShares.items.indexOf(share), 1);
     if (r.settled) { closePayModal(); toast('Paid in full'); backToTables(); }
     else { toast(`Paid ${fmt(r.paid)} — ${fmt(r.remaining)} left`); await refreshPayModal(); }
   } catch (e) { toast('Payment failed: ' + e.message); }
+  finally { payBusy = false; }
 }
 
 async function splitEvenlyUI() {
@@ -1164,6 +1179,8 @@ async function toggleSplitItem(id, checked) {
 async function payItems(method) {
   if (!itemSplit?.preview || !itemSplit.selected.size) return;
   if (!navigator.onLine) return toast('Cannot take payment while offline');
+  if (payBusy) return;
+  payBusy = true;
   try {
     const r = await API.post(`/api/orders/${currentOrder.id}/pay`, {
       method, item_ids: [...itemSplit.selected], amount: itemSplit.preview.amount,
@@ -1185,7 +1202,7 @@ async function payItems(method) {
     try { itemSplit.preview = await API.get(`/api/orders/${currentOrder.id}/split?by=items&items=${[...itemSplit.selected].join(',')}`); }
     catch { /* the error already says what is wrong */ }
     renderItemSplit();
-  }
+  } finally { payBusy = false; }
 }
 
 /* ===== DISCOUNT =====

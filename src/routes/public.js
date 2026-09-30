@@ -5,7 +5,7 @@ const { publicH } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
 const { rateLimit } = require('../lib/auth');
 const { buildOrderItems, insertOrder, appendSend, ordersWithItems, ORDERABLE_SQL } = require('../services/orders');
-const { hasPayments } = require('../services/billing');
+const { hasPayments, paidCentsFor, itemIdsPaid } = require('../services/billing');
 const { publish } = require('../lib/events');
 const printing = require('../services/printing');
 const voice = require('../services/voice');
@@ -74,15 +74,35 @@ router.get('/api/t/:token', requireFeature('qr'), publicH(async (req, res) => {
 // The bill as a customer may see it: what they are having, not staff notes
 // or who rang it up. A round waiting for staff shows, marked, and counts in
 // no total (the same rule as the till).
+//
+// Prices and the bill's breakdown are there so the customer can check the
+// bill and split it among friends on their own phone (the split never comes
+// back here: names stay on the phone). A line a "Split by items" share has
+// already paid for says so, and what is left to pay is the bill less what has
+// been paid.
 async function customerBill(orderId) {
   const [o] = await ordersWithItems('WHERE o.id = $1', [orderId]);
   if (!o) return null;
+  const [paidCents, paidLines] = await Promise.all([paidCentsFor(orderId), itemIdsPaid(orderId)]);
+  const total = o.grand_total ?? o.total;
   return {
-    total: o.grand_total ?? o.total,
-    lines: o.items.filter(i => !i.voided).map(i => ({
-      name: i.name, qty: i.qty, from_card: i.from_card ?? null,
-      status: i.held ? 'pending' : (i.round_status || 'sent'),
-    })),
+    total,
+    subtotal: o.subtotal ?? o.total,
+    service_charge: o.service_charge || 0,
+    tax: o.tax || 0,
+    discount: o.discount || 0,
+    paid: cents2rm(paidCents),
+    due: cents2rm(Math.max(0, Math.round(total * 100) - paidCents)),
+    lines: o.items.filter(i => !i.voided).map(i => {
+      const unit = Math.round((i.price + i.mods.reduce((t, m) => t + m.price, 0)) * 100);
+      return {
+        id: i.id, name: i.name, qty: i.qty, from_card: i.from_card ?? null,
+        options: i.mods.map(m => m.name),
+        amount: i.held ? 0 : cents2rm(unit * i.qty),
+        paid: paidLines.has(i.id),
+        status: i.held ? 'pending' : (i.round_status || 'sent'),
+      };
+    }),
   };
 }
 

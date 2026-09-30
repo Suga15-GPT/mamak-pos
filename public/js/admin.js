@@ -418,6 +418,8 @@ function renderTablesSection() {
   }).catch(() => {});
 
   $('qr-print-card').hidden = settings.qr_mode === 'off';
+  // A tag holds one card's own link, so it only makes sense with per-card QR.
+  $('nfc-card').hidden = settings.qr_mode !== 'per_card';
   if (settings.qr_mode === 'shop') {
     $('qr-print-title').textContent = 'Shop poster';
     $('qr-grid').innerHTML = `<div class="qr-card"><img id="qr-img-shop" alt="Shop QR code">
@@ -435,7 +437,8 @@ function renderTablesSection() {
       <div class="qr-number">${c.number}</div>
       <img id="qr-img-${c.id}" alt="QR code for card ${c.number}">
       <div class="qr-url">${esc(c.url)}</div>
-      <div class="qr-actions"><button class="btn small outline" data-action="regenerate-card-qr" data-id="${c.id}">New QR</button></div>
+      <div class="qr-actions"><button class="btn small outline" data-action="copy-card-link" data-id="${c.id}">Copy link</button>
+        <button class="btn small outline" data-action="regenerate-card-qr" data-id="${c.id}">New QR</button></div>
     </div>`).join('') || '<div class="empty">No cards yet.</div>';
   cardsData.forEach(c => {
     API.getBlobUrl(`/api/admin/cards/${c.id}/qr.png`)
@@ -460,7 +463,7 @@ function printQrSheet() {
     html = `<div class="print-cards">${cardsData.map(c => `<div class="print-card-face">
       <div class="print-card-number">${c.number}</div>
       <img src="${esc($('qr-img-' + c.id).dataset.blob)}" alt="">
-      <p>Scan to order more</p></div>`).join('')}</div>`;
+      <p>Scan to order more and see your bill</p></div>`).join('')}</div>`;
   }
   let area = $('print-area');
   if (!area) {
@@ -479,9 +482,24 @@ function printQrSheet() {
 // the old one stops working — the point, when a QR was photographed and abused.
 async function regenerateCardQr(id) {
   const c = cardsData.find(x => x.id === id);
-  if (!c || !confirm(`Make a new QR for Card ${c.number}? The printed Card ${c.number} QR will stop working — reprint it.`)) return;
+  if (!c || !confirm(`Make a new QR for Card ${c.number}? The printed Card ${c.number} QR will stop working — reprint it. If the card has an NFC tag, write the new link to it too.`)) return;
   try { await API.post(`/api/admin/cards/${id}/regenerate-qr`, {}); toast(`Card ${c.number} has a new QR`); refreshAdmin(); }
   catch (e) { toast(e.message); }
+}
+
+/* NFC: a tag on the card holds exactly the link its QR does, so a tap opens
+   the same page. The owner writes it once with a free phone app (NFC Tools);
+   these copy the links to paste there. */
+function copyText(text, done) {
+  if (!navigator.clipboard) return toast('Copying is not available here — select the link and copy it');
+  navigator.clipboard.writeText(text).then(() => toast(done), () => toast('Could not copy'));
+}
+function copyCardLink(id) {
+  const c = cardsData.find(x => x.id === id);
+  if (c) copyText(c.url, `Card ${c.number}'s link is copied — paste it into NFC Tools → Write → Add a record → URL`);
+}
+function copyAllCardLinks() {
+  copyText(cardsData.map(c => `Card ${c.number}: ${c.url}`).join('\n'), `All ${cardsData.length} card links are copied`);
 }
 
 async function regenerateShopQr() {
@@ -670,7 +688,7 @@ async function refreshClearSales() {
     clearPreview = await API.get('/api/admin/sales/clear');
     const p = clearPreview;
     const what = p.rows
-      ? fill(t('clear.what'), { bills: p.bills, amount: fmt(p.total_cents / 100) })
+      ? fill(t(p.bills === 1 ? 'clear.what_one' : 'clear.what'), { bills: p.bills, amount: fmt(p.total_cents / 100) })
       : t('clear.nothing');
     box.innerHTML = `<div class="meta">${esc(what)}</div>`
       + (p.reasons.length ? `<div class="banner warn" style="margin-top:8px">${p.reasons.map(esc).join('<br>')}</div>` : '');
@@ -821,6 +839,8 @@ $('tab-admin').addEventListener('click', e => {
     'save-card-count': saveCardCount,
     'print-qr-sheet': printQrSheet,
     'regenerate-card-qr': () => regenerateCardQr(id),
+    'copy-card-link': () => copyCardLink(id),
+    'copy-all-card-links': copyAllCardLinks,
     'regenerate-shop-qr': regenerateShopQr,
     'save-rates': saveRates,
     'save-restaurant-identity': saveRestaurantIdentity,

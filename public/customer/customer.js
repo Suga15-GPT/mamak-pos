@@ -1,6 +1,7 @@
 import { $, fmt, esc, toast, stateWords } from '../js/state.js';
 import '../js/i18n.js';
 import { initVoice, applyChoice, reopenReview } from './voice.js';
+import { initSplit, refreshSplit } from './split.js';
 
 /* ===== CUSTOMER QR PAGE =====
    Deliberately tiny: a menu, a basket, and honest progress on what the kitchen
@@ -66,6 +67,7 @@ async function start() {
     bill = info.bill || null;
     $('table-name').textContent = tableName;
     $('card-view').style.display = 'none';
+    initSplit({ bill: () => bill, label: tableName, token: tableToken });
     loadRounds();
 
     menu = await fetch('/api/menu').then(r => r.json());
@@ -393,15 +395,30 @@ function renderSuccess(round) {
 function renderMyOrders() {
   const tag = st => `<span class="round-tag ${esc(st)}">${stateWords(st).icon} ${esc(stateWords(st).label)}</span>`;
   if (bill && bill.lines.length) {
+    const row = (label, v) => `<div class="row"><span>${label}</span><span>${v}</span></div>`;
     $('my-orders').innerHTML = `<div class="card" id="card-bill" style="margin-bottom:14px">
       <h3 style="font-size:16px;margin-bottom:10px">Your bill</h3>
       ${bill.lines.map(l => `<div class="cart-line">
         <div><div class="line-name">${l.qty}× ${esc(l.name)}</div>
-          ${l.from_card != null ? `<div class="line-sub">from Card ${esc(String(l.from_card))}</div>` : ''}</div>
-        <div class="line-right">${tag(l.status)}</div>
+          ${l.options?.length ? `<div class="line-sub">${esc(l.options.join(', '))}</div>` : ''}
+          ${l.from_card != null ? `<div class="line-sub">from Card ${esc(String(l.from_card))}</div>` : ''}
+          ${l.paid ? '<div class="line-sub paid">✓ Paid</div>' : ''}</div>
+        <div class="line-right">${l.status === 'pending' ? '' : `<span>${fmt(l.amount)}</span>`}${tag(l.status)}</div>
       </div>`).join('')}
-      <div class="totals"><div class="row grand"><span>Total so far</span><span>${fmt(bill.total)}</span></div></div>
+      <div class="totals">
+        ${bill.subtotal !== bill.total ? row('Subtotal', fmt(bill.subtotal)) : ''}
+        ${bill.service_charge ? row('Service charge', fmt(bill.service_charge)) : ''}
+        ${bill.tax ? row('SST', fmt(bill.tax)) : ''}
+        ${bill.discount ? row('Discount', '−' + fmt(bill.discount)) : ''}
+        <div class="row grand"><span>Total so far</span><span>${fmt(bill.total)}</span></div>
+        ${bill.paid ? row('Already paid', fmt(bill.paid)) + `<div class="row grand"><span>Left to pay</span><span>${fmt(bill.due)}</span></div>` : ''}
+      </div>
+      <div class="bill-actions">
+        <button class="btn outline" data-action="open-split">🧮 Split the bill</button>
+        <button class="btn" data-action="pay-now" aria-disabled="true" aria-describedby="pay-soon">Pay now<span class="soon" id="pay-soon">Coming soon</span></button>
+      </div>
     </div>`;
+    refreshSplit();
     return;
   }
   if (!myRounds.length) { $('my-orders').innerHTML = ''; return; }

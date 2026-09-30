@@ -31,6 +31,14 @@ async function withDb(fn) {
     if (prevUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = prevUrl;
     if (prevOptions === undefined) delete process.env.PGOPTIONS; else process.env.PGOPTIONS = prevOptions;
     await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+    // Clear sales data makes archive_YYYYMMDD_HHMMSS schemas beside the one
+    // it cleared, labelled with that schema's name in their comment. Drop
+    // this test's own, and only those: other test files run at the same time.
+    const archives = (await admin.query(
+      `SELECT nspname FROM pg_namespace
+        WHERE nspname LIKE 'archive\\_%' AND obj_description(oid, 'pg_namespace') LIKE $1`,
+      [`%cleared from ${schema};%`])).rows;
+    for (const a of archives) await admin.query(`DROP SCHEMA "${a.nspname}" CASCADE`);
     await admin.end();
   }
 }

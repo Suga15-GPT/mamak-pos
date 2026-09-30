@@ -43,6 +43,8 @@ module.exports = defineConfig({
       VOICE_ORDERING: '1',
       VOICE_MODE: 'mock',
       VOICE_MOCK_TRANSCRIPT: 'roti canai dua, teh tarik satu',
+      // Expenses: a receipt photo or voice note is "read" by a fixed answer.
+      EXPENSE_AI_MODE: 'mock',
     },
   },
 });

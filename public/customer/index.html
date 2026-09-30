@@ -29,6 +29,34 @@
   .item-btn .nm { font-weight:700; font-size:15.5px; line-height:1.3; }
   .item-btn .customisable { font-size:11px; color:var(--brand-ink); font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
   .item-btn .pr { font-size:17px; font-weight:800; color:var(--text); margin:0; flex-shrink:0; letter-spacing:-.02em; }
+  /* The bill, and splitting it */
+  .bill-actions { display:flex; gap:8px; margin-top:12px; }
+  .bill-actions .btn { flex:1; }
+  .bill-actions .btn[aria-disabled="true"] { opacity:1; background:var(--surface-2); color:var(--text-2); border-color:var(--border); cursor:not-allowed; }
+  .bill-actions .soon { display:block; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
+  .cart-line .line-sub.paid { color:var(--ok-ink); font-weight:700; }
+  .split-modes { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+  .split-modes .chip, .split-who .chip { cursor:pointer; min-height:36px; color:var(--text-2); }
+  .split-modes .chip.on, .split-who .chip.on { color:var(--brand-ink); }
+  .split-due { font-size:15px; margin-bottom:12px; color:var(--text); }
+  .split-add { display:flex; gap:8px; margin-bottom:10px; }
+  .split-add input { flex:1; color:var(--text); }
+  .split-people { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
+  .split-people .chip { color:var(--brand-ink); }
+  .split-x { background:none; border:none; color:var(--brand-ink); font-size:16px; line-height:1; padding:0 2px; min-height:0; cursor:pointer; }
+  .split-lines { display:flex; flex-direction:column; gap:10px; margin-bottom:12px; max-height:38vh; overflow:auto; }
+  .split-line { border:1px solid var(--border); border-radius:12px; padding:10px; }
+  .split-line-head { display:flex; justify-content:space-between; gap:8px; font-weight:700; margin-bottom:6px; color:var(--text); }
+  .split-who { display:flex; flex-wrap:wrap; gap:6px; }
+  .split-ways { display:flex; align-items:center; gap:12px; margin-bottom:12px; color:var(--text); }
+  .split-ways b { font-size:22px; min-width:28px; text-align:center; }
+  .split-results { border-top:1px solid var(--border); padding-top:8px; margin-bottom:8px; }
+  .split-row { display:flex; justify-content:space-between; padding:6px 0; font-size:15px; color:var(--text); }
+  .split-row b { font-variant-numeric:tabular-nums; }
+  .split-row.warn { color:var(--danger); }
+  .split-note { margin-top:6px; }
+  .split-actions { flex-wrap:wrap; }
+
   .item-btn .add {
     width:34px; height:34px; border-radius:11px; background:var(--brand); color:var(--on-accent);
     display:flex; align-items:center; justify-content:center;
@@ -211,6 +239,24 @@
       <button class="btn ghost block" style="margin-top:8px" data-action="voice-close" data-i18n="voice.cancel">Cancel</button>
     </div>
 
+  </div>
+</div>
+
+<!-- Split the bill: worked out on this phone only; nothing is sent. -->
+<div id="split-modal" class="modal-bg" role="dialog" aria-modal="true" aria-labelledby="split-title">
+  <div class="modal">
+    <h3 id="split-title">Split the bill</h3>
+    <div class="split-modes" role="group" aria-label="How to split">
+      <button class="chip on" data-split-mode="items" aria-pressed="true">By what each person had</button>
+      <button class="chip" data-split-mode="even" aria-pressed="false">Evenly</button>
+    </div>
+    <div id="split-body"></div>
+    <p class="meta split-note">Worked out on this phone only — names are not sent to the restaurant. Cash is rounded to the nearest 5 sen at the counter.</p>
+    <div class="modal-actions split-actions">
+      <button class="btn ghost" data-action="split-close">Close</button>
+      <button class="btn outline" data-action="split-copy">Copy</button>
+      <button class="btn" data-action="split-share">Share on WhatsApp</button>
+    </div>
   </div>
 </div>
 
