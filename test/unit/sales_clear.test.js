@@ -172,6 +172,36 @@ test('Clear sales data is admin only, and needs the admin\'s own PIN and the wor
   });
 });
 
+/* The admin's PIN is counted before anything is awaited, as at login: from a
+   till left logged in, 25 wrong PINs at once get exactly five checks, and a
+   right PIN racing them spends none. */
+test('race: 25 wrong PINs at once on Clear sales data — exactly 5 are checked and the other 20 get 429, and a right PIN racing them spends none: 20 runs', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    await setup(base, { shift: false });
+    const { hashPin } = require('../../src/lib/auth');
+    const tally = rs => rs.reduce((t, r) => ({ ...t, [r.status]: (t[r.status] || 0) + 1 }), {});
+    let rightIn = 0;
+    let rightLockedOut = 0;
+    for (let i = 0; i < 20; i++) {
+      // The limit is per admin, so each run is a different one.
+      const name = `Owner ${i}`;
+      await db.query("INSERT INTO users (name, role, pin_hash) VALUES ($1, 'admin', $2)", [name, hashPin('7392')]);
+      const a = { h: headers(await login(base, name, '7392')) };
+      const [right, wrong] = await race(i,
+        () => clear(base, a, { pin: '7392', confirm: 'CLEAR' }),
+        () => Promise.all(Array.from({ length: 25 }, () => clear(base, a, { pin: '0000', confirm: 'CLEAR' }))));
+      assert.deepEqual(tally(wrong), { 403: 5, 429: 20 }, `run ${i}: exactly five wrong PINs checked`);
+      // Let in, the right PIN finds nothing to clear; after the fifth wrong one it waits.
+      assert.ok([409, 429].includes(right.status), `run ${i}: the right PIN got ${right.status}`);
+      if (right.status === 409) rightIn++; else rightLockedOut++;
+      assert.equal((await clear(base, a, { pin: '7392', confirm: 'CLEAR' })).status, 429, `run ${i}: that admin waits`);
+    }
+    assert.ok(rightIn > 0 && rightLockedOut > 0, `right PIN in: ${rightIn} runs; locked out: ${rightLockedOut} runs`);
+    assert.equal((await db.query("SELECT count(*)::int n FROM audit_log WHERE action = 'sales.clear'")).rows[0].n, 0, 'nothing was cleared');
+  });
+});
+
 test('Clear sales data is refused while a bill, a shift or a kitchen ticket is open — one sentence each — and when there is nothing to clear', async () => {
   await withDb(async db => {
     const base = await startApp();

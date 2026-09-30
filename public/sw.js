@@ -12,7 +12,9 @@
 // which card mode shipped separately with a different shell.
 // v7: Combine merges bills, split by items, the folded pay panel, and Clear
 // sales data — pos.js, admin.js and index.html all changed together.
-const CACHE_VERSION = 'v7';
+// v8: the login screen no longer arrives filled in with Admin / 1234. A till
+// that cached v7's index.html would otherwise keep showing it.
+const CACHE_VERSION = 'v8';
 const CACHE_NAME = `mamak-pos-${CACHE_VERSION}`;
 
 const SHELL_URLS = [

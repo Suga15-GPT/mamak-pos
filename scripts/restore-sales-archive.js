@@ -4,7 +4,8 @@
      node scripts/restore-sales-archive.js --list
      node scripts/restore-sales-archive.js archive_20260930_220501
 
-   Uses DATABASE_URL, like the app. One transaction under the bill lock: it
+   Connects as the app does: DATABASE_URL, or else the PG* variables
+   docker-compose.yml gives it. One transaction under the bill lock: it
    restores everything or nothing, and refuses an archive already restored. */
 const { pool } = require('../src/db');
 const { restoreArchive } = require('../src/services/sales_archive');

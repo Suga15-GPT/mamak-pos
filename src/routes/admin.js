@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireRole, hashPin, pinPolicyError, verifyPin, rateLimitExceeded, rateLimitRecord } = require('../lib/auth');
+const { requireRole, hashPin, pinPolicyError, verifyPin, pinAttempt } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
 const { rm2cents } = require('../lib/money');
 const { writeAudit } = require('../services/orders');
@@ -533,15 +533,18 @@ const CLEAR_WINDOW_MS = 10 * 60 * 1000;
 router.post('/api/admin/sales/clear', adminOnly, awaitH(async (req, res) => {
   if (String(req.body?.confirm ?? '').trim() !== 'CLEAR') return res.status(400).json({ error: 'Type CLEAR to confirm.' });
   // A session left open on a till must not become a way to guess the admin's
-  // PIN: five wrong PINs and it waits. Like login, a right one costs nothing.
-  const key = `clear-sales:${req.user.id}`;
-  if (rateLimitExceeded(key, CLEAR_TRIES, CLEAR_WINDOW_MS)) {
-    return res.status(429).json({ error: 'Too many wrong PINs. Wait ten minutes and try again.' });
-  }
-  const me = (await pool.query('SELECT pin_hash FROM users WHERE id = $1', [req.user.id])).rows[0];
-  if (!me || !verifyPin(String(req.body?.pin ?? ''), me.pin_hash)) {
-    rateLimitRecord(key, CLEAR_WINDOW_MS);
-    return res.status(403).json({ error: 'That PIN is not right.' });
+  // PIN: five wrong PINs and it waits. Like login, a right one costs nothing,
+  // and the attempt is counted before anything is awaited (pinAttempt).
+  const attempt = await pinAttempt(`clear-sales:${req.user.id}`, CLEAR_TRIES, CLEAR_WINDOW_MS);
+  if (!attempt) return res.status(429).json({ error: 'Too many wrong PINs. Wait ten minutes and try again.' });
+  try {
+    const me = (await pool.query('SELECT pin_hash FROM users WHERE id = $1', [req.user.id])).rows[0];
+    if (!me || !verifyPin(String(req.body?.pin ?? ''), me.pin_hash)) {
+      attempt.wrong();
+      return res.status(403).json({ error: 'That PIN is not right.' });
+    }
+  } finally {
+    attempt.release();
   }
   const r = await salesArchive.clearSales({ userId: req.user.id });
   // Every screen showing a figure reloads it: the floor, the Sales screen,

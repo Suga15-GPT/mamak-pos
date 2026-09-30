@@ -12,7 +12,12 @@ repository's git history — assume they are compromised, permanently:
   `docker compose up -d db` followed by `docker compose exec db psql -U
   postgres -c "ALTER USER postgres WITH PASSWORD '<new password>';"`, then
   update `.env`'s `POSTGRES_PASSWORD` to match and `docker compose up -d`
-  the rest.
+  the rest. Any characters work, `/ + = # @` included: the app is given the
+  password on its own (`PGPASSWORD`), never inside a URL. In `.env`, put it
+  in single quotes if it has a `$` or a space. If it has a `$` or a quote,
+  set it in the database with `docker compose exec db psql -U postgres` and
+  then `\password postgres` at the prompt (it asks twice and needs no
+  quoting) instead of the `ALTER USER` command.
 - **`ADMIN_PIN`**: this env var only seeds the *first* admin account on a
   brand-new database — changing it does nothing to an already-seeded one.
   Reset the live admin PIN instead: see "Reset an admin PIN" below. As of
@@ -46,9 +51,10 @@ cannot be set from plain SQL. The supported path is:
    button) against the locked-out admin.
 2. If truly no admin account is reachable at all, stop the app
    (`docker compose stop app`), run a one-off Node script against the same
-   `DATABASE_URL` that calls `hashPin()` from `src/lib/auth.js` and writes
-   the result directly to that user's `pin_hash`, with `must_change_pin =
-   true`, then restart the app.
+   database (`docker compose run --rm app node -e '…'` runs it with the
+   app's own connection settings) that calls `hashPin()` from `src/lib/auth.js`
+   and writes the result directly to that user's `pin_hash`, with
+   `must_change_pin = true`, then restart the app.
 
 Either way, an admin PIN reset writes an `audit_log` row
 (`user.pin_reset`) — check `GET /api/admin/audit` afterward if you want to
@@ -229,12 +235,19 @@ setting this up, and periodically afterwards.
 
 ## BASE_URL and the table QR codes
 
-`BASE_URL` is the address a **customer's phone** must be able to reach. It is
-what gets encoded into every printed QR sticker.
+`BASE_URL` is the address a **customer's phone** must be able to reach: this
+PC's LAN address, e.g. `http://192.168.x.x:3000` (on Windows, `ipconfig`
+shows it as the IPv4 Address). It is what gets encoded into every printed QR
+sticker and every NFC tag. Give this PC a fixed address in the router
+(a DHCP reservation) so it never changes under the stickers.
 
-If it is unset, QR links are guessed from whichever address the admin browser
-used — which is usually `localhost`, and a `localhost` QR is silently useless
-on every phone in the restaurant.
+Never `localhost`: on a phone, `localhost` is the phone itself, so a
+`localhost` QR is silently useless on every phone in the restaurant. With
+`docker compose`, a `BASE_URL` left out of `.env` becomes
+`http://localhost:3000`, and in production the app then logs a
+`WARNING: BASE_URL is …` line every time it starts (for `127.0.0.1` too).
+Unset outside docker compose, QR links are guessed from whichever address the
+admin browser used.
 
 **Admin → Tables & QR** shows a red banner when the value could not work, and
 **Admin → System** reports the same thing under *QR public address*. Both check
@@ -242,7 +255,7 @@ the value in use at that moment, so fixing `BASE_URL` and restarting turns them
 green immediately.
 
 After changing `BASE_URL`, reprint the stickers: **Admin → Tables & QR → Print**
-on each table.
+on each table. Rewrite the NFC tags too.
 
 ---
 

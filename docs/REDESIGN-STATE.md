@@ -467,7 +467,8 @@ docs/RUNBOOK.md "Restore cleared sales data".
 
 - **Admin only**, the admin's **own PIN typed again** and the word **CLEAR**
   (exact). Five wrong PINs in ten minutes and it waits (429); a right PIN
-  costs nothing, like login.
+  costs nothing, like login. Each attempt is counted before anything is
+  awaited (`pinAttempt`), so 25 wrong PINs at once get exactly five checks.
 - **Refused (409), one sentence each**, while any bill is open ("2 bills are
   still open (Card 1, Card 2). Take payment on them or cancel them first."),
   a shift is open, or the kitchen board has a ticket to finish (the board's
@@ -533,6 +534,35 @@ docs/RUNBOOK.md "Restore cleared sales data".
   a share refunded in full frees them again. Cash 5-sen rounding happens only
   on the payment that settles the bill, as before. Not for a card on a
   combined bill from before (409).
+
+## Security follow-ups (day-one fixes)
+
+Found by the reviewer on main after PR #18.
+
+- **The login screen arrives empty.** `index.html` no longer fills in
+  Admin / 1234; the service worker cache moved to `v8` so a till holding
+  `v7`'s copy drops it.
+- **The wrong-PIN limit counts before it awaits.** The check ran before the
+  user lookup's await and the failure was recorded after it, so 25 wrong
+  PINs at once were all checked. `pinAttempt()` (`lib/auth.js`) takes the
+  attempt's place in the same synchronous step as the check; a wrong PIN
+  keeps it for ten minutes, a right one (or one never checked) gives it back.
+  While every place left is held by an attempt still being checked, a
+  newcomer waits for one to settle instead of being refused, so 25 right PINs
+  at once all get in. Login is 10 per address; Clear sales data's PIN re-check
+  (this PR's, same bug) is 5 per admin.
+- **Any database password works.** `docker-compose.yml` built
+  `postgres://postgres:${POSTGRES_PASSWORD}@db…`, and pg's URL parser refuses
+  `/ # ?` ("Invalid URL") and quietly decodes `%41` to `A`. The app service now
+  gets `PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE`, like the backup service,
+  and pg reads the password as it is. `src/db.js` still uses `DATABASE_URL`
+  when it is set, so an install that sets one is unchanged; for a compose
+  install the password is the same string, handed over differently.
+- **BASE_URL.** `.env.example` says it must be this PC's LAN address
+  (`http://192.168.x.x:3000`), because QR codes and NFC tags contain it, and
+  leaves it empty to fill in. In production, once listening, the app logs a
+  `WARNING: BASE_URL is …` line when it is localhost or another loopback
+  address (compose's default when `.env` leaves it out).
 
 ## Migrations added
 
@@ -607,6 +637,28 @@ archives are schemas made at run time.
   is no longer wanted.
 
 ## Latest test state
+
+After the security follow-ups (on `62b0b25`): `npm test` 233/233 — 9 new,
+8 of them failing on `62b0b25`; the ninth checks that an install setting
+`DATABASE_URL` is unchanged, so it passes on both.
+`test/unit/login_limit.test.js` (3): 40 runs of 25 wrong PINs from one
+address raced by 3 right ones (the right ones sent first, so they are still
+being checked as the wrong ones arrive) — exactly 10 checked and 15 × 429 in
+every run, right PINs both let in and locked out across the runs, that
+address then locked and another not; 5 runs of 25 right PINs at once, all
+let in, after which 10 of 25 wrong ones are still checked; the login fields
+empty. `sales_clear.test.js` (+1): 20 runs of 25 wrong PINs on Clear sales
+data raced by the right one — exactly 5 checked. `deploy_config.test.js`
+(5): the app migrates, seeds and serves a login on the password
+`Xk3/Qm9+Tz4=#@`, as a role on the test server, with the connection settings
+docker-compose.yml hands over (on `62b0b25` they are a URL, and pg answers
+"Invalid URL"); `DATABASE_URL` still wins over the `PG*` variables; compose
+gives the app `PGPASSWORD` and no URL carries the password; `.env.example`'s
+BASE_URL wording; the boot warning in production for localhost, 127.0.0.1,
+[::1] and 0.0.0.0, and none for a LAN address or a development boot. A
+limiter that counts first but refuses while every place is held fails both
+login tests (8 of 25 wrong ones checked in the race; 11 of 25 right ones let
+in). Playwright 22/22, unchanged.
 
 After the day-one fixes (on `68dc228`): `npm test` 224/224 — 31 new.
 `test/unit/merge.test.js` (15): a merge moves rounds, lines and tickets and

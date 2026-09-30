@@ -3,6 +3,7 @@ const path = require('path');
 const { pool } = require('./db');
 const { seed } = require('./seed');
 const { SESSION_TTL, verifyPin } = require('./lib/auth');
+const { localBaseUrlWarning } = require('./lib/baseurl');
 const authRoutes = require('./routes/auth');
 const publicRoutes = require('./routes/public');
 const orderRoutes = require('./routes/orders');
@@ -88,7 +89,11 @@ async function boot(retries = 15) {
         .catch(e => console.error('session cleanup failed:', e.message));
     }, 60 * 60 * 1000);
     const port = process.env.PORT || 3000;
-    app.listen(port, () => console.log(`POS API + static on :${port}`));
+    app.listen(port, () => {
+      console.log(`POS API + static on :${port}`);
+      const warning = process.env.NODE_ENV === 'production' && localBaseUrlWarning();
+      if (warning) console.warn(warning);
+    });
   } catch (e) {
     if (retries <= 0) { console.error('Failed to boot:', e); process.exit(1); }
     console.log('DB not ready, retrying in 2s…');
