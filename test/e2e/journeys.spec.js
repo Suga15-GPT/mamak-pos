@@ -638,6 +638,80 @@ test('combine: Card 4\'s items join Card 1\'s bill, and Card 4 starts a new grou
   expect(merged.items).toEqual([]);
 });
 
+/* Review D1: a Combine made on another till while this pay screen is open.
+   The screen catches up with the new total before any money is taken, and
+   the server refuses a pay-in-full at a total the till no longer shows. */
+async function openByApi(request, csrfToken, number, itemName) {
+  const cards = await request.get('/api/admin/cards').then(r => r.json());
+  const menu = await request.get('/api/menu').then(r => r.json());
+  const r = await request.post('/api/orders', {
+    ...withCsrf(csrfToken),
+    data: { card_id: cards.find(c => c.number === number).id, items: [{ item_id: menu.items.find(i => i.name === itemName).id, qty: 1 }] },
+  });
+  expect(r.status()).toBe(201);
+  return (await r.json()).id;
+}
+
+test('a Combine on another till while the pay screen is open: the screen shows the new total before any money is taken', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  for (const n of [31, 32]) await freeCard(request, csrfToken, n);
+  await ensureShift(request, csrfToken);
+  const c31 = await openByApi(request, csrfToken, 31, 'Roti Canai');
+  const c32 = await openByApi(request, csrfToken, 32, 'Mee Goreng Mamak');
+
+  page.on('dialog', dialog => dialog.accept());
+  await login(page);
+  await openCard(page, 31);
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
+  await expect(page.locator('#pay-details')).toContainText('RM 2.12');
+
+  const m = await request.post(`/api/orders/${c31}/merge`, { ...withCsrf(csrfToken), data: { from_order_id: c32 } });
+  expect(m.status()).toBe(200);
+  await expect(page.locator('#toast')).toContainText('The bill changed on another till — it is now RM 11.13');
+  await expect(page.locator('#pay-details')).toContainText('RM 11.13');
+
+  // A till that still sends the old total is refused, and nothing is taken.
+  const stale = await request.post(`/api/orders/${c31}/pay`, { ...withCsrf(csrfToken), data: { method: 'Cash', expected_due: 2.12 } });
+  expect(stale.status()).toBe(409);
+
+  await page.locator('#pay-modal').getByRole('button', { name: '💵 Cash', exact: true }).click();
+  await expect(page.locator('#pos-tables')).toBeVisible();
+  const paid = (await request.get('/api/orders?mode=recent').then(r => r.json())).find(o => o.id === c31);
+  expect(paid.status).toBe('paid');
+  expect(paid.payments.map(p => p.amount)).toEqual([11.15]);
+});
+
+/* Review D3: an add-on queued offline for a card that another till combines
+   meanwhile can't land. It is listed on the till as not sent, with the
+   reason, until someone taps OK — never silently dropped. */
+test('an add-on for a card combined meanwhile is listed as not sent, never silently lost', async ({ page, context, request }) => {
+  const csrfToken = await apiLogin(request);
+  for (const n of [33, 34]) await freeCard(request, csrfToken, n);
+  const c33 = await openByApi(request, csrfToken, 33, 'Roti Canai');
+  const c34 = await openByApi(request, csrfToken, 34, 'Roti Telur');
+
+  await login(page);
+  await openCard(page, 33);
+  await context.setOffline(true);
+  await addItem(page, 'Minuman Panas', 'Teh Tarik');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#offline-banner')).toContainText('1 order');
+
+  const m = await request.post(`/api/orders/${c34}/merge`, { ...withCsrf(csrfToken), data: { from_order_id: c33 } });
+  expect(m.status()).toBe(200);
+  await context.setOffline(false);
+
+  const box = page.locator('#outbox-failed');
+  await expect(box).toBeVisible();
+  await expect(box).toContainText('Not sent — Card 33');
+  await expect(box).toContainText('1× Teh Tarik');
+  await expect(box).toContainText('Card 34');
+  await box.getByRole('button', { name: 'OK' }).click();
+  await expect(box).toBeHidden();
+  const open = await request.get('/api/orders').then(r => r.json());
+  expect(open.find(o => o.id === c34).items.map(i => i.name).sort()).toEqual(['Roti Canai', 'Roti Telur']);
+});
+
 /* Clear sales data: with every bill, shift and kitchen ticket finished, the
    owner clears from Admin -> System with their PIN and the word CLEAR, and
    the Sales screen reads RM0. Running the wizard again first changes settings

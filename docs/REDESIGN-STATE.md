@@ -564,6 +564,40 @@ Found by the reviewer on main after PR #18.
   `WARNING: BASE_URL is …` line when it is localhost or another loopback
   address (compose's default when `.env` leaves it out).
 
+## Review fixes (day-one fixes, review D1–D7)
+
+- **D1 — pay in full sends the total it showed.** 💵 Cash / 💳 Card sent no
+  amount, so a Combine landing from another till while the pay screen was
+  open was charged at a total nobody saw. The till now sends `expected_due`
+  (its "To pay"); `addPayment` refuses a changed balance with 409 and records
+  nothing. An open pay screen re-reads the bill on a live update and repaints
+  only when what it would charge changed (typed amounts survive other
+  traffic), with a toast; a bill closed or combined away closes the screen.
+- **D2 — every admin-PIN check is limited.** `/api/discounts/authorize`
+  (reachable from any staff session) now uses `pinAttempts()`: 5 wrong per
+  staff account and 10 per admin name across tills in ten minutes, counted
+  before anything is awaited, and inactive admins are refused.
+  `/api/me/pin` checks the current PIN under a 5-per-account limit. Both answer
+  a wrong PIN with 403, not 401 — the till treats 401 as "session expired" and
+  logged the person out on a typo.
+- **D3 — nothing vanishes from the till.** The add-on route checks the
+  idempotency key before the closed-bill refusal (a replay of a batch that
+  landed before a merge is "done"); the outbox keeps the server's reason on a
+  failed entry, and the till lists failed entries until acknowledged.
+- **D4 — replays after Clear sales data.** Clearing copies every archived
+  idempotency key into `archived_idempotency_keys` (migration 020, a kept
+  table); the create and add-on routes answer a key found there as done.
+  Restoring an archive removes its keys from that table.
+- **D5 — restore after a deletion.** For a foreign key whose own ON DELETE is
+  SET NULL (`order_items.item_id`, `print_jobs.printer_id`) a missing target is
+  nulled on restore and reported as `unlinked`; any other missing target is
+  refused by name before anything is written.
+- **D6** — the stream subscribes to `sales.cleared`.
+- **D7** — Separate settles a bill that comes to RM0 (every line voided), as a
+  void to zero does anywhere else.
+- **P4** — Send marks its lines before the outbox write is awaited, so a
+  second Send in the same instant finds nothing new.
+
 ## Migrations added
 
 None in V2. Speak to Order needed no schema change — it produces the same rows
@@ -583,8 +617,9 @@ status (status check, both one-open-order indexes, and the 015/017 trigger
 function replaced with `'merged'` as closed and `merged_into_order_id`
 frozen), `orders.merged_into_order_id`, `order_sends.merged_from_card_id /
 merged_from_order_id / merged_from_seq_no / merged_at`, and `payments.item_ids`.
-No existing row is rewritten. Clear sales data needs no migration: its
-archives are schemas made at run time.
+No existing row is rewritten. Clear sales data needs no migration for its
+archives, which are schemas made at run time; its review fix added
+`020_archived_idempotency_keys.sql` (one new table, forward-only).
 
 ## Files materially changed in V2
 
@@ -629,14 +664,32 @@ archives are schemas made at run time.
   another card's items keeps each round labelled with the card it was first
   ordered on; "Separate Card 4" then returns Card 4's own rounds, and the
   other card's go back with "Separate Card 7" — not the whole chain at once.
-- **A till's queued add-on to a bill merged away fails visibly** (409, into
-  the outbox's failed list) rather than following the merge; re-add it on the
-  bill it went to.
+- **A till's queued add-on to a bill merged away is refused, not followed.**
+  The till lists it in red at the top — "Not sent — Card 4: 1× Teh Tarik",
+  with the server's reason ("…combined into Card 1") — until someone taps OK;
+  re-add it on the bill it went to. An add-on that had in fact landed before
+  the merge replays as done (the idempotency key is checked first).
 - **Clear sales data keeps archives in the live database.** They are schemas
   beside `public`, included in `pg_dump` backups; drop one (runbook) when it
   is no longer wanted.
 
 ## Latest test state
+
+After the review fixes D1–D7 (on `bf15f66`): `npm test` 244/244 — 11 new in
+`test/unit/day_one_review.test.js`, all 11 failing on `bf15f66`: a stale
+pay-in-full refused with nothing recorded, and 40 runs of Combine vs a
+pay-in-full carrying the shown total (money taken always equals what was
+shown; both orderings seen); the admin-PIN limit per staff account and per
+admin, a 403 that keeps the session, inactive admins refused, 40 runs of 25
+simultaneous wrong PINs getting exactly 5 checks; the change-my-PIN limit; an
+add-on replayed after a merge answered as done and a new one refused naming
+the card; the failed list on the till; create and add-on replays after Clear
+sales data answered as done with no bill or ticket opened, then a restore;
+a restore after deleting a menu item and a printer; the `sales.cleared`
+subscription; Separate settling an all-voided card. Playwright 24/24, 2 new:
+the pay screen catching up with a Combine from another till before Cash is
+tapped (RM 2.12 → RM 11.13, Cash RM 11.15 recorded), and an offline add-on for
+a card combined meanwhile listed as "Not sent — Card 33" until OK.
 
 After the security follow-ups (on `62b0b25`): `npm test` 233/233 — 9 new,
 8 of them failing on `62b0b25`; the ninth checks that an install setting

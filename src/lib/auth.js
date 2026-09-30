@@ -154,6 +154,18 @@ async function pinAttempt(key, max, windowMs) {
   }
 }
 
+// Several limits at once (e.g. per staff account and per admin): each is
+// taken in turn and all settle together. Null as soon as any one is spent.
+async function pinAttempts(limits, windowMs) {
+  const held = [];
+  for (const [key, max] of limits) {
+    const a = await pinAttempt(key, max, windowMs);
+    if (!a) { held.forEach(h => h.release()); return null; }
+    held.push(a);
+  }
+  return { wrong: () => held.forEach(h => h.wrong()), release: () => held.forEach(h => h.release()) };
+}
+
 const rlSweepTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, arr] of rl) {
@@ -168,6 +180,6 @@ rlSweepTimer.unref();
 
 module.exports = {
   SESSION_TTL, hashPin, verifyPin, pinPolicyError, requireRole,
-  rateLimit, pinAttempt,
+  rateLimit, pinAttempt, pinAttempts,
   parseCookies, setSessionCookie, clearSessionCookie, csrfOk,
 };

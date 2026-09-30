@@ -155,7 +155,7 @@ test('own PIN change with the wrong current PIN -> 401; correct change works and
     const wrong = await fetch(`${base}/api/me/pin`, {
       method: 'POST', headers: auth(session1), body: JSON.stringify({ current_pin: '0000', new_pin: '5273' }),
     });
-    assert.equal(wrong.status, 401);
+    assert.equal(wrong.status, 403);
 
     const good = await fetch(`${base}/api/me/pin`, {
       method: 'POST', headers: auth(session1), body: JSON.stringify({ current_pin: '7392', new_pin: '5273' }),

@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const { pool } = require('../db');
-const { requireRole, verifyPin } = require('../lib/auth');
+const { requireRole, verifyPin, pinAttempts } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
 const { cents2rm, rm2cents } = require('../lib/money');
 const { buildOrderItems, insertOrder, appendSend, ordersWithItems, writeAudit } = require('../services/orders');
@@ -97,6 +97,9 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
   if (idemKey) {
     const existing = await pool.query('SELECT id FROM orders WHERE idempotency_key = $1', [idemKey]);
     if (existing.rows[0]) return res.status(200).json({ id: existing.rows[0].id });
+    // Landed before a Clear sales data: answered as done, never re-opened (D4).
+    const archived = await pool.query("SELECT order_id FROM archived_idempotency_keys WHERE key = $1 AND kind = 'order'", [idemKey]);
+    if (archived.rows[0]) return res.status(200).json({ id: archived.rows[0].order_id, archived: true });
   }
 
   const parsed = await buildOrderItems(pool, items);
@@ -143,8 +146,22 @@ router.post('/api/orders', requireRole('admin', 'staff'), awaitH(async (req, res
    catching a concurrent-retry race on) line 0's derived key is enough to know
    the whole batch already landed. */
 router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async (req, res) => {
+  // A replay of a batch that already landed answers as it did the first time,
+  // whatever has happened to the bill since: paid, combined into another card
+  // (review D3), or moved out by Clear sales data (D4). Checked before the
+  // bill is even looked up: otherwise a till whose first answer was lost is
+  // told its items failed when they are in fact on the bill.
+  const idemKey = req.headers['idempotency-key'] || null;
+  if (idemKey) {
+    const existing = await pool.query(
+      `SELECT 1 FROM order_items WHERE idempotency_key = $1
+       UNION ALL SELECT 1 FROM archived_idempotency_keys WHERE key = $1 AND kind = 'item'`, [`${idemKey}:0`]);
+    if (existing.rows[0]) return res.json({ ok: true });
+  }
+
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0]) return res.status(400).json({ error: 'order closed' });
+
   if (isClosed(o.rows[0].status)) {
     const e = await closedBillError(pool, o.rows[0], 'order closed', 400);
     return res.status(e.status).json({ error: e.message });
@@ -152,12 +169,6 @@ router.post('/api/orders/:id/items', requireRole('admin', 'staff'), awaitH(async
   // Once any payment is recorded against the order, its total is being settled —
   // adding more lines would make what was just paid for wrong.
   if (await hasPayments(o.rows[0].id)) return res.status(409).json({ error: 'order has a payment recorded; cannot add items' });
-
-  const idemKey = req.headers['idempotency-key'] || null;
-  if (idemKey) {
-    const existing = await pool.query('SELECT 1 FROM order_items WHERE idempotency_key = $1', [`${idemKey}:0`]);
-    if (existing.rows[0]) return res.json({ ok: true });
-  }
 
   const parsed = await buildOrderItems(pool, req.body.items);
   let result;
@@ -405,15 +416,17 @@ router.post('/api/orders/:id/separate', requireRole('admin', 'staff'), requireFe
   res.json({ ok: true, ...r });
 }));
 
-/* One payment leg. Body: { method, amount?, tendered?, item_ids? } — amount (RM)
+/* One payment leg. Body: { method, amount?, tendered?, item_ids?, expected_due? } — amount (RM)
    defaults to the full remaining balance, so the old "click a method to pay in
    full" flow keeps working unchanged. tendered (RM, cash only) drives change due.
    Over-tendering in cash settles the order and returns change; over-amount by
    card/e-wallet is 400. item_ids makes the leg a "Split by items" share: the
    server works out what those lines come to, and `amount`, when given, is what
-   the till showed — a bill that changed since is refused (409), not re-priced. */
+   the till showed — a bill that changed since is refused (409), not re-priced.
+   expected_due (RM) is the "To pay" the till showed; when it no longer matches
+   the balance, the leg is refused (409) the same way. */
 router.post('/api/orders/:id/pay', requireRole('admin', 'staff'), awaitH(async (req, res) => {
-  const { method, amount, tendered, item_ids: itemIds } = req.body || {};
+  const { method, amount, tendered, item_ids: itemIds, expected_due: expectedDue } = req.body || {};
   const o = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!o.rows[0]) return res.status(404).json({ error: 'not found' });
   if (isClosed(o.rows[0].status)) {
@@ -430,6 +443,7 @@ router.post('/api/orders/:id/pay', requireRole('admin', 'staff'), awaitH(async (
     amountCents: amount != null ? rm2cents(amount) : null,
     tenderedCents: tendered != null ? rm2cents(tendered) : null,
     itemIds: itemIds != null ? itemIds : null,
+    expectedDueCents: expectedDue != null ? rm2cents(expectedDue) : null,
     userId: req.user.id,
   });
 
@@ -485,12 +499,31 @@ router.get('/api/orders/:id/split', requireRole('admin', 'staff'), requireFeatur
 
 /* Staff can't self-approve a discount — an admin types their PIN here, which
    returns a short-lived, one-use token authorizing exactly one discount action. */
+const AUTHORIZE_WINDOW_MS = 10 * 60 * 1000;
 router.post('/api/discounts/authorize', requireRole('admin', 'staff'), awaitH(async (req, res) => {
   // Shared by discounts and refunds, so it exists while either one does.
   if (!(await isOn('discounts')) && !(await isOn('refunds'))) return res.status(404).json({ error: 'feature_disabled' });
   const name = String(req.body?.name || '');
-  const u = await pool.query("SELECT id, pin_hash FROM users WHERE name = $1 AND role = 'admin'", [name]);
-  if (!u.rows[0] || !verifyPin(req.body?.pin, u.rows[0].pin_hash)) return res.status(401).json({ error: 'invalid admin credentials' });
+  // Any staff session can reach this, and the PIN it checks is an admin's
+  // login PIN, so it gets the same wrong-PIN limit as login and Clear sales
+  // data (review D2): five wrong per staff account, and ten per admin name
+  // across every till, in ten minutes. Counted before anything is awaited.
+  // A wrong PIN answers 403, not 401: 401 would log the staff member out.
+  const attempts = await pinAttempts([
+    [`admin-pin:user:${req.user.id}`, 5],
+    [`admin-pin:admin:${name.trim().toLowerCase()}`, 10],
+  ], AUTHORIZE_WINDOW_MS);
+  if (!attempts) return res.status(429).json({ error: 'Too many wrong admin PINs. Wait ten minutes and try again.' });
+  let u;
+  try {
+    u = await pool.query("SELECT id, pin_hash FROM users WHERE name = $1 AND role = 'admin' AND active", [name]);
+    if (!u.rows[0] || !verifyPin(req.body?.pin, u.rows[0].pin_hash)) {
+      attempts.wrong();
+      return res.status(403).json({ error: 'invalid admin credentials' });
+    }
+  } finally {
+    attempts.release();
+  }
   const token = crypto.randomBytes(24).toString('hex');
   discountAuthTokens.set(token, { adminId: u.rows[0].id, expires: Date.now() + 2 * 60 * 1000 });
   res.json({ token, expires_in: 120 });

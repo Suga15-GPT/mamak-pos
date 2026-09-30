@@ -3,7 +3,7 @@ const { AppError } = require('../lib/errors');
 const { lockBills } = require('../lib/billlock');
 const { isClosed, openSql, closedBillError } = require('../lib/status');
 const { writeAudit } = require('./orders');
-const { recomputeOrderBill, paidCentsFor } = require('./billing');
+const { recomputeOrderBill, paidCentsFor, settleIfMatchesPaid } = require('./billing');
 const rounds = require('./rounds');
 const features = require('./features');
 
@@ -211,6 +211,7 @@ async function separate(orderId, cardId, userId) {
       'UPDATE order_items SET order_id = $1 WHERE order_id = $2 AND send_id = ANY($3::int[]) RETURNING id',
       [fresh, order.id, sends.map(s => s.id)]);
 
+    await client.query('UPDATE orders SET updated_at = now() WHERE id = $1', [order.id]);
     for (const oid of [order.id, fresh]) {
       const bill = await recomputeOrderBill(oid, client);
       // A discount bigger than what stays on this bill (its own lines voided
@@ -219,8 +220,11 @@ async function separate(orderId, cardId, userId) {
         throw AppError(`This bill's discount is more than what would be left on it without ${label} — remove the discount first.`, 409);
       }
       await rounds.deriveOrderStatus(client, oid);
+      // Neither bill has a payment (refused above), so one whose lines were
+      // all voided comes to RM0 and closes itself, as a void to zero does
+      // anywhere else — never an open RM0 bill staff can't pay or cancel (D7).
+      await settleIfMatchesPaid(client, oid, bill.total_cents, 0, userId, 'separate');
     }
-    await client.query('UPDATE orders SET updated_at = now() WHERE id = $1', [order.id]);
 
     await writeAudit(client, {
       userId, action: 'order.separate', entityType: 'order', entityId: order.id,

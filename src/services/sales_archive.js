@@ -47,7 +47,7 @@ const SALES_TABLES = [
 const KEPT_TABLES = [
   'users', 'sessions', 'categories', 'items', 'modifier_groups', 'modifier_options',
   'item_modifier_groups', 'prep_stations', 'tables', 'cards', 'printers',
-  'settings', 'audit_log', 'schema_migrations',
+  'settings', 'audit_log', 'schema_migrations', 'archived_idempotency_keys',
 ];
 
 const ARCHIVE_NAME = /^archive_\d{8}_\d{6}(_\d+)?$/;
@@ -167,6 +167,16 @@ async function clearSales({ userId }) {
     for (const table of SALES_TABLES) {
       await client.query(`CREATE TABLE ${qualified(archive, table)} AS SELECT * FROM ${qualified(schema, table)}`);
     }
+    // The idempotency keys leave with their rows, but a till may still hold a
+    // write whose answer it never got. Keep a note of each key, so a replay
+    // after the clear is answered "already done" instead of opening the same
+    // food as a new bill (review D4).
+    await client.query(
+      `INSERT INTO ${qualified(schema, 'archived_idempotency_keys')} (key, kind, order_id, archive)
+       SELECT idempotency_key, 'order', id, $1 FROM ${qualified(schema, 'orders')} WHERE idempotency_key IS NOT NULL
+       UNION ALL
+       SELECT idempotency_key, 'item', order_id, $1 FROM ${qualified(schema, 'order_items')} WHERE idempotency_key IS NOT NULL
+       ON CONFLICT (key) DO NOTHING`, [archive]);
     for (const table of SALES_TABLES) {
       const gone = (await client.query(`DELETE FROM ${qualified(schema, table)}`)).rowCount;
       if (gone !== rows[table]) throw AppError(`${table}: archived ${rows[table]} rows but removed ${gone}; nothing was changed`, 500);
@@ -179,6 +189,22 @@ async function clearSales({ userId }) {
     await client.query('COMMIT');
     return { archive, ...sums, rows };
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}
+
+// Single-column foreign keys from a sales table to a kept table (menu,
+// printers, cards, staff...), by column: what they point at and their
+// ON DELETE action ('n' = SET NULL).
+async function keptForeignKeys(client, schema, table) {
+  const rows = (await client.query(
+    `SELECT a.attname AS col, cf.relname AS ref_table, af.attname AS ref_col, c.confdeltype::text AS on_delete
+       FROM pg_constraint c
+       JOIN pg_class r ON r.oid = c.conrelid JOIN pg_namespace n ON n.oid = r.relnamespace
+       JOIN pg_class cf ON cf.oid = c.confrelid
+       JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+       JOIN pg_attribute af ON af.attrelid = c.confrelid AND af.attnum = c.confkey[1]
+      WHERE c.contype = 'f' AND n.nspname = $1 AND r.relname = $2 AND array_length(c.conkey, 1) = 1`,
+    [schema, table])).rows;
+  return new Map(rows.filter(r => !SALES_TABLES.includes(r.ref_table)).map(r => [r.col, r]));
 }
 
 /* Puts an archive back: its rows go into the shop's tables, parents first,
@@ -204,24 +230,47 @@ async function restoreArchive(archive, { userId = null } = {}) {
     }
 
     const restored = {};
+    const unlinked = {};
     for (const table of [...SALES_TABLES].reverse()) {
       if (!tables.has(table)) continue;
-      const cols = (await client.query(
+      const names = (await client.query(
         `SELECT c.column_name FROM information_schema.columns c
           WHERE c.table_schema = $1 AND c.table_name = $3
             AND EXISTS (SELECT 1 FROM information_schema.columns a
                          WHERE a.table_schema = $2 AND a.table_name = $3 AND a.column_name = c.column_name)
-          ORDER BY c.ordinal_position`, [schema, archive, table])).rows.map(r => ident(r.column_name)).join(', ');
+          ORDER BY c.ordinal_position`, [schema, archive, table])).rows.map(r => r.column_name);
+
+      // Rows that point at something the shop has since deleted (a printer, a
+      // menu item, a card...). Where the shop's own foreign key says ON DELETE
+      // SET NULL, the link is dropped here exactly as that delete would have
+      // dropped it on a live row (review D5). Any other such link is refused
+      // up front, naming what is missing, before anything is written.
+      const select = [];
+      const fks = await keptForeignKeys(client, schema, table);
+      for (const col of names) {
+        const fk = fks.get(col);
+        if (!fk) { select.push(`a.${ident(col)}`); continue; }
+        const missing = `a.${ident(col)} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ${qualified(schema, fk.ref_table)} r WHERE r.${ident(fk.ref_col)} = a.${ident(col)})`;
+        const n = (await client.query(`SELECT count(*)::int n FROM ${qualified(archive, table)} a WHERE ${missing}`)).rows[0].n;
+        if (n && fk.on_delete !== 'n') {
+          throw AppError(`${archive} can't be restored yet: ${n} ${table} row${n === 1 ? '' : 's'} point at ${fk.ref_table} that no longer exist (${table}.${col}). Put ${n === 1 ? 'it' : 'them'} back first.`, 409);
+        }
+        if (n) unlinked[`${table}.${col}`] = n;
+        select.push(n ? `CASE WHEN ${missing} THEN NULL ELSE a.${ident(col)} END` : `a.${ident(col)}`);
+      }
       restored[table] = (await client.query(
-        `INSERT INTO ${qualified(schema, table)} (${cols}) SELECT ${cols} FROM ${qualified(archive, table)}`)).rowCount;
+        `INSERT INTO ${qualified(schema, table)} (${names.map(ident).join(', ')})
+         SELECT ${select.join(', ')} FROM ${qualified(archive, table)} a`)).rowCount;
     }
+    // The shop's records hold these keys again; the note of them is no longer needed.
+    await client.query(`DELETE FROM ${qualified(schema, 'archived_idempotency_keys')} WHERE archive = $1`, [archive]);
 
     await writeAudit(client, {
       userId, action: 'sales.restore', entityType: 'system', entityId: null,
-      detail: { archive, rows: restored, ...(await totals(client, archive)) },
+      detail: { archive, rows: restored, unlinked, ...(await totals(client, archive)) },
     });
     await client.query('COMMIT');
-    return { archive, rows: restored };
+    return { archive, rows: restored, unlinked };
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
 

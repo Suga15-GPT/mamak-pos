@@ -152,7 +152,15 @@ from the live tables:
 
 It is refused while any bill, shift or kitchen ticket is still open. Bill,
 payment and shift numbers are not reset, so archived rows never collide with
-new ones, and an archive can be put back beside new trading at any time.
+new ones, and an archive can be put back beside new trading later. The
+idempotency keys of the archived bills stay behind in
+`archived_idempotency_keys`, so a till that replays an order it sent before
+the clear is told "already done" instead of opening the same food as a new
+bill. A menu item or printer deleted since the clear doesn't block a restore:
+those lines and print jobs come back with the link empty (the bill keeps the
+dish's name and price), as deleting it would have left a live row. Anything
+else the archive points at that has since gone (a card, say) is refused by
+name before anything is written — put it back, then restore.
 
 Running the setup wizard again never clears sales — it changes settings only.
 

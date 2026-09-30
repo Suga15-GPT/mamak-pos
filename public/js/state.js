@@ -134,7 +134,7 @@ export function connectStream() {
     lastSeq = data.seq;
     dispatchStream(data);
   };
-  ['order.created', 'order.updated', 'order.paid', 'order.voided', 'menu.updated', 'features.updated']
+  ['order.created', 'order.updated', 'order.paid', 'order.voided', 'menu.updated', 'features.updated', 'sales.cleared']
     .forEach(type => es.addEventListener(type, onEvent));
   es.onopen = () => { reconnectDelay = 1000; setConnDot('connected'); };
   es.onerror = () => {

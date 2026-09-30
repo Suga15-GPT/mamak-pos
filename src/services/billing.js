@@ -216,7 +216,7 @@ async function itemShare(orderId, rawIds, client = pool) {
 // One transaction holding the order's row lock — the lock appendSend and the
 // QR approval route take too — so items can never land on a bill between the
 // balance being read and the order being marked paid (finding #7).
-async function addPayment(orderId, { method, amountCents, tenderedCents, itemIds = null, userId }) {
+async function addPayment(orderId, { method, amountCents, tenderedCents, itemIds = null, expectedDueCents = null, userId }) {
   if (!['Cash', 'Card', 'DuitNow/eWallet'].includes(method)) throw AppError('bad method', 400);
 
   const client = await pool.connect();
@@ -235,6 +235,13 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, itemIds
 
     const due = await amountDue(orderId, client);
     if (due <= 0) throw AppError('order already settled', 400);
+    // What the till showed as "To pay". A pay-in-full sends no amount, so
+    // without this a Combine (or an add-on) landing from another till while
+    // the pay screen is open would be charged at the new, larger balance the
+    // cashier never saw (review D1). A changed bill is refused, not re-priced.
+    if (expectedDueCents != null && Number(expectedDueCents) !== due) {
+      throw AppError(`The bill has changed: it now comes to ${formatRM(due)}. Check it and take payment again.`, 409);
+    }
 
     // Phase 09: the drawer this cash lands in (and the shift a card/eWallet sale
     // is attributed to) must be the open one — refusing here is the control that

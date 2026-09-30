@@ -1,5 +1,5 @@
 import { state, $, fmt, esc, toast, onStreamEvent, stateWords, minsSince, ask } from './state.js';
-import { enqueue, pending as outboxPending, onOutboxChange, resultFor } from './outbox.js';
+import { enqueue, pending as outboxPending, failedEntries, dismissFailed, onOutboxChange, resultFor } from './outbox.js';
 import { on, fill } from './features.js';
 import { t } from './i18n.js';
 
@@ -627,10 +627,22 @@ async function sendOrder() {
       ? { url: '/api/orders', method: 'POST', body: { order_type: 'takeaway', items } }
       : { url: '/api/orders', method: 'POST', body: { card_id: sel.cardId, items } };
   if (!liveOrder && sel.type === 'dine_in' && !sel.cardId) return toast('This table order is closed — start a new one on a card');
+  request.meta = { label: sel.name || '', lines: toSend.map(l => `${l.qty}× ${l.name}`) };
 
-  const entry = await enqueue(request);
+  // Marked before anything is awaited: a second Send fired in the same
+  // instant then finds nothing new to send, instead of queueing these lines
+  // a second time (review P4).
+  toSend.forEach(l => { l.sent = 'pending'; });
+  let entry;
+  try {
+    entry = await enqueue(request);
+  } catch (e) {
+    toSend.forEach(l => { l.sent = false; });
+    renderCart();
+    return toast('Could not queue the order: ' + e.message);
+  }
   if (!liveOrder) pendingCreateEntry = entry.id;
-  toSend.forEach(l => { l.sent = 'pending'; l.entry = entry.id; });
+  toSend.forEach(l => { l.entry = entry.id; });
   renderCart();
   toast(navigator.onLine ? 'Sending to kitchen…' : 'Offline — queued, will send when back online');
 }
@@ -920,17 +932,23 @@ function updateChangeDue() {
   $('pay-change-due').style.color = changeCents < 0 ? 'var(--red)' : 'var(--charcoal)';
 }
 
-/* method === null pays the full remaining balance; otherwise `amount`/`tendered`
-   (RM) pay exactly that much — "Pay a specific amount". */
+/* amount === null pays the full remaining balance; otherwise `amount`/`tendered`
+   (RM) pay exactly that much — "Pay a specific amount". A pay-in-full also
+   sends the "To pay" this screen shows, so a bill that grew on another till
+   (a Combine, an add-on) is refused instead of charged unseen. */
+let payBusy = false;
 async function processPay(method, amount, tendered) {
   // Payments require server confirmation and must fail loudly offline — unlike
   // order entry, they are never queued: a mis-queued payment is a cash
   // discrepancy nobody can reconstruct.
   if (!navigator.onLine) return toast('Cannot take payment while offline');
+  if (payBusy) return;
+  payBusy = true;
   const orderId = $('pay-btn').dataset.orderId;
   try {
     const body = { method };
     if (amount != null) body.amount = amount;
+    else body.expected_due = currentOrder.amount_due;
     if (method === 'Cash' && tendered != null) body.tendered = tendered;
     const r = await API.post(`/api/orders/${orderId}/pay`, body);
     if (r.settled) {
@@ -941,7 +959,41 @@ async function processPay(method, amount, tendered) {
       toast(`Paid ${fmt(r.paid)} — ${fmt(r.remaining)} left`);
       await refreshPayModal();
     }
-  } catch (e) { toast('Payment failed: ' + e.message); }
+  } catch (e) {
+    toast('Payment failed: ' + e.message);
+    if (e.status === 409) await refreshPayOrClose();
+  } finally { payBusy = false; }
+}
+
+// Re-reads the bill behind an open pay screen. A bill that closed or was
+// combined into another card elsewhere closes the screen rather than leaving
+// a stale total on it.
+async function refreshPayOrClose() {
+  if (await refreshPayModal()) return;
+  closePayModal();
+  toast('This bill was closed or combined on another till');
+  if (state.selTable) checkOpenOrder();
+}
+
+// Called on a live update: repaint the pay screen only when what it would
+// charge actually changed, so a cashier's typed amounts survive unrelated
+// traffic. The server refuses a stale pay-in-full regardless (expected_due).
+async function payModalLiveCheck() {
+  if (payBusy || !currentOrder || !$('pay-modal').classList.contains('show')) return;
+  const wasDue = currentOrder.amount_due;
+  if (currentGroupId) {
+    const g = await API.get(`/api/bill-groups/${currentGroupId}`).catch(() => null);
+    if (g && g.amount_due === wasDue) return;
+  } else {
+    const orderId = $('pay-btn').dataset.orderId;
+    const orders = await API.get('/api/orders').catch(() => null);
+    if (!orders) return;
+    const o = orders.find(x => x.id == orderId);
+    if (o && !o.bill_group_id && o.amount_due === wasDue) return;
+  }
+  if (payBusy || !currentOrder) return;  // paying, or closed, while we were asking
+  await refreshPayOrClose();
+  if (currentOrder && currentOrder.amount_due !== wasDue) toast(`The bill changed on another till — it is now ${fmt(currentOrder.amount_due)}`);
 }
 
 /* ===== COMBINED BILL: every leg at once =====
@@ -1331,6 +1383,7 @@ onStreamEvent(batch => {
   if (!document.getElementById('tab-pos')?.classList.contains('active')) return;
   if (!state.selTable) renderTables();
   else checkOpenOrder();
+  if (batch.some(e => e.type.startsWith('order.'))) payModalLiveCheck();
 });
 
 /* ===== OFFLINE ===== */
@@ -1345,6 +1398,36 @@ async function updateOfflineBanner() {
     banner.style.display = 'none';
   }
 }
+// Orders the server refused for good (e.g. the card was combined into another
+// while this was on its way). Listed until someone taps OK, so a dish that
+// never reached the kitchen can't vanish without a word.
+async function renderFailedSends() {
+  const box = $('outbox-failed');
+  if (!box) return;
+  const failed = (await failedEntries().catch(() => [])).sort((a, b) => a.createdAt - b.createdAt);
+  box.hidden = !failed.length;
+  box.innerHTML = failed.map(f => `
+    <div class="outbox-failed-row">
+      <div><strong>Not sent${f.meta?.label ? ` — ${esc(f.meta.label)}` : ''}:</strong>
+        ${esc((f.meta?.lines || []).join(', ') || 'an order')}
+        <div class="outbox-failed-why">${esc(f.error || '')}. Add it again on the right card.</div></div>
+      <button class="btn small" data-action="dismiss-failed" data-id="${esc(f.id)}">OK</button>
+    </div>`).join('');
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-action="dismiss-failed"]');
+  if (b) dismissFailed(b.dataset.id).then(renderFailedSends);
+});
+
+let knownFailed = null;
+onOutboxChange(async () => {
+  const n = (await failedEntries().catch(() => [])).length;
+  if (knownFailed != null && n > knownFailed) toast('An order was NOT sent — see the red note at the top');
+  knownFailed = n;
+  renderFailedSends();
+});
+renderFailedSends();
+
 onOutboxChange(() => {
   updateOfflineBanner();
   if (state.selTable) checkOpenOrder();

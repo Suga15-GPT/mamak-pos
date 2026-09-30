@@ -14,7 +14,10 @@
 // sales data — pos.js, admin.js and index.html all changed together.
 // v8: the login screen no longer arrives filled in with Admin / 1234. A till
 // that cached v7's index.html would otherwise keep showing it.
-const CACHE_VERSION = 'v8';
+// v9: pay-in-full sends the total it showed, failed sends are listed on the
+// till, and Send marks its lines before awaiting — pos.js, outbox.js,
+// index.html and style.css changed together.
+const CACHE_VERSION = 'v9';
 const CACHE_NAME = `mamak-pos-${CACHE_VERSION}`;
 
 const SHELL_URLS = [

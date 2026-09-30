@@ -408,6 +408,13 @@ header .user #uname { max-width:100%; font-weight:700; color:var(--text); paddin
 header .user .icon-btn, header .user .logout { width:100%; }
 header .user .user-row { display:flex; gap:8px; }
 header .user .user-row .icon-btn { flex:1; }
+#outbox-failed {
+  background:var(--surface); color:var(--text); border:2px solid var(--danger); border-radius:10px;
+  margin:8px 8px 0 calc(var(--sidebar-w) + 8px); padding:6px 10px; position:relative; z-index:51;
+}
+.outbox-failed-row { display:flex; gap:10px; align-items:center; justify-content:space-between; padding:4px 0; color:var(--text); }
+.outbox-failed-row + .outbox-failed-row { border-top:1px solid var(--border); }
+.outbox-failed-why { font-size:13px; color:var(--text-2); }
 #offline-banner {
   display:none; background:var(--danger); color:var(--on-accent); text-align:center;
   font-size:14px; font-weight:700; padding:9px; margin-left:var(--sidebar-w);
