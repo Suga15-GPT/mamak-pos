@@ -31,7 +31,8 @@ Words you will see on the screen are written **like this**.
 8. [Ready and served](#8-ready-and-served)
 9. [Taking payment](#9-taking-payment)
 10. [Splitting a bill](#10-splitting-a-bill)
-    - [Paying a combined bill](#10b-paying-a-combined-bill)
+    - [Combining cards](#10a-combining-cards)
+    - [Paying a combined bill from before](#10b-paying-a-combined-bill-from-before)
 11. [Voiding an item](#11-voiding-an-item-taking-it-off-the-bill)
 12. [Sold out](#12-sold-out)
 13. [Takeaway](#13-takeaway)
@@ -45,6 +46,7 @@ Words you will see on the screen are written **like this**.
 20. [Printing](#20-printing)
 21. [Retrying a failed print](#21-retrying-a-failed-print)
 22. [System status](#22-system-status)
+22b. [Starting the figures from RM0](#22b-starting-the-figures-from-rm0)
 23. [Closing the shift](#23-closing-the-shift)
 24. [The Sales screen](#24-the-sales-screen)
 25. [When something goes wrong](#25-when-something-goes-wrong)
@@ -116,7 +118,7 @@ activity log, orders taken while the internet is down, and Help.
 | **Shifts and cash drawer** | Open and count the till, cash in and out, end-of-day reports. | You can take payment without opening a shift. There is no **🕐 Shift** button. |
 | **Discounts** | Money off a bill, or free, with an owner's PIN. | No **Discount** button. |
 | **Refunds** | Give money back on a paid bill, with an owner's PIN. | No **Refund** button. |
-| **Split and combine bills** | Split one bill, or let several cards pay together. | No split or **Combine bills** buttons. |
+| **Split and combine bills** | Split one bill between friends, or put another card's items on this bill. | No split or **Combine bills** buttons. |
 | **Customer QR ordering** | Customers order from their own phone. | Scanning a card says *Please order at the counter*. |
 | **Speak to Order** | Customers say their order into their phone. Needs QR ordering. | Customers tap the menu instead. |
 | **Full sales dashboard** | Today's, this month's and this year's sales, charts by hour, top items, payment mix. | There is no **💰 Sales** button. |
@@ -124,6 +126,10 @@ activity log, orders taken while the internet is down, and Help.
 **Changing it later:** tap **⚙ Admin → 🧩 Features & setup**. Flip the switch
 next to what you want — it saves straight away, on every tablet. Or tap
 **Run setup again** to go through the six questions once more.
+
+> **Running setup again changes settings only.** The last page says so: *Your
+> sales history is kept. To start from RM0, use Admin → System → Clear sales
+> data.* See [Starting the figures from RM0](#22b-starting-the-figures-from-rm0).
 
 > **Switching something off only hides it. Nothing is deleted.** A discount
 > already on a bill stays on it. Past refunds stay in the reports. Switch it
@@ -140,7 +146,8 @@ Four switches wait for you to finish something first:
 - The **kitchen screen** cannot be switched off while the kitchen board still
   has orders on it. Finish them, or clear them.
 - **Split and combine bills** cannot be switched off while cards are on a
-  combined bill. Take payment on it, or take the cards apart.
+  combined bill from before combining moved food onto one bill. Take payment
+  on it, or take the cards apart.
 - **QR ordering** cannot be switched off while customer orders are waiting for
   you to accept them.
 
@@ -314,9 +321,11 @@ counter, say. The screen asks *Food is still being prepared. Take payment
 anyway?* Tap **OK**. The order stays on the kitchen screen until the kitchen
 taps **🍽 Served**.
 
-**Paying part now, part later?** Under **Pay a specific amount (RM)**, type the
-amount and tap **Apply cash** (or card, or eWallet). The screen shows what is
-still owed. Repeat until it reaches zero.
+**Paying part now, part later?** Tap **▸ Pay part of the bill** at the bottom
+of the payment screen — it is folded away because most bills are paid in full.
+Under **Pay a specific amount (RM)**, type the amount and tap **Apply cash**
+(or card, or eWallet). The screen shows what is still owed. Repeat until it
+reaches zero.
 
 **Discount?** Tap **Discount**, choose percent or amount, and type the reason.
 If you are not the boss, an admin has to type their name and PIN to approve it.
@@ -329,17 +338,53 @@ In the payment screen:
 
 - **Split evenly** — type how many people, tap **Split**. Each share appears
   with its own **Pay cash** / **Pay card** button. Tap one as each person pays.
-- **Split by seat** — only works if you gave each line a seat number while
-  taking the order (the small **Seat** box under each new item).
+- **Split by items** — tick what one person had. The screen shows what those
+  items come to *with their share of the service charge and SST*, for example
+  *These items: RM 9.91*. Tap **Pay cash**, **Pay card** or **Pay eWallet**.
+  The items they paid for are ticked off; tick the next person's, and so on.
+  The last person pays whatever is left, so the shares always add up to the
+  bill to the sen. Cash is rounded to 5 sen only on the payment that settles
+  the bill.
+
+If the bill changes between showing the amount and taking it (a discount, a
+void), the POS says *The bill has changed: these items now come to RM …* and
+takes nothing. Check the new amount and take it again.
 
 ---
 
-## 10b. Paying a combined bill
+## 10a. Combining cards
 
-Two cards that want to pay together — friends who came in separately — can be
-combined. Open one card, tap **🔗 Combine bills**, tick the other card, tap
-**Combine**. Each card keeps its own food and its own kitchen tickets, and you
-can keep adding food to either card.
+Two groups sitting together want one bill. Say Card 1 will pay:
+
+1. Open **Card 1** and tap **🔗 Combine bills** at the top.
+2. Pick **Card 4** and tap **Combine**.
+
+Card 4's food moves onto Card 1's bill **straight away**. The kitchen keeps
+cooking it — its tickets now say **Card 1 (from 4)**, and so does the bill.
+**Card 4 is free**: give it to the next group. A customer scanning Card 1 sees
+the whole bill; scanning Card 4 shows a fresh card.
+
+**Changed your mind?** Open Card 1 and tap **Separate Card 4** on the bill.
+Exactly Card 4's food goes back onto a new bill on Card 4. This works only while
+nothing has been paid on Card 1's bill and Card 4 has not been given to someone
+else — the screen says why when it cannot. A discount given after combining has
+to come off first.
+
+**Combine says no when:**
+- either card has a payment on it,
+- Card 4 has a discount — remove the discount first, combine, then give it on
+  the combined bill,
+- Card 4 has a customer QR order waiting for approval — approve or reject it
+  first.
+
+---
+
+## 10b. Paying a combined bill from before
+
+Before combining moved food onto one bill, it grouped cards that kept their own
+bills and paid together. A group made that way still shows on each card as
+**🔗 Combined bill: Card 11, Card 12**, and is paid like this. New combines
+use [Combining cards](#10a-combining-cards) instead.
 
 **A combined bill is paid all at once.** You cannot take part of it now and
 the rest later.
@@ -657,6 +702,39 @@ Tap **↻ Check now** to check again.
 
 ---
 
+## 22b. Starting the figures from RM0
+
+*For the owner.* Staff practised on the till, or you ran a trial day, and the
+**💰 Sales** screen and the reports should now start from RM0. **Clear sales
+data** does that without throwing anything away.
+
+First:
+
+- every bill is paid or cancelled — no card in use, no takeaway open,
+- the shift is closed on **🕐 Shift**,
+- the kitchen board has nothing left to make.
+
+The screen tells you which of these is still in the way.
+
+Then:
+
+1. **⚙ Admin** → **⚙ System** → **Clear sales data…**
+2. Type **your own PIN**, and the word **CLEAR** in capitals.
+3. Tap **Clear sales data**.
+
+Every bill, payment, refund, shift, kitchen ticket and print job moves into an
+archive inside the database, named for today's date and time. **Nothing is
+deleted**, and it can be put back (the runbook, *Restore cleared sales data*).
+The menu, staff and their PINs, the cards, your settings, what your POS does,
+and the activity log stay exactly as they are. Bill numbers carry on from
+where they were. The activity log records who cleared, when, how many bills,
+the total, and the archive's name.
+
+**Running the setup wizard again never clears sales** — it changes settings
+only.
+
+---
+
 ## 23. Closing the shift
 
 At the end of the day:
@@ -794,6 +872,13 @@ Wrong tap? **↶ Undo** straight away.
 🍽 Tables → tap the table → **💵 Pay** → tap **Cash**, **Card** or **DuitNow**
 
 Cash: type what they gave you first, and the change is worked out for you.
+
+Sharing? **Split evenly**, or **Split by items** — tick what each person had.
+
+### Two cards, one bill
+
+Open the card that pays → **🔗 Combine bills** → pick the other card →
+**Combine**. Its food moves over; that card is free. Undo: **Separate Card N**.
 
 ### Something off the bill
 

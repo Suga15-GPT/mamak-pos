@@ -172,11 +172,11 @@ const WALKTHROUGHS = {
         hit: 0,
       },
       {
-        caption: 'Sharing? Split evenly, or by seat if you set seat numbers on the lines.',
+        caption: 'Sharing? Split evenly, or Split by items: tick what each person had, and they pay just that.',
         cells: [
-          { t: 'Split evenly', cls: 'mini wide' }, { t: 'Split by seat', cls: 'mini wide' },
+          { t: 'Split evenly', cls: 'mini wide' }, { t: 'Split by items', cls: 'mini wide' },
         ],
-        hit: 0,
+        hit: 1,
       },
     ],
   },
@@ -282,7 +282,6 @@ const TOPICS = [
       { h: 'On a line you have not sent yet', list: [
         '− and + change how many.',
         '📝 adds a note: kurang pedas, tak nak ais. Common ones are one tap.',
-        'Seat sets a seat number, which is only needed if they will split by seat.',
         '✕ removes the line.',
       ] },
       { tip: 'Some dishes ask a question first — Kuah? Extra lauk? — because the kitchen cannot start without the answer. Tap the answers, then Add.' },
@@ -332,16 +331,16 @@ const TOPICS = [
     blurb: 'Cash, card, DuitNow, split.', walkthrough: 'payment',
     body: [
       { steps: [
-        'Open the card and tap 💵 Take Payment. If the card is on a combined bill, this takes payment for every card on it at once.',
+        'Open the card and tap 💵 Take Payment. If the card is on a combined bill from before, this takes payment for every card on it at once.',
         'For cash, type what they handed you — the change is worked out and shown.',
         'Tap 💵 Cash, 💳 Card or 📱 DuitNow / eWallet.',
       ] },
       { h: 'Splitting', list: [
         'Split evenly — say how many people, pay each share in turn.',
-        'Split by seat — works if the lines were given seat numbers when ordered.',
-        'Pay a specific amount — for a customer paying part of the bill now.',
+        'Split by items — tick what one person had. They pay exactly those items, with their share of the service charge and SST. Items already paid for are ticked off; the last person pays whatever is left, so it always adds up to the bill.',
+        'Pay part of the bill — tap it to open Pay a specific amount, for a customer paying some of the bill now.',
       ] },
-      { tip: 'A shift has to be open before a payment is accepted. If Take Payment refuses, check 🕐 Shift first.' },
+      { tip: 'Cash is rounded to the nearest 5 sen only on the payment that settles the bill, however it was split. A shift has to be open before a payment is accepted: if Take Payment refuses, check 🕐 Shift first.' },
     ],
   },
   {
@@ -391,7 +390,34 @@ const TOPICS = [
         'Tap ↔ Move at the top.',
         'Pick the free card they have now.',
       ] },
-      { p: 'The whole bill moves. Nothing is re-entered, the kitchen keeps cooking, and the ticket updates to the new card. To let two cards pay together instead, open one and tap 🔗 Combine bills.' },
+      { p: 'The whole bill moves. Nothing is re-entered, the kitchen keeps cooking, and the ticket updates to the new card. To put two cards on one bill instead, see Combining cards.' },
+    ],
+  },
+  {
+    id: 'combine', icon: '🔗', title: 'Combining cards', time: '1 min', roles: ['admin', 'staff'],
+    blurb: 'Two groups become one bill. The other card is free again.',
+    body: [
+      { steps: [
+        'Open the card that keeps the bill — say Card 1.',
+        'Tap 🔗 Combine bills at the top.',
+        'Pick the other card — say Card 4 — and tap Combine.',
+      ] },
+      { h: 'What happens', list: [
+        'Card 4’s items move onto Card 1’s bill straight away. Card 1 pays for everything.',
+        'The kitchen keeps cooking them. Their tickets now say Card 1 (from 4), and so does the bill.',
+        'Card 4 is free: hand it to the next group. Scanning Card 4 shows a fresh card; scanning Card 1 shows the whole bill.',
+      ] },
+      { h: 'Changed your mind?', steps: [
+        'Open Card 1.',
+        'Tap Separate Card 4 on the bill. Exactly Card 4’s items go back onto a new bill on Card 4.',
+      ] },
+      { p: 'Separating works only while nothing has been paid on Card 1’s bill and Card 4 has not been given to someone else. The till says why when it cannot.' },
+      { h: 'When Combine says no', list: [
+        'Either card has a payment on it — combining is for bills nobody has started paying.',
+        'Card 4 has a discount — remove the discount first, combine, then give it again on the combined bill.',
+        'Card 4 has a customer QR order waiting for approval — approve or reject it first.',
+      ] },
+      { tip: 'A combined bill made before this change — cards that kept their own bills and paid together — still shows as a combined bill and is paid in one go, or a card can be taken out of it.' },
     ],
   },
   {
@@ -516,9 +542,33 @@ const TOPICS = [
       { h: 'Changing it later', steps: [
         '⚙ Admin → 🧩 Features & setup.',
         'Flip the switch next to what you want. It saves straight away, on every till.',
-        'Or tap Run setup again to go through the questions once more.',
+        'Or tap Run setup again to go through the questions once more. It changes settings only: your sales history is kept.',
       ] },
       { tip: 'Switching something off only hides it. Nothing is deleted: a discount already on a bill stays on it, past refunds stay in the reports, and switching it back on shows everything again. Switching off the kitchen screen also switches off separate drinks screens; switching off QR also switches off Speak to Order — the screen tells you when that happens.' },
+    ],
+  },
+  {
+    id: 'clear-sales', icon: '🧹', title: 'Starting the figures from RM0', time: '1 min', roles: ['admin'],
+    blurb: 'After training or a trial day: clear sales data.',
+    body: [
+      { p: 'Staff practised on the till, or you ran a trial day, and now the Sales screen and reports should start from RM0. Clearing sales data does that without throwing anything away.' },
+      { h: 'First', list: [
+        'Every bill is paid or cancelled — no card in use, no takeaway open.',
+        'The shift is closed on 🕐 Shift.',
+        'The kitchen board has nothing left to make.',
+      ] },
+      { h: 'Then', steps: [
+        '⚙ Admin → ⚙ System → Clear sales data…',
+        'Type your own PIN, and the word CLEAR.',
+        'Tap Clear sales data. The Sales screen, the dashboard and the reports all read RM0.',
+      ] },
+      { h: 'What happens to the old figures', list: [
+        'Every bill, payment, refund, shift, kitchen ticket and print job moves into an archive inside the database. Nothing is deleted, and it can be put back.',
+        'The menu, staff and their PINs, cards, settings, what your POS does, and the activity log stay exactly as they are.',
+        'Bill numbers carry on from where they were, so an old receipt and a new one never share a number.',
+        'The activity log records who cleared, when, how many bills, the total, and the archive’s name.',
+      ] },
+      { tip: 'Running the setup wizard again never clears sales — it changes settings only. To put cleared sales back, whoever looks after the server follows “Restore cleared sales data” in the runbook.' },
     ],
   },
   {
@@ -604,6 +654,16 @@ const FAQS = [
     q: 'The customer lost or swapped their card.',
     a: 'Open the card they started on, tap Move at the top, and pick the card they have now. The whole bill moves and the kitchen keeps cooking.',
     topic: 'move-table',
+  },
+  {
+    q: 'Two cards are sitting together and want one bill.',
+    a: 'Open the card that will pay, tap Combine bills and pick the other card. Its food moves onto this bill, the kitchen keeps cooking, and the other card is free for the next customer. Separate puts it back while nothing has been paid.',
+    topic: 'combine',
+  },
+  {
+    q: 'We practised on the till. How do we start the sales from RM0?',
+    a: 'Close every bill and the shift, then Admin → System → Clear sales data, with your PIN and the word CLEAR. The old figures move into an archive rather than being deleted.',
+    topic: 'clear-sales',
   },
   {
     q: 'The tablet says offline. Do I stop taking orders?',

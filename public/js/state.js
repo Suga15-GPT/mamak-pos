@@ -38,6 +38,7 @@ export const STATE_WORDS = {
   pending:   { icon: '⏳', label: 'Waiting for staff' },
   cancelled: { icon: '❌', label: 'Cancelled' },
   refunded:  { icon: '↩', label: 'Refunded' },
+  merged:    { icon: '🔗', label: 'Combined into another card' },
   free:      { icon: '', label: 'Free' },
 };
 export function stateWords(status) { return STATE_WORDS[status] || { icon: '', label: status || '' }; }
@@ -133,7 +134,7 @@ export function connectStream() {
     lastSeq = data.seq;
     dispatchStream(data);
   };
-  ['order.created', 'order.updated', 'order.paid', 'order.voided', 'menu.updated', 'features.updated']
+  ['order.created', 'order.updated', 'order.paid', 'order.voided', 'menu.updated', 'features.updated', 'sales.cleared']
     .forEach(type => es.addEventListener(type, onEvent));
   es.onopen = () => { reconnectDelay = 1000; setConnDot('connected'); };
   es.onerror = () => {

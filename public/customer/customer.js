@@ -25,6 +25,10 @@ let pendingItem = null;
 // (or the phone locking) doesn't lose track of food already on its way.
 let myRounds = [];
 let statusTimer = null;
+// What is on this card's bill right now (GET /api/t/:token, a card's own QR
+// only). After Combine it carries the other card's items too, marked with
+// that card's number; a card combined into another comes back with none.
+let bill = null;
 
 const STORE_KEY = () => `mamak_rounds_${tableToken}${cardNumber ? '_' + cardNumber : ''}`;
 const CARD_KEY = () => `mamak_card_${tableToken}`;
@@ -59,6 +63,7 @@ async function start() {
     try { if (info.mode === 'shop') sessionStorage.setItem(CARD_KEY(), String(cardNumber)); } catch { /* private mode */ }
     tableName = `Card ${info.card.number}`;
     ordering = info.ordering;
+    bill = info.bill || null;
     $('table-name').textContent = tableName;
     $('card-view').style.display = 'none';
     loadRounds();
@@ -381,35 +386,58 @@ function renderSuccess(round) {
     `<div class="row"><span>${i.qty}× ${esc(i.name)}</span></div>`).join('');
 }
 
-/* A short summary at the top of the menu once this phone has ordered
-   something, so "Order more" doesn't lose sight of what is already coming. */
+/* At the top of the menu: the card's bill when the card's own QR can show it
+   — everything on it, whoever ordered it, which is what a party that combined
+   cards needs to see — or else a short summary of what this phone has sent,
+   so "Order more" doesn't lose sight of what is already coming. */
 function renderMyOrders() {
+  const tag = st => `<span class="round-tag ${esc(st)}">${stateWords(st).icon} ${esc(stateWords(st).label)}</span>`;
+  if (bill && bill.lines.length) {
+    $('my-orders').innerHTML = `<div class="card" id="card-bill" style="margin-bottom:14px">
+      <h3 style="font-size:16px;margin-bottom:10px">Your bill</h3>
+      ${bill.lines.map(l => `<div class="cart-line">
+        <div><div class="line-name">${l.qty}× ${esc(l.name)}</div>
+          ${l.from_card != null ? `<div class="line-sub">from Card ${esc(String(l.from_card))}</div>` : ''}</div>
+        <div class="line-right">${tag(l.status)}</div>
+      </div>`).join('')}
+      <div class="totals"><div class="row grand"><span>Total so far</span><span>${fmt(bill.total)}</span></div></div>
+    </div>`;
+    return;
+  }
   if (!myRounds.length) { $('my-orders').innerHTML = ''; return; }
   $('my-orders').innerHTML = `<div class="card" style="margin-bottom:14px">
     <h3 style="font-size:16px;margin-bottom:10px">Your order so far</h3>
     ${myRounds.map(r => `<div class="cart-line">
       <div><div class="line-name">${r.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</div></div>
-      <div class="line-right"><span class="round-tag ${esc(r.status)}">${stateWords(r.status).icon} ${esc(stateWords(r.status).label)}</span></div>
+      <div class="line-right">${tag(r.status)}</div>
     </div>`).join('')}
   </div>`;
 }
 
+// The bill as it is now: combined with another card, paid, or added to.
+async function refreshBill() {
+  try {
+    const res = await fetch('/api/t/' + tableToken + (cardNumber ? '?card=' + encodeURIComponent(cardNumber) : ''));
+    if (res.ok) bill = (await res.json()).bill || null;
+  } catch { /* keep the last known bill */ }
+}
+
 async function pollStatus() {
-  if (!myRounds.length) return;
-  await Promise.all(myRounds.map(async r => {
+  if (!myRounds.length && !bill) return;
+  await Promise.all([refreshBill(), ...myRounds.map(async r => {
     try {
       const s = await fetch(`/api/public/sends/${r.ref}`).then(x => x.json());
       if (s && !s.error) r.status = s.status;
     } catch { /* keep the last known state */ }
-  }));
+  })]);
   saveRounds();
   renderMyOrders();
-  if ($('success-view').style.display !== 'none') renderSuccess(myRounds[myRounds.length - 1]);
+  if (myRounds.length && $('success-view').style.display !== 'none') renderSuccess(myRounds[myRounds.length - 1]);
 }
 
 function startStatusPolling() {
   clearInterval(statusTimer);
-  if (!myRounds.length) return;
+  if (!myRounds.length && !bill) return;
   pollStatus();
   // 15s: this page has no session, so it cannot use the staff event stream.
   // Slow enough to be free, fast enough that "Ready" arrives while it matters.

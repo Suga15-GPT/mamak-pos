@@ -1,6 +1,7 @@
 const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { lockBills } = require('../lib/billlock');
+const { CLOSED_STATUSES, openSql } = require('../lib/status');
 const features = require('./features');
 
 /* ===== kitchen rounds =====
@@ -19,7 +20,7 @@ const TICKET_STATUSES = ['sent', 'preparing', 'ready', 'served'];
 // urgent thing happening at this table, not an average.
 const ROLLUP_ORDER = ['sent', 'preparing', 'ready', 'served'];
 
-const TERMINAL_ORDER_STATUSES = ['paid', 'cancelled', 'refunded'];
+const TERMINAL_ORDER_STATUSES = CLOSED_STATUSES;
 
 // Same shape as routes/orders.js's TRANSITIONS, applied one station ticket at a
 // time. Backward moves exist so a mis-tap is recoverable.
@@ -105,7 +106,7 @@ async function deriveOrderStatus(client, orderId) {
     // Conditional: a cooking status can never overwrite a closed bill, whether
     // or not the caller holds the bill lock (re-check 2, K).
     await client.query(
-      "UPDATE orders SET status = $1, updated_at = now() WHERE id = $2 AND status NOT IN ('paid','cancelled','refunded')",
+      `UPDATE orders SET status = $1, updated_at = now() WHERE id = $2 AND ${openSql()}`,
       [next, orderId]);
   }
   return next;
@@ -169,13 +170,26 @@ const STAMP = {
 const ON_BOARD_SQL = `s.approval_state = 'approved' AND t.status <> 'cancelled' AND o.status <> 'cancelled'
   AND EXISTS (SELECT 1 FROM order_items oi WHERE oi.send_id = t.send_id AND oi.station_code = t.station_code)`;
 
+/* What a round is called out as: its bill's card ("Card 7"), a pre-card-mode
+   table's name, or for a round a merge brought over from another card, "Card 1
+   (from 4)". Over the bill's card as cd, its table as tb, and the card the
+   round came from (order_sends.merged_from_card_id) as fc. */
+function roundLocationSql(cd = 'cd', tb = 'tb', fc = 'fc') {
+  return `COALESCE('Card ' || ${cd}.number || COALESCE(' (from ' || ${fc}.number || ')', ''), ${tb}.name)`;
+}
+
 // Whether any ticket on the board is still to finish: the kitchen screen
-// can't be switched off until none is (features.guardTurnOff).
+// can't be switched off until none is (features.guardTurnOff), and sales
+// can't be cleared (services/sales_archive.js).
 async function boardHasUnfinished(client) {
+  return (await boardUnfinishedCount(client)) > 0;
+}
+
+async function boardUnfinishedCount(client) {
   const r = await client.query(
-    `SELECT 1 FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id JOIN orders o ON o.id = s.order_id
-      WHERE ${ON_BOARD_SQL} AND t.status IN ('sent','preparing','ready') LIMIT 1`);
-  return !!r.rows[0];
+    `SELECT count(*)::int n FROM order_send_tickets t JOIN order_sends s ON s.id = t.send_id JOIN orders o ON o.id = s.order_id
+      WHERE ${ON_BOARD_SQL} AND t.status IN ('sent','preparing','ready')`);
+  return r.rows[0].n;
 }
 
 /* Cancelling a bill stops every station: its unfinished tickets are cancelled
@@ -232,10 +246,11 @@ async function attachSends(orders) {
   if (!orders.length) return orders;
   const ids = orders.map(o => o.id);
   const sends = (await pool.query(
-    `SELECT s.*, u.name AS sent_by_name, d.name AS decided_by_name
+    `SELECT s.*, u.name AS sent_by_name, d.name AS decided_by_name, fc.number AS merged_from_card_number
        FROM order_sends s
        LEFT JOIN users u ON u.id = s.sent_by
        LEFT JOIN users d ON d.id = s.decided_by
+       LEFT JOIN cards fc ON fc.id = s.merged_from_card_id
       WHERE s.order_id = ANY($1::int[]) ORDER BY s.order_id, s.seq_no`, [ids])).rows;
   const sendIds = sends.map(s => s.id);
   const tickets = sendIds.length ? (await pool.query(
@@ -255,6 +270,11 @@ async function attachSends(orders) {
       id: s.id, seq_no: s.seq_no, source: s.source, sent_at: s.sent_at,
       sent_by: s.sent_by, sent_by_name: s.sent_by_name || null,
       approval_state: s.approval_state, decided_at: s.decided_at, decided_by_name: s.decided_by_name || null,
+      // A round a merge brought over from another card: which card, and the
+      // round number it was sent as there ("Card 1 (from 4) · Round 1").
+      // seq_no is its place on this bill; round_no is what staff call it.
+      merged_from_card_id: s.merged_from_card_id, merged_from_card_number: s.merged_from_card_number ?? null,
+      round_no: s.merged_from_seq_no ?? s.seq_no,
       tickets: [], item_ids: [],
     };
     bySend.set(s.id, shaped);
@@ -277,8 +297,15 @@ async function attachSends(orders) {
       // The line's own round/station state, so the bill view can say
       // "Round 1 · Served" per line without a second lookup.
       li.round = s ? s.seq_no : null;
+      li.round_no = s ? s.round_no : null;
+      li.from_card = s ? s.merged_from_card_number : null;
       li.round_status = s ? (s.tickets.find(t => t.station === li.station)?.status || null) : null;
     });
+    // The cards whose bills were merged into this one, for "Separate Card 4".
+    const from = new Map();
+    o.sends.forEach(s => { if (s.merged_from_card_id) from.set(s.merged_from_card_id, s.merged_from_card_number); });
+    o.merged_from = [...from].map(([card_id, card_number]) => ({ card_id, card_number }))
+      .sort((a, b) => a.card_number - b.card_number);
   });
   return orders;
 }
@@ -292,15 +319,16 @@ async function listStationTickets(stationCodes) {
   const r = await pool.query(
     `SELECT t.id, t.status, t.station_code, t.preparing_at, t.ready_at, t.served_at,
             pu.name AS preparing_by_name, ru.name AS ready_by_name, su.name AS served_by_name,
-            s.id AS send_id, s.seq_no, s.sent_at, s.source, s.approval_state,
+            s.id AS send_id, COALESCE(s.merged_from_seq_no, s.seq_no) AS seq_no, s.sent_at, s.source, s.approval_state,
             u.name AS sent_by_name,
             o.id AS order_id, o.order_type, o.status AS order_status,
-            COALESCE('Card ' || cd.number, tb.name) AS table_name
+            ${roundLocationSql()} AS table_name
        FROM order_send_tickets t
        JOIN order_sends s ON s.id = t.send_id
        JOIN orders o ON o.id = s.order_id
        LEFT JOIN tables tb ON tb.id = o.table_id
        LEFT JOIN cards cd ON cd.id = o.card_id
+       LEFT JOIN cards fc ON fc.id = s.merged_from_card_id
        LEFT JOIN users u ON u.id = s.sent_by
        LEFT JOIN users pu ON pu.id = t.preparing_by
        LEFT JOIN users ru ON ru.id = t.ready_by
@@ -359,7 +387,7 @@ async function listPendingSends() {
        JOIN orders o ON o.id = s.order_id
        LEFT JOIN tables tb ON tb.id = o.table_id
        LEFT JOIN cards cd ON cd.id = o.card_id
-      WHERE s.approval_state = 'pending' AND o.status NOT IN ('paid','cancelled','refunded')
+      WHERE s.approval_state = 'pending' AND ${openSql('o.status')}
       ORDER BY s.sent_at ASC LIMIT 100`);
   if (!r.rows.length) return [];
   const items = (await pool.query(
@@ -374,8 +402,8 @@ async function listPendingSends() {
 
 module.exports = {
   TICKET_STATUSES, TERMINAL_ORDER_STATUSES, TICKET_TRANSITIONS, BACKWARD_TICKET,
-  HELD_MESSAGE, TICKET_CANCELLED_MESSAGE, ON_BOARD_SQL, refuseWhileHeld,
+  HELD_MESSAGE, TICKET_CANCELLED_MESSAGE, ON_BOARD_SQL, roundLocationSql, refuseWhileHeld,
   listStations, createSend, openTickets, deriveOrderStatus, ticketStatusForLine,
-  ticketTransitionError, advanceTicket, boardHasUnfinished, cancelOpenTickets,
+  ticketTransitionError, advanceTicket, boardHasUnfinished, boardUnfinishedCount, cancelOpenTickets,
   attachSends, listStationTickets, listPendingSends,
 };

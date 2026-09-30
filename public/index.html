@@ -19,8 +19,8 @@
       <div class="login-mark" aria-hidden="true">🍜</div>
       <h1>Mamak POS</h1>
       <p data-i18n="login.subtitle">Staff &amp; Admin Login</p>
-      <div class="field"><label for="lname" data-i18n="login.name">Name</label><input id="lname" value="Admin"></div>
-      <div class="field"><label for="lpin" data-i18n="login.pin">PIN</label><input id="lpin" type="password" inputmode="numeric" value="1234"></div>
+      <div class="field"><label for="lname" data-i18n="login.name">Name</label><input id="lname"></div>
+      <div class="field"><label for="lpin" data-i18n="login.pin">PIN</label><input id="lpin" type="password" inputmode="numeric"></div>
       <button class="btn primary-lg" data-action="login" data-i18n="login.submit">Log In</button>
       <div id="lerr" class="err" role="alert" aria-live="assertive"></div>
     </div>
@@ -30,6 +30,7 @@
 <!-- MAIN APP -->
 <div id="app-view" class="view" style="display:none">
   <div id="offline-banner" role="status"></div>
+  <div id="outbox-failed" role="alert" hidden></div>
   <header>
     <span class="brand">Mamak<span class="dot">.</span></span>
     <span class="page-title" id="page-title"></span>
@@ -91,7 +92,7 @@
           <button class="back-btn" data-action="back-to-tables">← <span data-i18n="pos.backToTables">Back to Cards</span></button>
           <span class="ws-title" id="ws-title"></span>
           <span class="spacer"></span>
-          <button class="btn small ghost" id="combine-btn" data-feature="split_combine" data-action="open-combine" style="display:none">🔗 Combine bills</button>
+          <button class="btn small ghost" id="combine-btn" data-feature="split_combine" data-action="open-combine" style="display:none">🔗 <span data-i18n="merge.button">Combine bills</span></button>
           <button class="btn small ghost" id="move-order-btn" data-action="open-move" style="display:none">↔ <span data-i18n="pos.moveOrder">Move</span></button>
         </div>
 
@@ -465,6 +466,19 @@
           </div>
           <div id="system-health"><div class="empty">Checking…</div></div>
         </div>
+
+        <!-- Start the figures from RM0 (after training, or a trial day). Every
+             sales row moves into an archive in the database; nothing is
+             deleted. -->
+        <div class="card danger-zone" id="clear-sales-card">
+          <div class="card-head">
+            <h3 data-i18n="clear.heading">Clear sales data</h3>
+            <button class="btn small ghost" data-action="help-jump" data-topic="clear-sales">? <span data-i18n="clear.helpLink">Before you clear</span></button>
+          </div>
+          <p class="meta" data-i18n="clear.intro" style="margin-bottom:10px">Start the sales figures from RM0 — after training, or a trial day. Every bill, payment, shift and kitchen ticket moves into an archive in the database, where it can be restored. Menu, staff, cards, settings, features and the activity log stay as they are.</p>
+          <div id="clear-sales-status" class="clear-sales-status"></div>
+          <button class="btn danger" id="clear-sales-open" data-action="open-clear-sales" data-i18n="clear.button">Clear sales data…</button>
+        </div>
       </div>
 
       <!-- FEATURES & SETUP: which optional modules this shop uses, one switch
@@ -606,22 +620,28 @@
       <button class="btn" data-action="pay-group-legs">Take both payments</button>
     </div>
 
-    <div id="pay-amount-row" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
-      <label class="label" for="pay-amount-input">Pay a specific amount (RM)</label>
-      <input type="number" id="pay-amount-input" min="0" step="0.01" style="margin-bottom:8px">
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn small" data-action="pay-amount">Apply cash</button>
-        <button class="btn small info" data-action="pay-amount" data-method="Card">Apply card</button>
-        <button class="btn small charcoal" data-action="pay-amount" data-method="DuitNow/eWallet">Apply eWallet</button>
-      </div>
-    </div>
-
     <div id="pay-split-section" data-feature="split_combine" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
       <div style="display:flex;gap:8px">
-        <button class="btn small outline" style="flex:1" data-action="split-evenly">Split evenly</button>
-        <button class="btn small outline" style="flex:1" data-action="split-by-seat">Split by seat</button>
+        <button class="btn small outline" style="flex:1" data-action="split-evenly" data-i18n="split.evenly">Split evenly</button>
+        <button class="btn small outline" style="flex:1" data-action="split-by-items" data-i18n="split.byItems">Split by items</button>
       </div>
       <div id="pay-split-result"></div>
+    </div>
+
+    <!-- Paying part of the bill now — folded away: most bills are paid in
+         full, and the panel should say so. -->
+    <div id="pay-part" hidden style="margin-top:14px;padding-top:14px;border-top:1px solid var(--light-gray)">
+      <button class="btn small ghost pay-part-toggle" id="pay-part-toggle" data-action="toggle-pay-part"
+        aria-expanded="false" aria-controls="pay-amount-row"><span class="chev" aria-hidden="true">▸</span> <span data-i18n="pay.part">Pay part of the bill</span></button>
+      <div id="pay-amount-row" hidden style="margin-top:10px">
+        <label class="label" for="pay-amount-input" data-i18n="pay.specificAmount">Pay a specific amount (RM)</label>
+        <input type="number" id="pay-amount-input" min="0" step="0.01" style="margin-bottom:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn small" data-action="pay-amount">Apply cash</button>
+          <button class="btn small info" data-action="pay-amount" data-method="Card">Apply card</button>
+          <button class="btn small charcoal" data-action="pay-amount" data-method="DuitNow/eWallet">Apply eWallet</button>
+        </div>
+      </div>
     </div>
 
     <button class="btn ghost block" style="margin-top:12px" data-action="close-pay-modal">Cancel</button>
@@ -715,16 +735,33 @@
   </div>
 </div>
 
-<!-- COMBINE BILLS -->
+<!-- COMBINE: another card's bill joins this one, and that card is free -->
 <div id="combine-modal" class="modal-bg">
   <div class="modal">
-    <h3>Combine bills</h3>
-    <p class="meta" style="margin-bottom:12px">These cards will pay together. Each card keeps its own items and kitchen tickets, and you can keep adding to any of them.</p>
+    <h3 id="combine-title">Combine bills</h3>
+    <p class="meta" style="margin-bottom:12px" data-i18n="merge.hint">Pick the card to combine. Its items move onto this bill now — the kitchen keeps cooking them — and that card is free for the next group.</p>
     <div id="combine-list"></div>
     <div id="combine-err" class="err"></div>
     <div class="modal-actions">
-      <button class="btn ghost" data-action="close-combine">Cancel</button>
-      <button class="btn" data-action="confirm-combine">Combine</button>
+      <button class="btn ghost" data-action="close-combine" data-i18n="setup.cancel">Cancel</button>
+      <button class="btn" data-action="confirm-combine" data-i18n="merge.confirm">Combine</button>
+    </div>
+  </div>
+</div>
+
+<!-- CLEAR SALES DATA: admin only, PIN again, and the word CLEAR -->
+<div id="clear-sales-modal" class="modal-bg">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="clear-sales-title">
+    <h3 id="clear-sales-title" data-i18n="clear.heading">Clear sales data</h3>
+    <p class="meta" id="clear-sales-summary" style="margin-bottom:12px"></p>
+    <div class="field"><label for="clear-sales-pin" data-i18n="clear.pin">Your PIN</label>
+      <input type="password" id="clear-sales-pin" inputmode="numeric" autocomplete="off"></div>
+    <div class="field"><label for="clear-sales-confirm" data-i18n="clear.type">Type CLEAR to confirm</label>
+      <input type="text" id="clear-sales-confirm" autocomplete="off" autocapitalize="characters" spellcheck="false"></div>
+    <div id="clear-sales-err" class="err" role="alert"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-action="close-clear-sales" data-i18n="setup.cancel">Cancel</button>
+      <button class="btn danger" data-action="confirm-clear-sales" data-i18n="clear.confirm">Clear sales data</button>
     </div>
   </div>
 </div>

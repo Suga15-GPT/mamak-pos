@@ -2,6 +2,7 @@ const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { writeAudit } = require('./orders');
 const { lockBills } = require('../lib/billlock');
+const { openSql } = require('../lib/status');
 const features = require('./features');
 
 // The single currently-open shift, or null. The `one_open_shift` partial
@@ -102,7 +103,7 @@ async function close({ userId, countedCents, note }) {
     // shift must never change what this shift's own Z report already said.
     const carried = await client.query(
       `SELECT COUNT(*)::int n, COALESCE(SUM(total_cents), 0)::int cents
-       FROM orders WHERE shift_id = $1 AND status NOT IN ('paid', 'cancelled', 'refunded')`, [shift.id]);
+       FROM orders WHERE shift_id = $1 AND ${openSql()}`, [shift.id]);
 
     const r = await client.query(
       `UPDATE shifts SET closed_at = now(), closed_by = $1, counted_cents = $2, expected_cents = $3,
@@ -150,7 +151,7 @@ async function report(shiftId, { final = false } = {}) {
     ? { rows: [{ n: shift.carried_forward_count || 0, cents: shift.carried_forward_cents || 0 }] }
     : await pool.query(
         `SELECT COUNT(*)::int n, COALESCE(SUM(total_cents), 0)::int cents
-         FROM orders WHERE shift_id = $1 AND status NOT IN ('paid', 'cancelled', 'refunded')`, [shiftId]);
+         FROM orders WHERE shift_id = $1 AND ${openSql()}`, [shiftId]);
 
   const gross_cents = orders.rows.reduce((s, o) => s + (o.subtotal_cents || 0), 0);
   const service_charge_cents = orders.rows.reduce((s, o) => s + (o.service_charge_cents || 0), 0);

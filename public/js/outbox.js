@@ -65,7 +65,9 @@ function notify() { listeners.forEach(fn => fn()); }
    blocks on the network. */
 export async function enqueue(request) {
   const id = uuid();
-  const entry = { id, url: request.url, method: request.method, body: request.body, key: id, createdAt: Date.now(), attempts: 0 };
+  const entry = { id, url: request.url, method: request.method, body: request.body, key: id, createdAt: Date.now(), attempts: 0,
+    // What the till shows if this entry ever fails for good: which card, which dishes.
+    meta: request.meta || null };
   const s = await store(QUEUE_STORE, 'readwrite');
   await reqToPromise(s.add(entry));
   notify();
@@ -95,8 +97,16 @@ async function update(entry) {
 
 async function moveToFailed(entry, error) {
   const s = await store(FAILED_STORE, 'readwrite');
-  await reqToPromise(s.put({ ...entry, error: String(error) }));
+  await reqToPromise(s.put({ ...entry, error: String(error), failedAt: Date.now() }));
   await remove(entry.id);
+}
+
+// The till lists failed entries until someone acknowledges them — a dish that
+// was never sent must never just disappear from the screen (review D3).
+export async function dismissFailed(id) {
+  const s = await store(FAILED_STORE, 'readwrite');
+  await reqToPromise(s.delete(id));
+  notify();
 }
 
 /* Returns true once this entry is resolved (sent, converted-and-retried, or
@@ -151,8 +161,10 @@ async function sendOne(entry) {
   }
 
   // 4xx other than a convertible 409: retrying forever would be worse than a
-  // visible error — move it out of the queue and surface it.
-  await moveToFailed(entry, `HTTP ${res.status}`);
+  // visible error — move it out of the queue and surface it, with the
+  // server's own reason (e.g. "This bill was combined into Card 1").
+  const data = await res.json().catch(() => ({}));
+  await moveToFailed(entry, data.error || `HTTP ${res.status}`);
   return true;
 }
 

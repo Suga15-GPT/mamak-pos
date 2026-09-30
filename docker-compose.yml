@@ -21,7 +21,14 @@ services:
     mem_limit: 256m
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/postgres
+      # The password goes in on its own, never inside a postgres:// URL, so
+      # any characters work (/ + = # @ included). src/db.js reads these when
+      # DATABASE_URL is not set — the same variables the backup service uses.
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: postgres
       ADMIN_PIN: ${ADMIN_PIN:?set ADMIN_PIN in .env}
       BASE_URL: ${BASE_URL:-http://localhost:3000}
       PORT: "${PORT:-3000}"

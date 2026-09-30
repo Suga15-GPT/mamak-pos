@@ -5,6 +5,7 @@ const { writeAudit } = require('./orders');
 const rounds = require('./rounds');
 const { leaveGroupIfClosedTx } = require('./bill_groups');
 const { lockBills } = require('../lib/billlock');
+const { isClosed, closedBillError } = require('../lib/status');
 const features = require('./features');
 
 // A line belongs on the bill once its round is accepted. A round held for
@@ -139,8 +140,67 @@ async function hasPayments(orderId) {
 
 async function listPayments(orderId) {
   const r = await pool.query(
-    'SELECT id, method, amount_cents, tendered_cents, taken_by, at FROM payments WHERE order_id = $1 ORDER BY at, id', [orderId]);
+    'SELECT id, method, amount_cents, tendered_cents, taken_by, at, item_ids FROM payments WHERE order_id = $1 ORDER BY at, id', [orderId]);
   return r.rows;
+}
+
+/* ===== split by items =====
+   A share is the ticked lines' part of the whole bill: their price over the
+   bill's subtotal, times its total. So each share carries its proportional
+   service charge and tax (and any discount), rounded half up to the sen. The
+   last share — the ticked lines are every line not yet paid for — is simply
+   what is left to pay, so the shares always add up to the bill exactly, and
+   any rounding remainder lands there. Cash rounding happens where it always
+   has: on the cash payment that settles the bill (addPayment). */
+
+// The lines on the bill, each with its price in cents (options and quantity
+// included) — the same lines, and the same sum, as the bill's subtotal.
+async function billLines(client, orderId) {
+  const r = await client.query(
+    `SELECT oi.id,
+            (oi.price_cents + COALESCE((SELECT SUM(m.price_cents) FROM order_item_mods m WHERE m.order_item_id = oi.id), 0)) * oi.qty AS cents
+       FROM order_items oi
+      WHERE oi.order_id = $1 AND oi.voided_at IS NULL AND ${ON_BILL_SQL}
+      ORDER BY oi.id`, [orderId]);
+  return r.rows.map(x => ({ id: x.id, cents: Number(x.cents) }));
+}
+
+// Lines an earlier item share on this bill paid for. A share refunded in full
+// paid for nothing, so its lines can be paid for again.
+async function itemIdsPaid(orderId, client = pool) {
+  const r = await client.query(
+    `SELECT DISTINCT unnest(p.item_ids) AS id FROM payments p
+      WHERE p.order_id = $1 AND p.item_ids IS NOT NULL
+        AND p.amount_cents > COALESCE((SELECT SUM(r.amount_cents) FROM refunds r WHERE r.payment_id = p.id), 0)`,
+    [orderId]);
+  return new Set(r.rows.map(x => x.id));
+}
+
+// What the ticked lines come to. Read-only; addPayment calls it again under
+// the bill lock, so the amount recorded is the one computed from the bill as
+// it is at that moment.
+async function itemShare(orderId, rawIds, client = pool) {
+  const ids = [...new Set((Array.isArray(rawIds) ? rawIds : []).map(Number))].sort((a, b) => a - b);
+  if (!ids.length || ids.some(id => !Number.isInteger(id) || id <= 0)) throw AppError('Tick the items to pay for.', 400);
+  const o = (await client.query('SELECT total_cents FROM orders WHERE id = $1', [orderId])).rows[0];
+  if (!o) throw AppError('order not found', 404);
+  const lines = await billLines(client, orderId);
+  const byId = new Map(lines.map(l => [l.id, l]));
+  if (ids.some(id => !byId.has(id))) throw AppError('Those items are not on this bill.', 400);
+  const paid = await itemIdsPaid(orderId, client);
+  if (ids.some(id => paid.has(id))) throw AppError('Some of those items have already been paid for.', 409);
+
+  const total = o.total_cents || 0;
+  const dueCents = total - await paidCentsFor(orderId, client);
+  if (dueCents <= 0) throw AppError('order already settled', 400);
+  const subtotal = lines.reduce((s, l) => s + l.cents, 0);
+  const picked = ids.reduce((s, id) => s + byId.get(id).cents, 0);
+  const last = lines.every(l => paid.has(l.id) || ids.includes(l.id));
+  // Integer half-up: floor((2·total·picked + subtotal) / (2·subtotal)).
+  const proportional = subtotal > 0 ? Math.floor((2 * total * picked + subtotal) / (2 * subtotal)) : 0;
+  const shareCents = last ? dueCents : Math.min(dueCents, proportional);
+  if (!(shareCents > 0)) throw AppError('Those items come to nothing, so there is nothing to pay.', 400);
+  return { share_cents: shareCents, last, due_cents: dueCents, item_ids: ids };
 }
 
 // One payment "leg". amountCents defaults to the full remaining balance (the common
@@ -149,19 +209,23 @@ async function listPayments(orderId) {
 // order's remaining balance to zero, the 5-sen cash-rounding adjustment (kept out of
 // the bill until now) is folded into this final leg and the order's stored total.
 //
+// With itemIds, the leg is one "Split by items" share: its amount is worked
+// out here, under the lock (itemShare), and amountCents — what the till showed
+// — must match it, or nothing is recorded.
+//
 // One transaction holding the order's row lock — the lock appendSend and the
 // QR approval route take too — so items can never land on a bill between the
 // balance being read and the order being marked paid (finding #7).
-async function addPayment(orderId, { method, amountCents, tenderedCents, userId }) {
+async function addPayment(orderId, { method, amountCents, tenderedCents, itemIds = null, expectedDueCents = null, userId }) {
   if (!['Cash', 'Card', 'DuitNow/eWallet'].includes(method)) throw AppError('bad method', 400);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await lockBills(client);
-    const o = await client.query('SELECT status, bill_group_id FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
+    const o = await client.query('SELECT status, bill_group_id, merged_into_order_id FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
     if (!o.rows[0]) throw AppError('order not found', 404);
-    if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order already closed', 400);
+    if (isClosed(o.rows[0].status)) throw await closedBillError(client, o.rows[0], 'order already closed', 400);
     // A combined card is settled with its group, so the group's allocation and
     // its one rounding stay whole.
     if (o.rows[0].bill_group_id) {
@@ -171,6 +235,13 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
 
     const due = await amountDue(orderId, client);
     if (due <= 0) throw AppError('order already settled', 400);
+    // What the till showed as "To pay". A pay-in-full sends no amount, so
+    // without this a Combine (or an add-on) landing from another till while
+    // the pay screen is open would be charged at the new, larger balance the
+    // cashier never saw (review D1). A changed bill is refused, not re-priced.
+    if (expectedDueCents != null && Number(expectedDueCents) !== due) {
+      throw AppError(`The bill has changed: it now comes to ${formatRM(due)}. Check it and take payment again.`, 409);
+    }
 
     // Phase 09: the drawer this cash lands in (and the shift a card/eWallet sale
     // is attributed to) must be the open one — refusing here is the control that
@@ -178,7 +249,15 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
     // off there is no drawer to reconcile: no check, and shift_id is NULL.
     const shiftId = await features.moneyShift(client, 'no shift is open — open a shift before taking payment');
 
+    let share = null;
     let apply = amountCents == null ? due : Number(amountCents);
+    if (itemIds != null) {
+      share = await itemShare(orderId, itemIds, client);
+      if (amountCents != null && Number(amountCents) !== share.share_cents) {
+        throw AppError(`The bill has changed: these items now come to ${formatRM(share.share_cents)}. Check the amount and take it again.`, 409);
+      }
+      apply = share.share_cents;
+    }
     if (!(apply > 0)) throw AppError('amount must be positive', 400);
 
     let roundingAdj = 0;
@@ -200,8 +279,8 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
     // A 1-2 sen remainder paid in cash rounds to nothing: the order settles on
     // the rounding alone, with no zero-sen payment row (finding #6).
     const paymentId = apply > 0 ? (await client.query(
-      'INSERT INTO payments (order_id, method, amount_cents, tendered_cents, taken_by, shift_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
-      [orderId, method, apply, tendered, userId || null, shiftId])).rows[0].id : null;
+      'INSERT INTO payments (order_id, method, amount_cents, tendered_cents, taken_by, shift_id, item_ids) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+      [orderId, method, apply, tendered, userId || null, shiftId, share ? share.item_ids : null])).rows[0].id : null;
 
     if (roundingAdj) {
       await client.query('UPDATE orders SET rounding_cents = rounding_cents + $1, total_cents = total_cents + $1 WHERE id = $2',
@@ -222,7 +301,10 @@ async function addPayment(orderId, { method, amountCents, tenderedCents, userId 
     const changeCents = tendered != null ? tendered - apply : 0;
     await writeAudit(client, {
       userId, action: 'order.pay', entityType: 'order', entityId: orderId,
-      detail: { payment_id: paymentId, method, amount_cents: apply, tendered_cents: tendered, change_cents: changeCents, rounding_cents: roundingAdj, settled },
+      detail: {
+        payment_id: paymentId, method, amount_cents: apply, tendered_cents: tendered, change_cents: changeCents, rounding_cents: roundingAdj, settled,
+        ...(share ? { item_ids: share.item_ids, last_share: share.last } : {}),
+      },
     });
     await client.query('COMMIT');
     return { payment_id: paymentId, amount_cents: apply, tendered_cents: tendered, change_cents: changeCents, remaining_cents: remainingCents, settled };
@@ -247,7 +329,7 @@ async function addDiscount(orderId, { kind, value, reason, userId }) {
     await lockBills(client);
     const o = await client.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
     if (!o.rows[0]) throw AppError('order not found', 404);
-    if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order closed', 409);
+    if (isClosed(o.rows[0].status)) throw await closedBillError(client, o.rows[0], 'order closed');
     // A comp closes the bill, so it follows the payment rule: not while a
     // customer order is waiting for approval.
     if (kind === 'comp') await rounds.refuseWhileHeld(client, [orderId]);
@@ -307,7 +389,7 @@ async function removeDiscount(orderId, discountId, { userId }) {
     await lockBills(client);
     const o = await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
     if (!o.rows[0]) throw AppError('order not found', 404);
-    if (['paid', 'cancelled', 'refunded'].includes(o.rows[0].status)) throw AppError('order closed', 400);
+    if (isClosed(o.rows[0].status)) throw AppError('order closed', 400);
     const paid = await client.query('SELECT 1 FROM payments WHERE order_id = $1 LIMIT 1', [orderId]);
     if (paid.rows[0]) throw AppError('order has a payment recorded; cannot remove discount', 409);
 
@@ -409,22 +491,8 @@ function splitEvenly(totalCents, ways) {
   return shares;
 }
 
-async function splitBySeat(orderId) {
-  const r = await pool.query(
-    `SELECT oi.id, oi.seat, oi.price_cents, oi.qty, COALESCE(SUM(m.price_cents), 0) AS mods_cents
-     FROM order_items oi LEFT JOIN order_item_mods m ON m.order_item_id = oi.id
-     WHERE oi.order_id = $1 AND oi.voided_at IS NULL AND ${ON_BILL_SQL}
-     GROUP BY oi.id`, [orderId]);
-  const bySeat = {};
-  r.rows.forEach(row => {
-    const seat = row.seat == null ? 'unassigned' : String(row.seat);
-    bySeat[seat] = (bySeat[seat] || 0) + (row.price_cents + Number(row.mods_cents)) * row.qty;
-  });
-  return bySeat;
-}
-
 module.exports = {
   recomputeOrderBill, amountDue, hasPayments, listPayments, addPayment, addDiscount, listDiscounts, removeDiscount,
   addRefund, listRefunds,
-  splitEvenly, splitBySeat, paidCentsFor, guardAgainstShortfall, settleIfMatchesPaid, previewBillExcludingLine,
+  splitEvenly, itemShare, itemIdsPaid, paidCentsFor, guardAgainstShortfall, settleIfMatchesPaid, previewBillExcludingLine,
 };

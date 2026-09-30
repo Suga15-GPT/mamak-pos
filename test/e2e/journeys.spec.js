@@ -375,10 +375,12 @@ test('split bill', async ({ page, request }) => {
   await expect(page.locator('#pos-tables')).toBeVisible();
 });
 
-/* Card mode: two parties on two cards decide to pay together. Nothing moves
-   between their orders; the whole combined bill is paid in one go — here RM2
-   in cash and the rest by card, submitted together — and both cards free up. */
-test('two cards, combine, pay once', async ({ page, request }) => {
+/* Card mode, before Combine merged bills: two cards that kept their own
+   orders and paid together. The till no longer makes such a group, but one
+   that existed when merging shipped still shows on both cards and is paid in
+   one go — here RM2 in cash and the rest by card, submitted together — and
+   both cards free up. */
+test('a combined bill from before Combine merged bills still shows, and is paid once', async ({ page, request }) => {
   const csrfToken = await apiLogin(request);
   const existing = await request.get('/api/shift/current').then(r => r.json());
   if (!existing) await request.post('/api/shift/open', { headers: { 'X-CSRF-Token': csrfToken }, data: { float: 0 } });
@@ -397,11 +399,18 @@ test('two cards, combine, pay once', async ({ page, request }) => {
   await page.getByRole('button', { name: /Send 1 new item/ }).click();
   await expect(page.locator('#cart-body')).toContainText('Already sent');
 
-  await page.getByRole('button', { name: /Combine bills/ }).click();
-  await page.locator('#combine-list label', { hasText: 'Card 11' }).locator('input').check();
-  await page.locator('#combine-modal').getByRole('button', { name: 'Combine', exact: true }).click();
+  // The group, made the way it was before this release (the API still can).
+  const before = await request.get('/api/orders').then(r => r.json());
+  const ids = ['Card 11', 'Card 12'].map(label => before.find(o => o.label === label).id);
+  const made = await request.post('/api/bill-groups', { headers: { 'X-CSRF-Token': csrfToken }, data: { order_ids: ids } });
+  expect(made.status()).toBe(201);
+  await page.getByRole('button', { name: /Back to Cards/ }).click();
+  await expect(page.locator('#tables-grid').getByRole('button', { name: /^Card 12\b/ })).toContainText('Combined bill');
+  await openCard(page, 12);
   await expect(page.locator('#bill-group')).toContainText('Card 11');
   await expect(page.locator('#bill-group')).toContainText('Card 12');
+  // A card on one of these is paid with it; Combine isn't offered from it.
+  await expect(page.locator('#combine-btn')).toBeHidden();
 
   await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
   await expect(page.locator('#pay-details')).toContainText('Combined bill');
@@ -426,6 +435,344 @@ test('two cards, combine, pay once', async ({ page, request }) => {
   expect(byLabel['Card 11']).toEqual([['Card', 2.12]]);
   expect(byLabel['Card 12']).toEqual([['Card', 0.97], ['Cash', 2]]);
   await expect(page.locator('#tables-grid').getByRole('button', { name: /^Card 11\b/ })).toContainText('Free');
+});
+
+/* ===== day-one fixes ===== */
+
+const withCsrf = csrfToken => ({ headers: { 'X-CSRF-Token': csrfToken } });
+
+async function ensureShift(request, csrfToken) {
+  const existing = await request.get('/api/shift/current').then(r => r.json());
+  if (!existing) await request.post('/api/shift/open', { ...withCsrf(csrfToken), data: { float: 0 } });
+}
+
+// Pays whatever bill is open on a card, so a journey can start it fresh
+// whatever ran before it (the suite shares one database).
+async function payOpenBill(request, csrfToken, order) {
+  if (order.bill_group_id) {
+    const g = await request.get(`/api/bill-groups/${order.bill_group_id}`).then(r => r.json());
+    if (g.closed_at) return;
+    const r = await request.post(`/api/bill-groups/${g.id}/pay`, { ...withCsrf(csrfToken), data: { legs: [{ method: 'Card', amount: g.amount_due }] } });
+    expect(r.status(), `paying combined bill ${g.id}`).toBe(200);
+    return;
+  }
+  const r = await request.post(`/api/orders/${order.id}/pay`, { ...withCsrf(csrfToken), data: { method: 'Card' } });
+  expect(r.status(), `paying ${order.label}`).toBe(200);
+}
+
+async function freeCard(request, csrfToken, number) {
+  const o = (await request.get('/api/orders').then(r => r.json())).find(x => x.card_number === number);
+  if (!o) return;
+  await ensureShift(request, csrfToken);
+  await payOpenBill(request, csrfToken, o);
+}
+
+// Every bill paid, every kitchen ticket served, the shift closed: the state
+// Clear sales data needs.
+async function settleShop(request, csrfToken) {
+  await ensureShift(request, csrfToken);
+  for (const o of await request.get('/api/orders').then(r => r.json())) {
+    const still = (await request.get('/api/orders').then(r => r.json())).find(x => x.id === o.id);
+    if (still) await payOpenBill(request, csrfToken, still);
+  }
+  const next = { sent: ['preparing', 'ready', 'served'], preparing: ['ready', 'served'], ready: ['served'] };
+  for (const station of ['kitchen', 'drinks']) {
+    const { tickets } = await request.get(`/api/kitchen/tickets?station=${station}`).then(r => r.json());
+    for (const t of tickets.filter(x => x.status !== 'served')) {
+      for (const st of next[t.status]) {
+        const r = await request.patch(`/api/kitchen/tickets/${t.id}`, { ...withCsrf(csrfToken), data: { status: st } });
+        expect(r.status()).toBe(200);
+      }
+    }
+  }
+  const shift = await request.get('/api/shift/current').then(r => r.json());
+  const rep = await request.get(`/api/shift/${shift.id}/report`).then(r => r.json());
+  const closed = await request.post('/api/shift/close', { ...withCsrf(csrfToken), data: { counted: rep.cash.expected_cents / 100 } });
+  expect(closed.status()).toBe(200);
+}
+
+/* Split by items: each person ticks what they had and pays exactly that, with
+   its share of the SST; the last share takes whatever is left, and cash is
+   rounded to 5 sen only on the payment that settles the bill. The panel
+   shows full payment first; paying a specific amount is folded away. */
+test('split by items: each person pays for what they had, and the last share takes what is left', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  await ensureShift(request, csrfToken);
+  await freeCard(request, csrfToken, 13);
+  page.on('dialog', dialog => dialog.accept());
+
+  await login(page);
+  await openCard(page, 13);
+  await addItem(page, 'Roti', 'Roti Canai');
+  await addItem(page, 'Mee & Goreng', 'Mee Goreng Mamak');
+  await addItem(page, 'Minuman Panas', 'Teh Tarik');
+  // A line has no seat button any more: − + 📝 ✕.
+  await expect(page.locator('#cart-body').getByRole('button', { name: /seat/i })).toHaveCount(0);
+  await page.getByRole('button', { name: /Send 3 new items/ }).click();
+  await expect(page.locator('#cart-body')).toContainText('Already sent');
+
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Payment' })).toBeVisible();
+  // Pay part of the bill is folded away until asked for.
+  const part = page.getByRole('button', { name: 'Pay part of the bill' });
+  await expect(part).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#pay-amount-row')).toBeHidden();
+  await part.click();
+  await expect(part).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByText('Pay a specific amount (RM)')).toBeVisible();
+  await part.click();
+  await expect(page.locator('#pay-amount-row')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Split by seat' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Split by items' }).click();
+  const line = name => page.locator('#pay-split-result .split-item', { hasText: name });
+  const total = page.locator('#split-items-total');
+  const payBy = method => page.locator('#pay-split-result').getByRole('button', { name: method });
+  await expect(total).toHaveText('Tick the items this person is paying for.');
+  await expect(payBy('Pay card')).toBeDisabled();
+
+  // 13.30 + 0.80 SST = 14.10, so the mee's share is 8.50 × 14.10 / 13.30 = 9.01.
+  await line('Mee Goreng Mamak').locator('input').check();
+  await expect(total).toContainText('These items: RM 9.01, with their share of service charge and tax.');
+  await payBy('Pay card').click();
+  await expect(page.locator('#toast')).toContainText('Paid RM 9.01');
+  await expect(line('Mee Goreng Mamak')).toContainText('Paid');
+  await expect(line('Mee Goreng Mamak').locator('input')).toBeDisabled();
+
+  await line('Roti Canai').locator('input').check();
+  await expect(total).toContainText('These items: RM 2.12');
+  await payBy('Pay cash').click();
+  await expect(line('Roti Canai')).toContainText('Paid');
+
+  // The last share is what is left (2.97, not 2.968 rounded again), and in cash 2.95.
+  await line('Teh Tarik').locator('input').check();
+  await expect(total).toContainText('These items: RM 2.97');
+  await expect(total).toContainText('This is the last share: it takes whatever is left on the bill.');
+  await expect(total).toContainText('In cash: RM 2.95.');
+  await payBy('Pay cash').click();
+  await expect(page.locator('#pos-tables')).toBeVisible();
+
+  const paid = (await request.get('/api/orders?mode=recent').then(r => r.json())).find(o => o.label === 'Card 13');
+  expect(paid.status).toBe('paid');
+  expect(paid.payments.map(p => [p.method, p.amount])).toEqual([['Card', 9.01], ['Cash', 2.12], ['Cash', 2.95]]);
+  expect(paid.grand_total).toBe(14.08);
+  expect(paid.rounding).toBe(-0.02);
+});
+
+/* Combine = merge: on Card 1, Combine -> Card 4, and Card 4's food moves onto
+   Card 1's bill now. The kitchen and the bill call it Card 1 (from 4); Card
+   4 is free, a fresh card to a customer scanning it, and the next group
+   starts a bill of its own on it. */
+test('combine: Card 4\'s items join Card 1\'s bill, and Card 4 starts a new group', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  await freeCard(request, csrfToken, 1);
+  await freeCard(request, csrfToken, 4);
+  const cards = await request.get('/api/admin/cards').then(r => r.json());
+  const qr = n => cards.find(c => c.number === n).url;
+
+  await login(page);
+  await openCard(page, 1);
+  await addItem(page, 'Roti', 'Roti Canai');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#cart-body')).toContainText('Already sent');
+  await page.getByRole('button', { name: /Back to Cards/ }).click();
+  await openCard(page, 4);
+  await addItem(page, 'Mee & Goreng', 'Mee Goreng Mamak');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#cart-body')).toContainText('Already sent');
+  await page.getByRole('button', { name: /Back to Cards/ }).click();
+
+  await openCard(page, 1);
+  await page.getByRole('button', { name: /Combine bills/ }).click();
+  await expect(page.locator('#combine-title')).toHaveText('Combine a card into Card 1');
+  await page.locator('#combine-list input[data-label="Card 4"]').check();
+  await page.locator('#combine-modal').getByRole('button', { name: 'Combine', exact: true }).click();
+  await expect(page.locator('#toast')).toContainText('Card 4’s items are now on Card 1’s bill. Card 4 is free.');
+  await expect(page.locator('#cart-body')).toContainText('Mee Goreng Mamak');
+  await expect(page.locator('.bill-round-head', { hasText: 'Card 1 (from 4)' })).toContainText('Round 1');
+  await expect(page.locator('#bill-group')).toContainText('Card 4’s items are on this bill.');
+  await expect(page.getByRole('button', { name: 'Separate Card 4' })).toBeVisible();
+  await expect(page.locator('#cart-total-rm')).toHaveText('RM 11.13');
+
+  await navTab(page, 'Kitchen').click();
+  const ticket = page.locator('#k-col-sent .k-order', { hasText: 'Card 1 (from 4)' });
+  await expect(ticket).toContainText('Mee Goreng Mamak');
+  await expect(ticket).not.toContainText('Add-on');
+
+  await navTab(page, 'Cards').click();
+  await page.getByRole('button', { name: /Back to Cards/ }).click();
+  await expect(page.locator('#tables-grid').getByRole('button', { name: /^Card 4\b/ })).toContainText('Free');
+  await expect(page.locator('#tables-grid').getByRole('button', { name: /^Card 1\b/ })).toContainText('With Card 4');
+
+  // A customer scanning Card 1 sees the whole bill; scanning Card 4, a fresh card.
+  const phone = await page.context().newPage();
+  await phone.goto(qr(1));
+  await expect(phone.locator('#card-bill')).toContainText('Mee Goreng Mamak');
+  await expect(phone.locator('#card-bill')).toContainText('from Card 4');
+  await expect(phone.locator('#card-bill')).toContainText('RM 11.13');
+  await phone.goto(qr(4));
+  await expect(phone.locator('#table-name')).toHaveText('Card 4');
+  await expect(phone.locator('#menu-items')).not.toBeEmpty();
+  await expect(phone.locator('#card-bill')).toHaveCount(0);
+  await phone.close();
+
+  // The next group on Card 4: a bill of its own.
+  await openCard(page, 4);
+  await expect(page.locator('#cart-empty')).toBeVisible();
+  await addItem(page, 'Roti', 'Roti Telur');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#cart-body')).toContainText('Roti Telur');
+  await expect(page.locator('#cart-body')).not.toContainText('Mee Goreng Mamak');
+  await page.getByRole('button', { name: /Back to Cards/ }).click();
+
+  // So Card 4's earlier items can't go back to it now, and the till says why.
+  await openCard(page, 1);
+  await page.getByRole('button', { name: 'Separate Card 4' }).click();
+  await expect(page.locator('#toast')).toContainText('Card 4 has a new bill of its own now');
+
+  const open = await request.get('/api/orders').then(r => r.json());
+  expect(open.find(o => o.label === 'Card 1').items.map(i => [i.name, i.from_card])).toEqual([['Roti Canai', null], ['Mee Goreng Mamak', 4]]);
+  expect(open.find(o => o.label === 'Card 4').items.map(i => i.name)).toEqual(['Roti Telur']);
+  const merged = (await request.get('/api/orders?mode=recent').then(r => r.json())).find(o => o.status === 'merged');
+  expect(merged.label).toBe('Card 4');
+  expect(merged.items).toEqual([]);
+});
+
+/* Review D1: a Combine made on another till while this pay screen is open.
+   The screen catches up with the new total before any money is taken, and
+   the server refuses a pay-in-full at a total the till no longer shows. */
+async function openByApi(request, csrfToken, number, itemName) {
+  const cards = await request.get('/api/admin/cards').then(r => r.json());
+  const menu = await request.get('/api/menu').then(r => r.json());
+  const r = await request.post('/api/orders', {
+    ...withCsrf(csrfToken),
+    data: { card_id: cards.find(c => c.number === number).id, items: [{ item_id: menu.items.find(i => i.name === itemName).id, qty: 1 }] },
+  });
+  expect(r.status()).toBe(201);
+  return (await r.json()).id;
+}
+
+test('a Combine on another till while the pay screen is open: the screen shows the new total before any money is taken', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  for (const n of [31, 32]) await freeCard(request, csrfToken, n);
+  await ensureShift(request, csrfToken);
+  const c31 = await openByApi(request, csrfToken, 31, 'Roti Canai');
+  const c32 = await openByApi(request, csrfToken, 32, 'Mee Goreng Mamak');
+
+  page.on('dialog', dialog => dialog.accept());
+  await login(page);
+  await openCard(page, 31);
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
+  await expect(page.locator('#pay-details')).toContainText('RM 2.12');
+
+  const m = await request.post(`/api/orders/${c31}/merge`, { ...withCsrf(csrfToken), data: { from_order_id: c32 } });
+  expect(m.status()).toBe(200);
+  await expect(page.locator('#toast')).toContainText('The bill changed on another till — it is now RM 11.13');
+  await expect(page.locator('#pay-details')).toContainText('RM 11.13');
+
+  // A till that still sends the old total is refused, and nothing is taken.
+  const stale = await request.post(`/api/orders/${c31}/pay`, { ...withCsrf(csrfToken), data: { method: 'Cash', expected_due: 2.12 } });
+  expect(stale.status()).toBe(409);
+
+  await page.locator('#pay-modal').getByRole('button', { name: '💵 Cash', exact: true }).click();
+  await expect(page.locator('#pos-tables')).toBeVisible();
+  const paid = (await request.get('/api/orders?mode=recent').then(r => r.json())).find(o => o.id === c31);
+  expect(paid.status).toBe('paid');
+  expect(paid.payments.map(p => p.amount)).toEqual([11.15]);
+});
+
+/* Review D3: an add-on queued offline for a card that another till combines
+   meanwhile can't land. It is listed on the till as not sent, with the
+   reason, until someone taps OK — never silently dropped. */
+test('an add-on for a card combined meanwhile is listed as not sent, never silently lost', async ({ page, context, request }) => {
+  const csrfToken = await apiLogin(request);
+  for (const n of [33, 34]) await freeCard(request, csrfToken, n);
+  const c33 = await openByApi(request, csrfToken, 33, 'Roti Canai');
+  const c34 = await openByApi(request, csrfToken, 34, 'Roti Telur');
+
+  await login(page);
+  await openCard(page, 33);
+  await context.setOffline(true);
+  await addItem(page, 'Minuman Panas', 'Teh Tarik');
+  await page.getByRole('button', { name: /Send 1 new item/ }).click();
+  await expect(page.locator('#offline-banner')).toContainText('1 order');
+
+  const m = await request.post(`/api/orders/${c34}/merge`, { ...withCsrf(csrfToken), data: { from_order_id: c33 } });
+  expect(m.status()).toBe(200);
+  await context.setOffline(false);
+
+  const box = page.locator('#outbox-failed');
+  await expect(box).toBeVisible();
+  await expect(box).toContainText('Not sent — Card 33');
+  await expect(box).toContainText('1× Teh Tarik');
+  await expect(box).toContainText('Card 34');
+  await box.getByRole('button', { name: 'OK' }).click();
+  await expect(box).toBeHidden();
+  const open = await request.get('/api/orders').then(r => r.json());
+  expect(open.find(o => o.id === c34).items.map(i => i.name).sort()).toEqual(['Roti Canai', 'Roti Telur']);
+});
+
+/* Clear sales data: with every bill, shift and kitchen ticket finished, the
+   owner clears from Admin -> System with their PIN and the word CLEAR, and
+   the Sales screen reads RM0. Running the wizard again first changes settings
+   only — its last page says where clearing lives. */
+test('clear sales data: running setup keeps the sales, clearing starts every figure from RM0', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  await ensureShift(request, csrfToken);
+  const menu = await request.get('/api/menu').then(r => r.json());
+  const roti = menu.items.find(i => i.name === 'Roti Canai');
+  const ta = await request.post('/api/orders', { ...withCsrf(csrfToken), data: { order_type: 'takeaway', items: [{ item_id: roti.id, qty: 2 }] } });
+  await payOpenBill(request, csrfToken, await ta.json());
+  await settleShop(request, csrfToken);
+  const before = await request.get('/api/dashboard').then(r => r.json());
+  expect(before.today.sales).toBeGreaterThan(0);
+
+  await login(page);
+  await navTab(page, 'Admin').click();
+  await page.locator('#admin-tabs').getByRole('button', { name: /Features & setup/ }).click();
+  await page.getByRole('button', { name: 'Run setup again' }).click();
+  const wizard = page.locator('#setup-modal');
+  await expect(wizard).toBeVisible();
+  if (!(await page.locator('#setup-name').inputValue())) await page.locator('#setup-name').fill('Gerai Pak Ali');
+  for (let i = 0; i < 8 && !(await wizard.getByRole('button', { name: 'Finish setup' }).isVisible()); i++) {
+    await wizard.getByRole('button', { name: 'Next' }).click();
+  }
+  await expect(page.locator('#setup-sales-kept')).toHaveText('Your sales history is kept. To start from RM0, use Admin → System → Clear sales data.');
+  await wizard.getByRole('button', { name: 'Finish setup' }).click();
+  await expect(wizard).toBeHidden();
+  expect((await request.get('/api/dashboard').then(r => r.json())).today).toEqual(before.today);
+
+  await page.locator('#admin-tabs').getByRole('button', { name: /System/ }).click();
+  await expect(page.locator('#clear-sales-status')).toContainText('would move into an archive');
+  await page.locator('#clear-sales-open').click();
+  const modal = page.locator('#clear-sales-modal');
+  await expect(modal.locator('#clear-sales-summary')).toContainText('every sales figure starts again from RM0');
+  await modal.locator('#clear-sales-pin').fill('1234');
+  await modal.locator('#clear-sales-confirm').fill('clear');
+  await modal.getByRole('button', { name: 'Clear sales data' }).click();
+  await expect(modal.locator('#clear-sales-err')).toHaveText('Type CLEAR, in capitals, to confirm.');
+  await modal.locator('#clear-sales-confirm').fill('CLEAR');
+  await modal.getByRole('button', { name: 'Clear sales data' }).click();
+  await expect(modal).toBeHidden();
+  await expect(page.locator('#toast')).toContainText(/Sales cleared\. The old figures are kept in archive_\d{8}_\d{6}/);
+  await expect(page.locator('#clear-sales-status')).toContainText('There are no sales to clear');
+
+  await navTab(page, 'Sales').click();
+  const kpi = label => page.locator('#dash-kpis .kpi', { hasText: label }).locator('.v');
+  await expect(kpi('Today sales')).toHaveText('RM 0.00');
+  await expect(kpi('Orders')).toHaveText('0');
+  await expect(kpi('This month')).toHaveText('RM 0.00');
+  await expect(kpi('This year')).toHaveText('RM 0.00');
+  await expect(page.locator('#dash-top')).toContainText('Nothing yet today');
+
+  const dash = await request.get('/api/dashboard').then(r => r.json());
+  expect([dash.today.sales, dash.today.orders, dash.month.sales, dash.year.sales]).toEqual([0, 0, 0, 0]);
+  const summary = await request.get('/api/summary').then(r => r.json());
+  expect([summary.today.sales, summary.month.sales, summary.year.sales]).toEqual([0, 0, 0]);
+  const [audit] = await request.get('/api/admin/audit?action=sales.clear').then(r => r.json());
+  expect(audit.user_name).toBe('Admin');
+  expect(audit.detail.archive).toMatch(/^archive_\d{8}_\d{6}/);
+  expect(audit.detail.bills).toBeGreaterThan(0);
 });
 
 test('void a line', async ({ page }) => {

@@ -2,11 +2,18 @@ const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { cents2rm, roundCashCents, formatRM } = require('../lib/money');
 const { lockBills } = require('../lib/billlock');
+const { CLOSED_STATUSES } = require('../lib/status');
 const { writeAudit, ordersWithItems } = require('./orders');
 const rounds = require('./rounds');
 const features = require('./features');
 
-/* ===== combined bills =====
+/* ===== combined bills (from before Combine merged bills) =====
+   The till's Combine now merges one card's bill into another's
+   (services/merge.js). This is the grouping it used to make, kept so that a
+   group open when merging shipped still shows, is paid in one go, and can be
+   taken apart; POST /api/bill-groups still makes one for API callers, but no
+   screen does.
+
    A bill group settles several card orders together. Nothing moves between
    orders: every card keeps its own order, rounds, kitchen tickets and its own
    per-order tax, computed exactly as it always was. The group total is simply
@@ -19,7 +26,7 @@ const features = require('./features');
    anything short of the whole bill is refused. There is no state in which a
    combined bill is part-paid. */
 
-const CLOSED = ['paid', 'cancelled', 'refunded'];
+const CLOSED = CLOSED_STATUSES;
 const METHODS = ['Cash', 'Card', 'DuitNow/eWallet'];
 const UNCOMBINE_BLOCKED = "This combined bill has a payment on it and can't be split apart.";
 const NOT_IN_FULL = 'A combined bill has to be paid in full in one go.';

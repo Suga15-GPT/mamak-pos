@@ -15,6 +15,11 @@
    the operations above read the flags they depend on under this lock, so a
    switch lands wholly before or wholly after each of them.
 
+   So do Combine and Separate (services/merge.js), which move rounds, lines
+   and kitchen tickets between two bills and lock both orders in ascending
+   id, and Clear sales data (services/sales_archive.js), which checks nothing
+   is open and moves every sales row out under it.
+
    Released automatically at COMMIT or ROLLBACK. */
 
 const BILL_LOCK_KEY = 7243016;

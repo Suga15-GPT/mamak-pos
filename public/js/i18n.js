@@ -163,6 +163,54 @@ const translations = {
   'setup.review.cards': { en: '{n} cards', ms: '{n} kad' },
   'setup.review.taxLabel': { en: 'Tax', ms: 'Cukai' },
   'setup.review.tax': { en: 'SST {tax}% · service charge {svc}%', ms: 'SST {tax}% · caj perkhidmatan {svc}%' },
+  // Running the wizard again changes settings only.
+  'setup.review.salesKept': { en: 'Your sales history is kept. To start from RM0, use Admin → System → Clear sales data.', ms: 'Sejarah jualan anda disimpan. Untuk bermula dari RM0, guna Admin → System → Kosongkan data jualan.' },
+
+  // Combine: another card's bill joins this one, and that card is free.
+  // Card labels ("Card 4") stay the same words in both languages — they are
+  // what is printed on the card and on the kitchen ticket.
+  'merge.button': { en: 'Combine bills', ms: 'Gabung bil' },
+  'merge.title': { en: 'Combine a card into {card}', ms: 'Gabungkan kad ke dalam {card}' },
+  'merge.hint': { en: 'Pick the card to combine. Its items move onto this bill now — the kitchen keeps cooking them — and that card is free for the next group.', ms: 'Pilih kad untuk digabungkan. Itemnya dipindahkan ke bil ini sekarang — dapur terus memasaknya — dan kad itu bebas untuk kumpulan seterusnya.' },
+  'merge.confirm': { en: 'Combine', ms: 'Gabung' },
+  'merge.none': { en: 'No other card has an open bill.', ms: 'Tiada kad lain yang ada bil terbuka.' },
+  'merge.pick': { en: 'Choose the card to combine.', ms: 'Pilih kad untuk digabungkan.' },
+  'merge.done': { en: '{from}’s items are now on {card}’s bill. {from} is free.', ms: 'Item {from} kini dalam bil {card}. {from} sudah bebas.' },
+  'merge.note': { en: 'Card {from}’s items are on this bill.', ms: 'Item Card {from} ada dalam bil ini.' },
+  'merge.separate': { en: 'Separate Card {from}', ms: 'Asingkan Card {from}' },
+  'merge.separated': { en: 'Card {from}’s items are back on Card {from}.', ms: 'Item Card {from} kembali ke Card {from}.' },
+  'merge.tileWith': { en: 'With Card {cards}', ms: 'Bersama Card {cards}' },
+
+  // The pay panel.
+  'split.evenly': { en: 'Split evenly', ms: 'Bahagi sama rata' },
+  'split.byItems': { en: 'Split by items', ms: 'Bahagi ikut item' },
+  'split.items.hint': { en: 'Tick what this person had. Service charge and tax are shared out with the items.', ms: 'Tanda apa yang orang ini ambil. Caj perkhidmatan dan cukai dibahagi bersama item.' },
+  'split.items.none': { en: 'Tick the items this person is paying for.', ms: 'Tanda item yang dibayar oleh orang ini.' },
+  'split.items.working': { en: 'Working it out…', ms: 'Sedang dikira…' },
+  'split.items.total': { en: 'These items: {amount}, with their share of service charge and tax.', ms: 'Item ini: {amount}, termasuk bahagian caj perkhidmatan dan cukai.' },
+  'split.items.last': { en: 'This is the last share: it takes whatever is left on the bill.', ms: 'Ini bahagian terakhir: ia mengambil baki bil.' },
+  'split.items.cash': { en: 'In cash: {amount}.', ms: 'Tunai: {amount}.' },
+  'split.items.paid': { en: 'Paid', ms: 'Dibayar' },
+  'split.items.payCash': { en: 'Pay cash', ms: 'Bayar tunai' },
+  'split.items.payCard': { en: 'Pay card', ms: 'Bayar kad' },
+  'split.items.payEwallet': { en: 'Pay eWallet', ms: 'Bayar eWallet' },
+  'pay.part': { en: 'Pay part of the bill', ms: 'Bayar sebahagian bil' },
+  'pay.specificAmount': { en: 'Pay a specific amount (RM)', ms: 'Bayar jumlah tertentu (RM)' },
+
+  // Admin -> System -> Clear sales data.
+  'clear.heading': { en: 'Clear sales data', ms: 'Kosongkan data jualan' },
+  'clear.helpLink': { en: 'Before you clear', ms: 'Sebelum mengosongkan' },
+  'clear.intro': { en: 'Start the sales figures from RM0 — after training, or a trial day. Every bill, payment, shift and kitchen ticket moves into an archive in the database, where it can be restored. Menu, staff, cards, settings, features and the activity log stay as they are.', ms: 'Mulakan angka jualan dari RM0 — selepas latihan, atau hari percubaan. Setiap bil, bayaran, syif dan tiket dapur dipindahkan ke arkib dalam pangkalan data, dan boleh dipulihkan. Menu, staf, kad, tetapan, ciri dan log aktiviti kekal.' },
+  'clear.button': { en: 'Clear sales data…', ms: 'Kosongkan data jualan…' },
+  'clear.what': { en: '{bills} bills and {amount} taken would move into an archive.', ms: '{bills} bil dan {amount} diterima akan dipindahkan ke arkib.' },
+  'clear.nothing': { en: 'There are no sales to clear — every figure is already RM0.', ms: 'Tiada jualan untuk dikosongkan — semua angka sudah RM0.' },
+  'clear.summary': { en: '{bills} bills and {amount} taken move into an archive, and every sales figure starts again from RM0. Menu, staff, cards, settings and the activity log stay.', ms: '{bills} bil dan {amount} diterima dipindahkan ke arkib, dan setiap angka jualan bermula semula dari RM0. Menu, staf, kad, tetapan dan log aktiviti kekal.' },
+  'clear.pin': { en: 'Your PIN', ms: 'PIN anda' },
+  'clear.type': { en: 'Type CLEAR to confirm', ms: 'Taip CLEAR untuk mengesahkan' },
+  'clear.confirm': { en: 'Clear sales data', ms: 'Kosongkan data jualan' },
+  'clear.needPin': { en: 'Type your PIN.', ms: 'Taip PIN anda.' },
+  'clear.needWord': { en: 'Type CLEAR, in capitals, to confirm.', ms: 'Taip CLEAR, dalam huruf besar, untuk mengesahkan.' },
+  'clear.done': { en: 'Sales cleared. The old figures are kept in {archive}.', ms: 'Jualan dikosongkan. Angka lama disimpan dalam {archive}.' },
 };
 
 function currentLocale() {

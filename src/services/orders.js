@@ -3,6 +3,7 @@ const { AppError } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
 const rounds = require('./rounds');
 const { lockBills } = require('../lib/billlock');
+const { isClosed, closedBillError } = require('../lib/status');
 const features = require('./features');
 
 // "Orderable" = available and not sold out today (sold_out_until resets itself
@@ -174,11 +175,16 @@ async function appendSend(orderId, parsed, source, userId = null, idemKey = null
     parsed = await atStations(client, parsed);
     const send = await rounds.createSend(client, orderId, { source, userId, approvalState, publicRef });
     const cur = (await client.query(
-      `SELECT status,
+      `SELECT status, merged_into_order_id,
               COALESCE((SELECT SUM(amount_cents) FROM payments p WHERE p.order_id = o.id), 0)
             - COALESCE((SELECT SUM(amount_cents) FROM refunds r WHERE r.order_id = o.id), 0) > 0 AS has_payment
          FROM orders o WHERE o.id = $1`, [orderId])).rows[0];
-    if (rounds.TERMINAL_ORDER_STATUSES.includes(cur.status)) throw Object.assign(AppError('order closed', 400), { code: 'order_closed' });
+    // A merged bill says where its items went; either way the caller learns
+    // the order is closed and which status closed it (the QR route opens a
+    // fresh bill on a card whose bill was merged away).
+    if (isClosed(cur.status)) {
+      throw Object.assign(await closedBillError(client, cur, 'order closed', 400), { code: 'order_closed', order_status: cur.status });
+    }
     if (cur.has_payment) throw Object.assign(AppError('order has a payment recorded; cannot add items', 409), { code: 'has_payment' });
     const insertedIds = await insertSendLines(client, orderId, send.id, parsed, userId, idemKey);
     if (audit) await writeAudit(client, audit);

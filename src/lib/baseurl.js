@@ -59,4 +59,20 @@ function qrHealth(req) {
   return { base_url: url, configured: !!configured, ok: problems.length === 0, problems, warnings };
 }
 
-module.exports = { configuredBaseUrl, requestBaseUrl, publicBaseUrl, qrHealth };
+/* Logged once at boot in production (server.js): a BASE_URL on this PC's own
+   name is always a mistake there, and docker-compose.yml falls back to
+   http://localhost:3000 when .env leaves it out. Null when there is nothing to
+   say. */
+function localBaseUrlWarning() {
+  const configured = configuredBaseUrl();
+  if (!configured) return null;
+  let host = '';
+  try { host = new URL(configured).hostname; } catch { /* judged by its text alone */ }
+  if (!LOCAL_HOST.test(host) && !/localhost/i.test(configured)) return null;
+  return `WARNING: BASE_URL is ${configured}, which only this PC can open. `
+    + 'Every QR code and NFC tag contains BASE_URL, and on a customer\'s phone that address means the phone itself. '
+    + 'Set BASE_URL in .env to this PC\'s LAN address, e.g. http://192.168.x.x:3000, restart, '
+    + 'then reprint the QR codes and rewrite the NFC tags.';
+}
+
+module.exports = { configuredBaseUrl, requestBaseUrl, publicBaseUrl, qrHealth, localBaseUrlWarning };

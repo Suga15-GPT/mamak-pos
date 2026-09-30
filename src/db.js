@@ -2,7 +2,12 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+/* DATABASE_URL when it is set, exactly as before. Otherwise pg reads the
+   standard variables PGHOST, PGPORT, PGUSER, PGPASSWORD and PGDATABASE, which
+   is what docker-compose.yml passes: there the password travels as it is, so
+   any characters work. Inside a URL they do not: a / # or ? makes it no
+   address at all, and %41 quietly becomes A. */
+const pool = new Pool(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {});
 const query = (text, params) => pool.query(text, params);
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');

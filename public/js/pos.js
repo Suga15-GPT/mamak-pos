@@ -1,6 +1,6 @@
 import { state, $, fmt, esc, toast, onStreamEvent, stateWords, minsSince, ask } from './state.js';
-import { enqueue, pending as outboxPending, onOutboxChange, resultFor } from './outbox.js';
-import { on } from './features.js';
+import { enqueue, pending as outboxPending, failedEntries, dismissFailed, onOutboxChange, resultFor } from './outbox.js';
+import { on, fill } from './features.js';
 import { t } from './i18n.js';
 
 /* ===== DATA LOADING ===== */
@@ -48,6 +48,7 @@ function tileHtml({ key, name, order, action, id }) {
     <span class="t-sub">${mins} min · ${items} item${items === 1 ? '' : 's'}${stale ? ' · check this card' : ''}</span>
     ${pending ? `<span class="t-sub">⏳ ${pending} waiting for you</span>` : ''}
     ${order.bill_group_id ? '<span class="t-sub">🔗 Combined bill</span>' : ''}
+    ${(order.merged_from || []).length ? `<span class="t-sub">🔗 ${esc(fill(t('merge.tileWith'), { cards: order.merged_from.map(m => m.card_number).join(', ') }))}</span>` : ''}
     <span class="t-total">${fmt(total)}</span>
   </button>`;
 }
@@ -201,14 +202,17 @@ async function checkOpenOrder() {
       }
       state.cart = open.items.map(l => ({
         id: l.id, item_id: l.item_id || 0, name: l.name, price: l.price, qty: l.qty, mods: l.mods,
-        note: l.note || '', seat: l.seat, sent: true, voided: l.voided, void_reason: l.void_reason,
-        round: l.round, round_status: l.round_status, station: l.station, send_id: l.send_id, held: l.held,
+        note: l.note || '', sent: true, voided: l.voided, void_reason: l.void_reason,
+        round: l.round, round_no: l.round_no, from_card: l.from_card,
+        round_status: l.round_status, station: l.station, send_id: l.send_id, held: l.held,
       })).concat(unsent);
       $('pay-btn').style.display = '';
       $('pay-btn').dataset.orderId = open.id;
       $('pay-btn').dataset.orderStatus = open.status;
       $('move-order-btn').style.display = '';
-      $('combine-btn').style.display = open.card_id ? '' : 'none';
+      // Combine takes another card's bill onto this one; a card still on a
+      // combined bill from before merge shipped is paid with that bill.
+      $('combine-btn').style.display = open.card_id && !open.bill_group_id ? '' : 'none';
       renderBillGroup(open, orders);
       const w = stateWords(open.status);
       $('bill-badge').innerHTML = `<span class="badge ${esc(open.status)}">${w.icon} ${esc(w.label)}</span>`;
@@ -358,13 +362,13 @@ function saveNote(note) {
 }
 
 /* A bill line is three rows, not one: what it is and what it costs, then what
-   was asked for, then the controls. Squeezing a stepper, a note button and a
-   seat box onto the same row as the name turned every dish into three wrapped
-   lines on the panel width a tablet actually has. */
+   was asked for, then the controls. Squeezing a stepper and a note button onto
+   the same row as the name turned every dish into wrapped lines on the panel
+   width a tablet actually has. */
 function lineHtml(l, i) {
   const lt = (l.price + l.mods.reduce((s, m) => s + m.price, 0)) * l.qty;
   const modStr = l.mods.map(m => m.name + (m.price ? ` +${fmt(m.price)}` : '')).join(', ');
-  const sub = [modStr, l.note ? `📝 ${l.note}` : '', l.seat != null ? `Seat ${l.seat}` : '']
+  const sub = [modStr, l.note ? `📝 ${l.note}` : '']
     .filter(Boolean).map(esc).join(' · ');
 
   let actions = '';
@@ -379,8 +383,6 @@ function lineHtml(l, i) {
       <button data-action="cart-qty" data-id="${i}" data-delta="1" aria-label="One more">+</button>
     </div>
     <button class="ln-btn" data-action="open-note" data-id="${i}" aria-label="Add a remark for ${esc(l.name)}">📝</button>
-    <button class="seat-btn${l.seat != null ? ' on' : ''}" data-action="set-seat" data-id="${i}"
-      aria-label="Set the seat for ${esc(l.name)}">${l.seat != null ? `Seat ${l.seat}` : 'Seat'}</button>
     <button class="ln-btn del" data-action="cart-del" data-id="${i}" aria-label="Remove ${esc(l.name)}">✕</button>`;
 
   const cls = ['bill-line'];
@@ -396,6 +398,15 @@ function lineHtml(l, i) {
     ${l.voided && l.void_reason ? `<div class="bl-sub">${esc(l.void_reason)}</div>` : ''}
     ${actions ? `<div class="bl-actions">${actions}</div>` : ''}
   </div>`;
+}
+
+/* "Round 2", or for a round Combine brought over from another card, the name
+   its kitchen ticket carries too: "Round 1 · Card 1 (from 4)". Card labels are
+   the same words in either language, so a bill and its ticket always match. */
+function roundName(l, fallback) {
+  const n = `Round ${l.round_no ?? fallback}`;
+  if (l.from_card == null) return n;
+  return `${n} · ${liveOrder?.label || state.selTable?.name || ''} (from ${l.from_card})`;
 }
 
 /* The bill is split the way the waiter thinks about it: what the kitchen
@@ -429,7 +440,7 @@ function renderCart() {
         const st = lines.find(([l]) => l.round_status)?.[0].round_status;
         const w = stateWords(st || 'sent');
         html += `<div class="bill-round-head">
-            <span>Round ${round}</span><span class="round-tag ${esc(st || '')}">${w.icon} ${esc(w.label)}</span></div>`;
+            <span>${esc(roundName(lines[0][0], round))}</span><span class="round-tag ${esc(st || '')}">${w.icon} ${esc(w.label)}</span></div>`;
         html += lines.map(([l, i]) => lineHtml(l, i)).join('');
       });
     }
@@ -503,27 +514,12 @@ function renderTimeline() {
           const w = stateWords(t.status);
           return `<span class="round-tag ${esc(t.status)}">${esc(t.station_name)}: ${w.icon} ${esc(w.label)}</span>`;
         }).join(' ');
+    const from = s.merged_from_card_number != null ? ` · from Card ${s.merged_from_card_number}` : '';
     return `<div class="cart-line"><div>
-        <div class="line-name">Round ${s.seq_no} · ${esc(time)}</div>
+        <div class="line-name">Round ${s.round_no ?? s.seq_no}${esc(from)} · ${esc(time)}</div>
         <div class="line-sub">${count} item${count === 1 ? '' : 's'} · by ${esc(s.source === 'qr' ? 'Customer QR' : (s.sent_by_name || 'staff'))}</div>
       </div><div class="line-right">${states}</div></div>`;
   }).join('');
-}
-
-/* Seat numbers only matter when a table wants to split by seat, so they are one
-   tap behind the line rather than a box on every one of them. */
-async function setSeat(idx) {
-  const line = state.cart[idx];
-  if (!line || line.sent) return;
-  const value = await ask({
-    title: `Seat for ${line.name}`,
-    hint: 'Used when the table wants to split the bill by seat. Leave empty to clear it.',
-    value: line.seat != null ? String(line.seat) : '', placeholder: 'e.g. 2', ok: 'Save',
-  });
-  if (value === null) return;
-  const n = parseInt(value, 10);
-  line.seat = n > 0 ? n : null;
-  renderCart();
 }
 
 async function voidLine(idx) {
@@ -616,7 +612,6 @@ async function sendOrder() {
     item_id: l.item_id,
     qty: l.qty,
     note: l.note,
-    seat: l.seat || null,
     modifier_option_ids: l.mods.map(m => {
       const opt = state.menu.modifier_options.find(o => o.name === m.name);
       return opt ? opt.id : null;
@@ -632,10 +627,22 @@ async function sendOrder() {
       ? { url: '/api/orders', method: 'POST', body: { order_type: 'takeaway', items } }
       : { url: '/api/orders', method: 'POST', body: { card_id: sel.cardId, items } };
   if (!liveOrder && sel.type === 'dine_in' && !sel.cardId) return toast('This table order is closed — start a new one on a card');
+  request.meta = { label: sel.name || '', lines: toSend.map(l => `${l.qty}× ${l.name}`) };
 
-  const entry = await enqueue(request);
+  // Marked before anything is awaited: a second Send fired in the same
+  // instant then finds nothing new to send, instead of queueing these lines
+  // a second time (review P4).
+  toSend.forEach(l => { l.sent = 'pending'; });
+  let entry;
+  try {
+    entry = await enqueue(request);
+  } catch (e) {
+    toSend.forEach(l => { l.sent = false; });
+    renderCart();
+    return toast('Could not queue the order: ' + e.message);
+  }
   if (!liveOrder) pendingCreateEntry = entry.id;
-  toSend.forEach(l => { l.sent = 'pending'; l.entry = entry.id; });
+  toSend.forEach(l => { l.entry = entry.id; });
   renderCart();
   toast(navigator.onLine ? 'Sending to kitchen…' : 'Offline — queued, will send when back online');
 }
@@ -667,40 +674,65 @@ async function confirmMove() {
   } catch (e) { $('move-err').textContent = e.message; }
 }
 
-/* ===== COMBINED BILLS =====
-   Cards that pay together. Nothing moves between orders — each card keeps
-   its own lines and kitchen tickets; the group only settles them at once. */
+/* ===== COMBINE =====
+   On Card 1, Combine -> Card 4: Card 4's items, rounds and kitchen tickets
+   move onto Card 1's bill there and then, and Card 4 is free for the next
+   group. "Separate Card 4" puts exactly those items back on Card 4 while
+   nothing has been paid and Card 4 is still free.
+
+   A combined bill from before this (cards that kept their own orders and
+   paid together) still shows here, is paid in one go, and a card can still
+   be taken out of it — but the till no longer makes new ones. */
 function renderBillGroup(open, orders) {
-  if (!open.bill_group_id) { $('bill-group').innerHTML = ''; return; }
-  const members = orders.filter(o => o.bill_group_id === open.bill_group_id)
-    .sort((a, b) => a.card_number - b.card_number);
-  $('bill-group').innerHTML = `<div class="bill-group-note">🔗 Combined bill: ${members.map(m => esc(m.label)).join(', ')}
-    <button class="btn small ghost" data-action="leave-group">Take this card out</button></div>`;
+  let html = '';
+  if (open.bill_group_id) {
+    const members = orders.filter(o => o.bill_group_id === open.bill_group_id)
+      .sort((a, b) => a.card_number - b.card_number);
+    html += `<div class="bill-group-note">🔗 Combined bill: ${members.map(m => esc(m.label)).join(', ')}
+      <button class="btn small ghost" data-action="leave-group">Take this card out</button></div>`;
+  }
+  (open.merged_from || []).forEach(m => {
+    html += `<div class="bill-group-note" data-feature="split_combine">🔗 ${esc(fill(t('merge.note'), { from: m.card_number }))}
+      <button class="btn small ghost" data-action="separate-card" data-id="${m.card_id}"
+        data-number="${m.card_number}">${esc(fill(t('merge.separate'), { from: m.card_number }))}</button></div>`;
+  });
+  $('bill-group').innerHTML = html;
 }
 
 async function openCombine() {
   if (!liveOrder) return;
   const orders = await API.get('/api/orders').catch(() => []);
+  // Another card's open bill, not on a combined bill from before.
   const others = orders
-    .filter(o => o.card_id && o.id !== liveOrder.id && (!liveOrder.bill_group_id || o.bill_group_id !== liveOrder.bill_group_id))
+    .filter(o => o.card_id && o.id !== liveOrder.id && !o.bill_group_id)
     .sort((a, b) => a.card_number - b.card_number);
+  $('combine-title').textContent = fill(t('merge.title'), { card: liveOrder.label });
   $('combine-list').innerHTML = others.length
-    ? others.map(o => `<label class="combine-option"><input type="checkbox" value="${o.id}">
-        <span>${esc(o.label)}${o.bill_group_id ? ' · already combined' : ''}</span><span>${fmt(o.grand_total ?? o.total)}</span></label>`).join('')
-    : '<div class="empty">No other card has an open bill.</div>';
+    ? others.map(o => `<label class="combine-option"><input type="radio" name="combine-from" value="${o.id}" data-label="${esc(o.label)}">
+        <span>${esc(o.label)}</span><span>${fmt(o.grand_total ?? o.total)}</span></label>`).join('')
+    : `<div class="empty">${esc(t('merge.none'))}</div>`;
   $('combine-err').textContent = '';
   $('combine-modal').classList.add('show');
 }
 function closeCombine() { $('combine-modal').classList.remove('show'); }
 async function confirmCombine() {
-  const ids = [...$('combine-list').querySelectorAll('input:checked')].map(i => Number(i.value));
-  if (!ids.length) { $('combine-err').textContent = 'Choose at least one card'; return; }
+  const picked = $('combine-list').querySelector('input:checked');
+  if (!picked) { $('combine-err').textContent = t('merge.pick'); return; }
   try {
-    const g = await API.post('/api/bill-groups', { order_ids: [liveOrder.id, ...ids] });
+    const r = await API.post(`/api/orders/${liveOrder.id}/merge`, { from_order_id: Number(picked.value) });
     closeCombine();
-    toast(`Combined: ${g.members.map(m => m.label).join(' + ')}`);
+    toast(fill(t('merge.done'), { from: r.from_label, card: r.label }));
     checkOpenOrder();
   } catch (e) { $('combine-err').textContent = e.message; }
+}
+
+async function separateCard(cardId, number) {
+  if (!liveOrder) return;
+  try {
+    await API.post(`/api/orders/${liveOrder.id}/separate`, { card_id: cardId });
+    toast(fill(t('merge.separated'), { from: number }));
+    checkOpenOrder();
+  } catch (e) { toast(e.message); }
 }
 
 async function leaveGroup() {
@@ -725,6 +757,12 @@ let currentGroupId = null;
 // balance at split time; paying a share removes just that entry, never a fresh
 // re-split of the shrinking remainder.
 let pendingShares = null;
+// "Split by items" while it is open: the ticked lines, and what the server
+// says they come to (GET .../split?by=items). The till never works out tax.
+let itemSplit = null;
+let itemPreviewSeq = 0;
+// "Pay part of the bill" starts folded away each time the panel opens.
+let payPartOpen = false;
 
 async function refreshPayModal() {
   const orderId = $('pay-btn').dataset.orderId;
@@ -749,6 +787,8 @@ async function refreshPayModal() {
 
 async function openPayModal() {
   pendingShares = null;
+  itemSplit = null;
+  payPartOpen = false;
   if (!(await refreshPayModal())) return toast('Order not found');
   // Only ask once, when the modal is first opened — not on every refresh after
   // a partial payment, which would re-prompt on each split-payment leg.
@@ -795,7 +835,7 @@ function renderPayModal() {
     $('pay-cash-row').style.display = '';
     // A combined bill is paid in full in one go: no part-payment row; the
     // legs section takes a cash part plus the rest by card instead.
-    $('pay-amount-row').style.display = 'none';
+    $('pay-part').hidden = true;
     $('pay-group-legs').style.display = '';
     ['group-cash-part', 'group-cash-received'].forEach(id => { $(id).value = ''; });
     updateGroupLegsSummary();
@@ -803,6 +843,7 @@ function renderPayModal() {
     closeRefundForm();
     $('refund-section').style.display = 'none';
     pendingShares = null;
+    itemSplit = null;
     renderSplitResult();
     return;
   }
@@ -848,14 +889,28 @@ function renderPayModal() {
   $('cash-received-input').value = '';
   $('pay-change-due').textContent = '';
   $('pay-cash-row').style.display = '';
-  $('pay-amount-row').style.display = '';
+  $('pay-part').hidden = false;
+  renderPayPart();
   closeDiscountForm();
   closeRefundForm();
   $('refund-section').style.display = (o.payments || []).some(p => p.refundable > 0.001) ? '' : 'none';
   renderSplitResult();
 }
 
+// "Pay part of the bill": a specific amount, folded away until asked for.
+function renderPayPart() {
+  $('pay-amount-row').hidden = !payPartOpen;
+  $('pay-part-toggle').setAttribute('aria-expanded', String(payPartOpen));
+  $('pay-part-toggle').querySelector('.chev').textContent = payPartOpen ? '▾' : '▸';
+}
+function togglePayPart() {
+  payPartOpen = !payPartOpen;
+  renderPayPart();
+  if (payPartOpen) $('pay-amount-input').focus();
+}
+
 function renderSplitResult() {
+  if (itemSplit) { renderItemSplit(); return; }
   if (!pendingShares || !pendingShares.items.length) { $('pay-split-result').innerHTML = ''; return; }
   $('pay-split-result').innerHTML = `<div class="bill-group-head">${esc(pendingShares.title)}</div>` +
     pendingShares.items.map((s, i) => `
@@ -866,7 +921,7 @@ function renderSplitResult() {
         </div></div>`).join('');
 }
 
-function closePayModal() { $('pay-modal').classList.remove('show'); currentOrder = null; currentGroupId = null; pendingShares = null; }
+function closePayModal() { $('pay-modal').classList.remove('show'); currentOrder = null; currentGroupId = null; pendingShares = null; itemSplit = null; }
 
 function updateChangeDue() {
   if (!currentOrder) return;
@@ -877,17 +932,23 @@ function updateChangeDue() {
   $('pay-change-due').style.color = changeCents < 0 ? 'var(--red)' : 'var(--charcoal)';
 }
 
-/* method === null pays the full remaining balance; otherwise `amount`/`tendered`
-   (RM) pay exactly that much — used for split-by-amount and split-by-seat. */
+/* amount === null pays the full remaining balance; otherwise `amount`/`tendered`
+   (RM) pay exactly that much — "Pay a specific amount". A pay-in-full also
+   sends the "To pay" this screen shows, so a bill that grew on another till
+   (a Combine, an add-on) is refused instead of charged unseen. */
+let payBusy = false;
 async function processPay(method, amount, tendered) {
   // Payments require server confirmation and must fail loudly offline — unlike
   // order entry, they are never queued: a mis-queued payment is a cash
   // discrepancy nobody can reconstruct.
   if (!navigator.onLine) return toast('Cannot take payment while offline');
+  if (payBusy) return;
+  payBusy = true;
   const orderId = $('pay-btn').dataset.orderId;
   try {
     const body = { method };
     if (amount != null) body.amount = amount;
+    else body.expected_due = currentOrder.amount_due;
     if (method === 'Cash' && tendered != null) body.tendered = tendered;
     const r = await API.post(`/api/orders/${orderId}/pay`, body);
     if (r.settled) {
@@ -898,7 +959,41 @@ async function processPay(method, amount, tendered) {
       toast(`Paid ${fmt(r.paid)} — ${fmt(r.remaining)} left`);
       await refreshPayModal();
     }
-  } catch (e) { toast('Payment failed: ' + e.message); }
+  } catch (e) {
+    toast('Payment failed: ' + e.message);
+    if (e.status === 409) await refreshPayOrClose();
+  } finally { payBusy = false; }
+}
+
+// Re-reads the bill behind an open pay screen. A bill that closed or was
+// combined into another card elsewhere closes the screen rather than leaving
+// a stale total on it.
+async function refreshPayOrClose() {
+  if (await refreshPayModal()) return;
+  closePayModal();
+  toast('This bill was closed or combined on another till');
+  if (state.selTable) checkOpenOrder();
+}
+
+// Called on a live update: repaint the pay screen only when what it would
+// charge actually changed, so a cashier's typed amounts survive unrelated
+// traffic. The server refuses a stale pay-in-full regardless (expected_due).
+async function payModalLiveCheck() {
+  if (payBusy || !currentOrder || !$('pay-modal').classList.contains('show')) return;
+  const wasDue = currentOrder.amount_due;
+  if (currentGroupId) {
+    const g = await API.get(`/api/bill-groups/${currentGroupId}`).catch(() => null);
+    if (g && g.amount_due === wasDue) return;
+  } else {
+    const orderId = $('pay-btn').dataset.orderId;
+    const orders = await API.get('/api/orders').catch(() => null);
+    if (!orders) return;
+    const o = orders.find(x => x.id == orderId);
+    if (o && !o.bill_group_id && o.amount_due === wasDue) return;
+  }
+  if (payBusy || !currentOrder) return;  // paying, or closed, while we were asking
+  await refreshPayOrClose();
+  if (currentOrder && currentOrder.amount_due !== wasDue) toast(`The bill changed on another till — it is now ${fmt(currentOrder.amount_due)}`);
 }
 
 /* ===== COMBINED BILL: every leg at once =====
@@ -987,19 +1082,110 @@ async function splitEvenlyUI() {
   if (!ways || ways < 1) return;
   try {
     const { shares } = await API.get(`/api/orders/${$('pay-btn').dataset.orderId}/split?ways=${ways}`);
+    itemSplit = null;
     pendingShares = { title: `${ways}-way split`, items: shares.map((amt, i) => ({ label: `Share ${i + 1}`, amount: amt })) };
     renderSplitResult();
   } catch (e) { toast(e.message); }
 }
 
-async function splitBySeatUI() {
+/* ===== SPLIT BY ITEMS =====
+   Tick what one person had; they pay exactly those lines' share of the bill,
+   service charge and tax included, as the server works it out. Lines already
+   paid for are ticked off; the last share takes whatever is left, so the
+   shares add up to the bill to the sen. Cash is rounded to 5 sen only on the
+   payment that settles the bill, as always. */
+const lineRM = i => (i.price + i.mods.reduce((s, m) => s + m.price, 0)) * i.qty;
+
+function splitByItemsUI() {
+  pendingShares = null;
+  itemSplit = { selected: new Set(), preview: null, error: '' };
+  renderSplitResult();
+}
+
+function renderItemSplit() {
+  const o = currentOrder;
+  const paid = new Set(o.paid_item_ids || []);
+  const lines = (o.items || []).filter(i => !i.voided && !i.held);
+  const rows = lines.map(i => {
+    const isPaid = paid.has(i.id);
+    const from = i.from_card != null ? ` <span class="meta">(from Card ${esc(String(i.from_card))})</span>` : '';
+    return `<label class="split-item${isPaid ? ' paid' : ''}">
+      <input type="checkbox" data-action="split-item" value="${i.id}" ${isPaid ? 'disabled checked' : ''}
+        ${!isPaid && itemSplit.selected.has(i.id) ? 'checked' : ''}>
+      <span class="si-name">${i.qty}× ${esc(i.name)}${from}</span>
+      <span class="si-price">${isPaid ? esc(t('split.items.paid')) : fmt(lineRM(i))}</span>
+    </label>`;
+  }).join('');
+  const ready = itemSplit.preview && itemSplit.selected.size;
+  $('pay-split-result').innerHTML = `<div class="bill-group-head">${esc(t('split.byItems'))}</div>
+    <p class="meta" style="margin-bottom:8px">${esc(t('split.items.hint'))}</p>
+    <div class="split-items">${rows}</div>
+    <div class="split-items-total" id="split-items-total" role="status">${itemSplitSummary()}</div>
+    <div class="split-items-pay">
+      <button class="btn small" data-action="pay-items" data-method="Cash" ${ready ? '' : 'disabled'}>${esc(t('split.items.payCash'))}</button>
+      <button class="btn small info" data-action="pay-items" data-method="Card" ${ready ? '' : 'disabled'}>${esc(t('split.items.payCard'))}</button>
+      <button class="btn small charcoal" data-action="pay-items" data-method="DuitNow/eWallet" ${ready ? '' : 'disabled'}>${esc(t('split.items.payEwallet'))}</button>
+    </div>`;
+}
+
+function itemSplitSummary() {
+  const err = itemSplit.error ? `<div class="err">${esc(itemSplit.error)}</div>` : '';
+  if (!itemSplit.selected.size) return err + esc(t('split.items.none'));
+  if (!itemSplit.preview) return err || esc(t('split.items.working'));
+  const p = itemSplit.preview;
+  const cash = Math.round(p.amount * 20) / 20;
+  let s = `<b>${esc(fill(t('split.items.total'), { amount: fmt(p.amount) }))}</b>`;
+  if (p.last) {
+    s += ` <span class="meta">${esc(t('split.items.last'))}</span>`;
+    if (Math.abs(cash - p.amount) > 0.001) s += ` <span class="meta">${esc(fill(t('split.items.cash'), { amount: fmt(cash) }))}</span>`;
+  }
+  return err + s;
+}
+
+async function toggleSplitItem(id, checked) {
+  if (!itemSplit) return;
+  if (checked) itemSplit.selected.add(id); else itemSplit.selected.delete(id);
+  itemSplit.preview = null;
+  itemSplit.error = '';
+  renderItemSplit();
+  if (!itemSplit.selected.size) return;
+  const seq = ++itemPreviewSeq;
   try {
-    const { seats } = await API.get(`/api/orders/${$('pay-btn').dataset.orderId}/split?by=seat`);
-    const entries = Object.entries(seats);
-    if (!entries.length) return toast('No lines have a seat assigned');
-    pendingShares = { title: 'By seat', items: entries.map(([seat, amt]) => ({ label: `Seat ${seat}`, amount: amt })) };
-    renderSplitResult();
-  } catch (e) { toast(e.message); }
+    const p = await API.get(`/api/orders/${currentOrder.id}/split?by=items&items=${[...itemSplit.selected].join(',')}`);
+    if (seq !== itemPreviewSeq || !itemSplit) return;
+    itemSplit.preview = p;
+  } catch (e) {
+    if (seq !== itemPreviewSeq || !itemSplit) return;
+    itemSplit.error = e.message;
+  }
+  renderItemSplit();
+}
+
+async function payItems(method) {
+  if (!itemSplit?.preview || !itemSplit.selected.size) return;
+  if (!navigator.onLine) return toast('Cannot take payment while offline');
+  try {
+    const r = await API.post(`/api/orders/${currentOrder.id}/pay`, {
+      method, item_ids: [...itemSplit.selected], amount: itemSplit.preview.amount,
+    });
+    if (r.settled) {
+      closePayModal();
+      toast(r.change > 0 ? `Paid — change ${fmt(r.change)}` : 'Paid in full');
+      backToTables();
+      return;
+    }
+    toast(`Paid ${fmt(r.paid)} — ${fmt(r.remaining)} left`);
+    itemSplit = { selected: new Set(), preview: null, error: '' };
+    await refreshPayModal();
+  } catch (e) {
+    // Refused — most likely the bill changed since the amount was shown. Say
+    // why, and show what the ticked lines come to now.
+    itemSplit.error = e.message;
+    itemSplit.preview = null;
+    try { itemSplit.preview = await API.get(`/api/orders/${currentOrder.id}/split?by=items&items=${[...itemSplit.selected].join(',')}`); }
+    catch { /* the error already says what is wrong */ }
+    renderItemSplit();
+  }
 }
 
 /* ===== DISCOUNT =====
@@ -1112,7 +1298,7 @@ $('tab-pos').addEventListener('click', e => {
   else if (a === 'open-move') openMove();
   else if (a === 'open-combine') openCombine();
   else if (a === 'leave-group') leaveGroup();
-  else if (a === 'set-seat') setSeat(Number(el.dataset.id));
+  else if (a === 'separate-card') separateCard(Number(el.dataset.id), Number(el.dataset.number));
   else if (a === 'scroll-to-bill') $('bill-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
@@ -1166,7 +1352,9 @@ $('pay-modal').addEventListener('click', e => {
     else if (a === 'pay-group-legs') payGroupLegs();
     else if (a === 'pay-share') paySplitShare(Number(el.dataset.idx), el.dataset.method || 'Cash');
     else if (a === 'split-evenly') splitEvenlyUI();
-    else if (a === 'split-by-seat') splitBySeatUI();
+    else if (a === 'split-by-items') splitByItemsUI();
+    else if (a === 'pay-items') payItems(el.dataset.method || 'Cash');
+    else if (a === 'toggle-pay-part') togglePayPart();
     else if (a === 'open-discount-form') openDiscountForm();
     else if (a === 'close-discount-form') closeDiscountForm();
     else if (a === 'apply-discount') applyDiscount();
@@ -1182,6 +1370,7 @@ $('pay-modal').addEventListener('click', e => {
 });
 $('pay-modal').addEventListener('change', e => {
   if (e.target.id === 'discount-kind') updateDiscountValueUI();
+  else if (e.target.dataset.action === 'split-item') toggleSplitItem(Number(e.target.value), e.target.checked);
 });
 $('cash-received-input').addEventListener('input', updateChangeDue);
 ['group-cash-part', 'group-cash-received'].forEach(id => $(id).addEventListener('input', updateGroupLegsSummary));
@@ -1194,6 +1383,7 @@ onStreamEvent(batch => {
   if (!document.getElementById('tab-pos')?.classList.contains('active')) return;
   if (!state.selTable) renderTables();
   else checkOpenOrder();
+  if (batch.some(e => e.type.startsWith('order.'))) payModalLiveCheck();
 });
 
 /* ===== OFFLINE ===== */
@@ -1208,6 +1398,36 @@ async function updateOfflineBanner() {
     banner.style.display = 'none';
   }
 }
+// Orders the server refused for good (e.g. the card was combined into another
+// while this was on its way). Listed until someone taps OK, so a dish that
+// never reached the kitchen can't vanish without a word.
+async function renderFailedSends() {
+  const box = $('outbox-failed');
+  if (!box) return;
+  const failed = (await failedEntries().catch(() => [])).sort((a, b) => a.createdAt - b.createdAt);
+  box.hidden = !failed.length;
+  box.innerHTML = failed.map(f => `
+    <div class="outbox-failed-row">
+      <div><strong>Not sent${f.meta?.label ? ` — ${esc(f.meta.label)}` : ''}:</strong>
+        ${esc((f.meta?.lines || []).join(', ') || 'an order')}
+        <div class="outbox-failed-why">${esc(f.error || '')}. Add it again on the right card.</div></div>
+      <button class="btn small" data-action="dismiss-failed" data-id="${esc(f.id)}">OK</button>
+    </div>`).join('');
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-action="dismiss-failed"]');
+  if (b) dismissFailed(b.dataset.id).then(renderFailedSends);
+});
+
+let knownFailed = null;
+onOutboxChange(async () => {
+  const n = (await failedEntries().catch(() => [])).length;
+  if (knownFailed != null && n > knownFailed) toast('An order was NOT sent — see the red note at the top');
+  knownFailed = n;
+  renderFailedSends();
+});
+renderFailedSends();
+
 onOutboxChange(() => {
   updateOfflineBanner();
   if (state.selTable) checkOpenOrder();

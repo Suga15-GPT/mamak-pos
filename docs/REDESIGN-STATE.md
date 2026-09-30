@@ -14,6 +14,11 @@ Complete. Two programmes have now run on this codebase:
   the staff POS, kitchen/tables/admin polish, the dashboard, Speak to Order, and
   the in-app Help centre.
 
+Since then: card mode, feature modules and the setup wizard (below), and the
+**day-one fixes** (`claude/day-one-fixes`): Clear sales data, Combine =
+merge, and a simpler pay panel with Split by items. Each has its own section
+below.
+
 ## V2 phases
 
 | Phase | What it delivered |
@@ -112,8 +117,15 @@ audio -> transcription -> menu-aware interpretation -> structured proposal
   gets the frames without the auto-advance.
 - The markdown handbook (`docs/HOW-TO-USE-MAMAK-POS.md`) stays the long
   printable reference; the in-app copy is adapted, not duplicated.
-- Contextual `data-action="help-jump"` links exist on Kitchen, the menu editor
-  and the QR settings. Three, not one per screen.
+- Contextual `data-action="help-jump"` links exist on Kitchen, the menu editor,
+  the QR settings and Clear sales data ("Before you clear").
+- Day-one fixes: 21 topics and 11 FAQs. New: **Combining cards** (`combine`)
+  and **Starting the figures from RM0** (`clear-sales`, admin); the payment
+  topic and walkthrough describe Split by items and Pay part of the bill; no
+  topic mentions seats. A unit test (`day_one_copy.test.js`) holds help.js and
+  the handbook to that, and every `i18n.js` key to having English and BM with
+  the same `{placeholders}`. Card labels ("Card 1 (from 4)") are the same words
+  in both languages, as they are on the card and the ticket.
 
 ## Architecture decisions carried forward (do not relitigate)
 
@@ -151,7 +163,72 @@ mamak; a table number never reliably named a bill.
   chits, receipts, print jobs, the approval queue, the dashboard
   (`open_cards`), audit detail.
 
-### Combining bills
+### Combining cards: one bill (day-one fixes)
+
+The owner's rule: on Card 1, **Combine → Card 4**, and Card 4's items move
+onto Card 1's bill now; Card 4 is free for the next group. `services/merge.js`,
+`POST /api/orders/:id/merge {from_order_id}` and
+`POST /api/orders/:id/separate {card_id}` (both `split_combine`).
+
+- **What moves is rounds.** Card 4's `order_sends` move to Card 1's order
+  (renumbered after Card 1's, since `(order_id, seq_no)` is unique), their
+  `order_items` with them, and — because a kitchen ticket belongs to its round
+  — every `order_send_tickets` row at whatever state it is in. Nothing is
+  re-sent or re-printed. Card 1's bill is recomputed and its status re-derived
+  in the same transaction.
+- **Each moved round remembers where it came from** (migration 019:
+  `order_sends.merged_from_card_id/_order_id/_seq_no`, `merged_at`). The
+  kitchen board, the round-status page a QR customer follows, void slips and
+  the till's round headers call it **"Card 1 (from 4)"**, with its own round
+  number (not an add-on). A round keeps the card it was *first* ordered on:
+  merging a card that had itself taken another card's items leaves those
+  labelled with their own card, separable on their own; a round merged back
+  onto its own card is simply home (no label).
+- **Card 4's emptied order closes as `'merged'`**, a closed status of its own
+  (migration 019 adds it to the status check, to both one-open-order indexes
+  and to the 015/017 trigger, which now also freezes `merged_into_order_id`).
+  It is neither a sale (sales read `paid`/`refunded`) nor a cancellation
+  (`cancelled`), so no report had to learn to leave it out; its money columns
+  are zero, `paid_at` and `closed_shift_id` stay NULL, and
+  `merged_into_order_id` points at Card 1's. The row is kept, not deleted, so
+  a till retrying the create that opened it (same idempotency key) finds it
+  instead of opening Card 4 again with the same food, and its audit trail and
+  print jobs still point at something. Every "is this bill open?" check now
+  reads one definition, `src/lib/status.js` (`CLOSED_STATUSES`, `openSql()`,
+  `isClosed()`); acting on a merged bill says where it went ("This bill was
+  combined into Card 1 — use Card 1's bill instead.", following later merges).
+- **Refused (409)** when either bill has a payment (net of refunds, as every
+  "has a payment" check), when Card 4 has an order-level discount ("remove the
+  discount first"), when Card 4 has a round awaiting approval, for takeaway or
+  table orders, closed bills, the same card, and a card still on a combined
+  bill from before.
+- **Separate Card 4** moves exactly the rounds whose `merged_from_card_id` is
+  Card 4 — lines and tickets with them — to a new order on Card 4, numbered
+  1, 2… in the order they were sent. Allowed only while Card 1's bill has no
+  payment and Card 4 is still free (active, no open bill); also refused while
+  Card 1's bill carries a discount given after Card 4 joined it (nobody can
+  say whose it was) or one bigger than what would be left. The merged order
+  stays closed; the new order is a new bill.
+- **Customers.** `GET /api/t/:token` now carries the card's bill (lines, a
+  "from Card 4" mark, status, total) for a card's own QR only — never the shop
+  poster, where anyone can type any number. Card 1's page shows the merged
+  bill; Card 4's shows a fresh card. A QR add-on that reaches Card 4's bill
+  after it was merged opens a fresh bill on Card 4, as a new scan would.
+- **Under the bill lock**, then the orders, rounds and lines each locked in
+  ascending id, everything re-read after locking. Race tests (40 runs each,
+  both orderings seen):
+  merge vs payment on Card 1 and on Card 4, vs a kitchen tap, vs a QR add-on
+  to Card 4, 1←4 vs 4←1, and separate vs merge in both directions.
+- The till's Combine picks one card (radio) and merges; the bill shows "Card
+  4's items are on this bill · Separate Card 4" and the floor tile "With Card
+  4". It no longer creates bill groups.
+
+### Combined bills from before merging (bill_groups)
+
+Kept, not removed, so a group open when merging shipped still shows, is paid
+in one go, and can be taken apart; `POST /api/bill-groups` still makes one for
+API callers, but no screen does. A card on one can't be merged (take it off
+first), and Combine isn't offered from it.
 
 - `bill_groups` + `orders.bill_group_id`. **Nothing moves between orders**:
   each card keeps its own order, rounds, kitchen tickets and discounts, and
@@ -228,7 +305,8 @@ mamak; a table number never reliably named a bill.
   group pay, single-card pay, adding a round (staff, QR, voice), void,
   discount/comp and its removal, refund, QR approve/reject, move, cancel,
   leave-on-close, **every status tap** (kitchen ticket and order-level),
-  shift close and cash pay-in/pay-out. Only then does it lock order rows,
+  shift close and cash pay-in/pay-out — and since the day-one fixes, merge,
+  separate and Clear sales data. Only then does it lock order rows,
   ascending id. Rule of thumb: anything that writes an order's status,
   lines, totals, payments, refunds, tickets or bill-group membership, or
   closes a shift, takes the lock first. They are serialised against each other, so they
@@ -375,6 +453,150 @@ everything on. Built on card mode.
   kitchen or QR is on (it hosts the QR approval queue).
 - **Presets are wizard shortcuts only** — Lite: none; Medium: kitchen, printing,
   shifts, discounts, split_combine; Advanced: all.
+- **Running the wizard again changes settings only** (the card count
+  included); every sales row is untouched, asserted by a test. Its last page
+  says so on a re-run: "Your sales history is kept. To start from RM0, use
+  Admin → System → Clear sales data."
+
+## Clear sales data (day-one fixes)
+
+Admin → System → **Clear sales data** starts every figure from RM0 (after
+training, a trial day) without deleting anything. `services/sales_archive.js`,
+`GET|POST /api/admin/sales/clear`, `scripts/restore-sales-archive.js`,
+docs/RUNBOOK.md "Restore cleared sales data".
+
+- **Admin only**, the admin's **own PIN typed again** and the word **CLEAR**
+  (exact). Five wrong PINs in ten minutes and it waits (429); a right PIN
+  costs nothing, like login. Each attempt is counted before anything is
+  awaited (`pinAttempt`), so 25 wrong PINs at once get exactly five checks.
+- **Refused (409), one sentence each**, while any bill is open ("2 bills are
+  still open (Card 1, Card 2). Take payment on them or cancel them first."),
+  a shift is open, or the kitchen board has a ticket to finish (the board's
+  own rule, `rounds.boardUnfinishedCount`); and when there is nothing to
+  clear. `GET` shows what would move and the same reasons before anyone types
+  a PIN.
+- **One transaction under the bill lock.** It then takes `EXCLUSIVE` locks on
+  the sales tables (readers carry on; the print queue, the one writer that
+  doesn't take the bill lock, waits), creates `archive_YYYYMMDD_HHMMSS` (shop
+  time; a same-second clash is numbered `_2`), copies every sales table into
+  it with `CREATE TABLE … AS SELECT *`, then deletes from the live table,
+  checking each delete removed exactly what was copied.
+- **What moves** (`SALES_TABLES`, children first): print_jobs, refunds,
+  payments, discounts, cash_movements, order_item_mods, order_send_tickets,
+  order_items, order_sends, orders, bill_groups, shifts — and with them the
+  idempotency keys, which are columns of orders and order_items. **What
+  stays** (`KEPT_TABLES`): menu, stations, staff and their sessions, cards,
+  tables, printers, settings and feature switches, audit_log,
+  schema_migrations. A unit test compares both lists with the schema, so a
+  table a later migration adds fails until it is classified, and checks the
+  delete order against every foreign key.
+- **015/017/019's trigger doesn't block it and isn't weakened.** It fires on
+  UPDATE of orders only; clearing copies into the archive (a different table)
+  and deletes whole rows. What would have blocked it is the foreign keys:
+  NO ACTION keys (refunds → payments and orders, orders → bill_groups and
+  shifts, order_items → order_sends, payments → shifts…) refuse a parent
+  deleted first, and print_jobs' SET NULL keys would rewrite the print jobs.
+  Deleting children before parents, print jobs first, satisfies all of them.
+  A test shows the trigger still refuses a paid bill's change after a clear.
+- **Sequences are not reset**: the next bill, payment, line and shift number
+  carry on, so archived and new rows never share an id and an archive can be
+  restored beside new trading. (A receipt queued for a bill paid a moment
+  before a clear hits the foreign key and is only logged: printing never
+  throws.)
+- **One audit row**, `sales.clear`: who (user_id), when (at), and in `detail`
+  the archive, bills, paid_bills, sales_cents, payments_cents, refunds_cents,
+  total_cents (payments less refunds) and the row count of each table.
+  Screens reload on the `sales.cleared` stream event.
+- **Restore**: `node scripts/restore-sales-archive.js --list | archive_…` —
+  one transaction under the bill lock, parents first, only the columns both
+  sides have; refuses an archive already restored or a bad name; audits
+  `sales.restore`. Tested through the script itself.
+
+## Pay panel (day-one fixes)
+
+- Full payment first: the totals, Cash / Card / DuitNow, then **Split evenly**
+  and **Split by items** (split_combine), then a folded **▸ Pay part of the
+  bill** (`#pay-part-toggle`, `aria-expanded`) holding "Pay a specific
+  amount". A combined bill from before still shows its legs form instead.
+- **The Seat button and Split by seat are gone.** `order_items.seat` stays
+  (forward-only); the server still stores a seat sent by an old cached till,
+  but the till no longer sets or shows one, and `?by=seat` is a 400.
+- **Split by items**: `GET /api/orders/:id/split?by=items&items=…` previews,
+  `POST /api/orders/:id/pay {method, item_ids, amount}` pays. A share is
+  `round_half_up(total × lines / subtotal)` in integers — the lines' part of
+  the whole bill, so it carries their service charge and SST (and any
+  discount). When the ticked lines are every line not yet paid for, the share
+  is simply what is left, so the shares sum to the bill to the sen. The
+  amount is worked out again under the bill lock; `amount` is what the till
+  showed, and a bill that changed since is refused (409 "The bill has
+  changed: these items now come to RM …") with nothing recorded. The lines a
+  share paid for are kept on the payment (`payments.item_ids`, migration 019);
+  a share refunded in full frees them again. Cash 5-sen rounding happens only
+  on the payment that settles the bill, as before. Not for a card on a
+  combined bill from before (409).
+
+## Security follow-ups (day-one fixes)
+
+Found by the reviewer on main after PR #18.
+
+- **The login screen arrives empty.** `index.html` no longer fills in
+  Admin / 1234; the service worker cache moved to `v8` so a till holding
+  `v7`'s copy drops it.
+- **The wrong-PIN limit counts before it awaits.** The check ran before the
+  user lookup's await and the failure was recorded after it, so 25 wrong
+  PINs at once were all checked. `pinAttempt()` (`lib/auth.js`) takes the
+  attempt's place in the same synchronous step as the check; a wrong PIN
+  keeps it for ten minutes, a right one (or one never checked) gives it back.
+  While every place left is held by an attempt still being checked, a
+  newcomer waits for one to settle instead of being refused, so 25 right PINs
+  at once all get in. Login is 10 per address; Clear sales data's PIN re-check
+  (this PR's, same bug) is 5 per admin.
+- **Any database password works.** `docker-compose.yml` built
+  `postgres://postgres:${POSTGRES_PASSWORD}@db…`, and pg's URL parser refuses
+  `/ # ?` ("Invalid URL") and quietly decodes `%41` to `A`. The app service now
+  gets `PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE`, like the backup service,
+  and pg reads the password as it is. `src/db.js` still uses `DATABASE_URL`
+  when it is set, so an install that sets one is unchanged; for a compose
+  install the password is the same string, handed over differently.
+- **BASE_URL.** `.env.example` says it must be this PC's LAN address
+  (`http://192.168.x.x:3000`), because QR codes and NFC tags contain it, and
+  leaves it empty to fill in. In production, once listening, the app logs a
+  `WARNING: BASE_URL is …` line when it is localhost or another loopback
+  address (compose's default when `.env` leaves it out).
+
+## Review fixes (day-one fixes, review D1–D7)
+
+- **D1 — pay in full sends the total it showed.** 💵 Cash / 💳 Card sent no
+  amount, so a Combine landing from another till while the pay screen was
+  open was charged at a total nobody saw. The till now sends `expected_due`
+  (its "To pay"); `addPayment` refuses a changed balance with 409 and records
+  nothing. An open pay screen re-reads the bill on a live update and repaints
+  only when what it would charge changed (typed amounts survive other
+  traffic), with a toast; a bill closed or combined away closes the screen.
+- **D2 — every admin-PIN check is limited.** `/api/discounts/authorize`
+  (reachable from any staff session) now uses `pinAttempts()`: 5 wrong per
+  staff account and 10 per admin name across tills in ten minutes, counted
+  before anything is awaited, and inactive admins are refused.
+  `/api/me/pin` checks the current PIN under a 5-per-account limit. Both answer
+  a wrong PIN with 403, not 401 — the till treats 401 as "session expired" and
+  logged the person out on a typo.
+- **D3 — nothing vanishes from the till.** The add-on route checks the
+  idempotency key before the closed-bill refusal (a replay of a batch that
+  landed before a merge is "done"); the outbox keeps the server's reason on a
+  failed entry, and the till lists failed entries until acknowledged.
+- **D4 — replays after Clear sales data.** Clearing copies every archived
+  idempotency key into `archived_idempotency_keys` (migration 020, a kept
+  table); the create and add-on routes answer a key found there as done.
+  Restoring an archive removes its keys from that table.
+- **D5 — restore after a deletion.** For a foreign key whose own ON DELETE is
+  SET NULL (`order_items.item_id`, `print_jobs.printer_id`) a missing target is
+  nulled on restore and reported as `unlinked`; any other missing target is
+  refused by name before anything is written.
+- **D6** — the stream subscribes to `sales.cleared`.
+- **D7** — Separate settles a bill that comes to RM0 (every line voided), as a
+  void to zero does anywhere else.
+- **P4** — Send marks its lines before the outbox write is awaited, so a
+  second Send in the same instant finds nothing new.
 
 ## Migrations added
 
@@ -389,6 +611,15 @@ refunded still works. Feature modules then added
 existing shop is one with users, not orders. A fresh database runs 015, 016,
 017, 018 in that order; one already on main (015 and 017 applied) runs 016 and
 018 afterwards, which is safe because both only insert missing settings rows.
+
+The day-one fixes added `019_merge_and_item_split.sql`: the `'merged'` closed
+status (status check, both one-open-order indexes, and the 015/017 trigger
+function replaced with `'merged'` as closed and `merged_into_order_id`
+frozen), `orders.merged_into_order_id`, `order_sends.merged_from_card_id /
+merged_from_order_id / merged_from_seq_no / merged_at`, and `payments.item_ids`.
+No existing row is rewritten. Clear sales data needs no migration for its
+archives, which are schemas made at run time; its review fix added
+`020_archived_idempotency_keys.sql` (one new table, forward-only).
 
 ## Files materially changed in V2
 
@@ -426,8 +657,95 @@ existing shop is one with users, not orders. A fresh database runs 015, 016,
   until paid. Payment is not blocked by it.
 - `npm audit` reports 0 vulnerabilities. The three moderate express/qs advisories
   were fixed by lockfile bumps within express 4 (express 4.22.3, qs 6.16.0).
+- **The customer's bill shows on a card's own QR only.** With the shop poster
+  anyone can type any card number, so that page still shows just the rounds
+  this phone sent.
+- **Separate works card by card.** Merging a card that had already taken
+  another card's items keeps each round labelled with the card it was first
+  ordered on; "Separate Card 4" then returns Card 4's own rounds, and the
+  other card's go back with "Separate Card 7" — not the whole chain at once.
+- **A till's queued add-on to a bill merged away is refused, not followed.**
+  The till lists it in red at the top — "Not sent — Card 4: 1× Teh Tarik",
+  with the server's reason ("…combined into Card 1") — until someone taps OK;
+  re-add it on the bill it went to. An add-on that had in fact landed before
+  the merge replays as done (the idempotency key is checked first).
+- **Clear sales data keeps archives in the live database.** They are schemas
+  beside `public`, included in `pg_dump` backups; drop one (runbook) when it
+  is no longer wanted.
 
 ## Latest test state
+
+After the review fixes D1–D7 (on `bf15f66`): `npm test` 244/244 — 11 new in
+`test/unit/day_one_review.test.js`, all 11 failing on `bf15f66`: a stale
+pay-in-full refused with nothing recorded, and 40 runs of Combine vs a
+pay-in-full carrying the shown total (money taken always equals what was
+shown; both orderings seen); the admin-PIN limit per staff account and per
+admin, a 403 that keeps the session, inactive admins refused, 40 runs of 25
+simultaneous wrong PINs getting exactly 5 checks; the change-my-PIN limit; an
+add-on replayed after a merge answered as done and a new one refused naming
+the card; the failed list on the till; create and add-on replays after Clear
+sales data answered as done with no bill or ticket opened, then a restore;
+a restore after deleting a menu item and a printer; the `sales.cleared`
+subscription; Separate settling an all-voided card. Playwright 24/24, 2 new:
+the pay screen catching up with a Combine from another till before Cash is
+tapped (RM 2.12 → RM 11.13, Cash RM 11.15 recorded), and an offline add-on for
+a card combined meanwhile listed as "Not sent — Card 33" until OK.
+
+After the security follow-ups (on `62b0b25`): `npm test` 233/233 — 9 new,
+8 of them failing on `62b0b25`; the ninth checks that an install setting
+`DATABASE_URL` is unchanged, so it passes on both.
+`test/unit/login_limit.test.js` (3): 40 runs of 25 wrong PINs from one
+address raced by 3 right ones (the right ones sent first, so they are still
+being checked as the wrong ones arrive) — exactly 10 checked and 15 × 429 in
+every run, right PINs both let in and locked out across the runs, that
+address then locked and another not; 5 runs of 25 right PINs at once, all
+let in, after which 10 of 25 wrong ones are still checked; the login fields
+empty. `sales_clear.test.js` (+1): 20 runs of 25 wrong PINs on Clear sales
+data raced by the right one — exactly 5 checked. `deploy_config.test.js`
+(5): the app migrates, seeds and serves a login on the password
+`Xk3/Qm9+Tz4=#@`, as a role on the test server, with the connection settings
+docker-compose.yml hands over (on `62b0b25` they are a URL, and pg answers
+"Invalid URL"); `DATABASE_URL` still wins over the `PG*` variables; compose
+gives the app `PGPASSWORD` and no URL carries the password; `.env.example`'s
+BASE_URL wording; the boot warning in production for localhost, 127.0.0.1,
+[::1] and 0.0.0.0, and none for a LAN address or a development boot. A
+limiter that counts first but refuses while every place is held fails both
+login tests (8 of 25 wrong ones checked in the race; 11 of 25 right ones let
+in). Playwright 22/22, unchanged.
+
+After the day-one fixes (on `68dc228`): `npm test` 224/224 — 31 new.
+`test/unit/merge.test.js` (15): a merge moves rounds, lines and tickets and
+frees Card 4; the merged order counts as neither a sale nor a cancellation in
+the dashboard, summary, X and Z reports; every refusal (payment on either
+card, Card 4's discount, a held round, takeaway, same card, closed, grouped);
+Separate moves exactly Card 4's lines and tickets back, and its refusals
+(payment, Card 4 in use, a discount after the merge); a merged order stays
+closed to pay, add, discount, an idempotent retry and direct SQL; the
+customer views; chained merges; and seven 40-run races — merge vs payment on
+Card 1 and on Card 4, vs a kitchen tap (which fails with the bill lock taken
+out of merge), vs a QR add-on to Card 4, 1←4 vs 4←1, separate vs merge both
+ways — each asserting both orderings happened and nothing is lost, doubled or
+left on a merged order. `test/unit/sales_clear.test.js` (7): every table
+classified and the delete order checked against every foreign key; admin, PIN
+and CLEAR, with nothing changed on refusal and the wrong-PIN limit; each
+refusal sentence; a full day's trading (every sales table written) archived
+byte for byte, the rest untouched, one audit row, every figure RM0, numbering
+carried on, the trigger still strict; restore through the runbook's script
+beside new trading, and refused twice; the wizard re-run changing no sales
+row; 20 runs of a clear racing a bill being opened. `split_items.test.js`
+(6): shares with service charge and SST and the last one's remainder, 5-sen
+cash rounding only on the settling share, a discount shared out, a specific
+amount first, refusals (paid, not on the bill, a changed bill) recording
+nothing, a refunded share freeing its lines, the module and combined-bill
+gates, seat gone and its column kept, 20 runs of overlapping shares.
+`day_one_copy.test.js` (3): translations, Help and handbook copy, runbook.
+Playwright 22/22: new journeys for Split by items (the folded "Pay part of
+the bill", three shares, the last in cash), Combine (Card 1 (from 4) on the
+bill and the kitchen, Card 4 free and fresh to a customer, then a new group on
+it) and Clear sales data (the wizard's line, a re-run keeping sales, CLEAR and
+the PIN, the Sales screen at RM 0.00); "two cards, combine, pay once" became
+"a combined bill from before … still shows, and is paid once", making its
+group through the API.
 
 After the setup-and-features re-check fix (K-P, on `d401570`): `npm test`
 193/193 — the two A2 tests that took paid and refunded bills off the kitchen

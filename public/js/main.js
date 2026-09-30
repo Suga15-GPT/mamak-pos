@@ -77,6 +77,9 @@ onStreamEvent(batch => {
   if (batch.some(e => e.type === 'features.updated')) {
     loadFeatures().then(() => document.dispatchEvent(new Event('features-changed')));
   }
+  // Admin -> System -> Clear sales data: whatever figures this screen shows
+  // start again from RM0.
+  if (batch.some(e => e.type === 'sales.cleared')) refreshLive();
 });
 
 /* A "? how this works" link anywhere in the app opens the matching Help topic.

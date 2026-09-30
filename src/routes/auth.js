@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { pool } = require('../db');
 const {
-  verifyPin, hashPin, pinPolicyError, rateLimitExceeded, rateLimitRecord, requireRole,
+  verifyPin, hashPin, pinPolicyError, pinAttempt, requireRole,
   parseCookies, setSessionCookie, clearSessionCookie,
 } = require('../lib/auth');
 const { awaitH } = require('../lib/errors');
@@ -17,18 +17,23 @@ const LOGIN_MAX_FAILURES = 10;
    from it. Counting successes too locked out an entire restaurant behind one
    router IP at shift change — ten staff signing in correctly is normal, ten
    wrong PINs is not. A guesser only ever produces failures, so the protection
-   is unchanged. */
+   is unchanged. The attempt is counted before the database is asked anything
+   (pinAttempt), so simultaneous guesses cannot all slip past the check. */
 router.post('/api/login', awaitH(async (req, res) => {
-  const limiterKey = 'login:' + req.ip;
-  if (rateLimitExceeded(limiterKey, LOGIN_MAX_FAILURES, LOGIN_WINDOW_MS))
-    return res.status(429).json({ error: 'too many login attempts, try again later' });
-  const { name, pin } = req.body || {};
-  if (!name || !pin) return res.status(400).json({ error: 'name and pin required' });
-  const r = await pool.query('SELECT * FROM users WHERE lower(name) = lower($1) AND active', [name.trim()]);
-  const u = r.rows[0];
-  if (!u || !verifyPin(pin, u.pin_hash)) {
-    rateLimitRecord(limiterKey, LOGIN_WINDOW_MS);
-    return res.status(401).json({ error: 'wrong name or PIN' });
+  const attempt = await pinAttempt('login:' + req.ip, LOGIN_MAX_FAILURES, LOGIN_WINDOW_MS);
+  if (!attempt) return res.status(429).json({ error: 'too many login attempts, try again later' });
+  let u;
+  try {
+    const { name, pin } = req.body || {};
+    if (!name || !pin) return res.status(400).json({ error: 'name and pin required' });
+    const r = await pool.query('SELECT * FROM users WHERE lower(name) = lower($1) AND active', [name.trim()]);
+    u = r.rows[0];
+    if (!u || !verifyPin(pin, u.pin_hash)) {
+      attempt.wrong();
+      return res.status(401).json({ error: 'wrong name or PIN' });
+    }
+  } finally {
+    attempt.release();
   }
 
   // Session fixation: never extend whatever session this browser already
@@ -54,8 +59,21 @@ router.post('/api/logout', awaitH(async (req, res) => {
 // (besides /api/logout) still reachable while must_change_pin is set.
 router.post('/api/me/pin', requireRole(), awaitH(async (req, res) => {
   const { current_pin, new_pin } = req.body || {};
-  const u = (await pool.query('SELECT pin_hash FROM users WHERE id = $1', [req.user.id])).rows[0];
-  if (!current_pin || !verifyPin(current_pin, u.pin_hash)) return res.status(401).json({ error: 'wrong current PIN' });
+  // A session left open must not become a way to guess its owner's PIN (review
+  // D2): five wrong current PINs per account in ten minutes. A wrong PIN
+  // answers 403, not 401, so a typo doesn't log the person out.
+  const attempt = await pinAttempt(`me-pin:${req.user.id}`, 5, 10 * 60 * 1000);
+  if (!attempt) return res.status(429).json({ error: 'Too many wrong PINs. Wait ten minutes and try again.' });
+  let u;
+  try {
+    u = (await pool.query('SELECT pin_hash FROM users WHERE id = $1', [req.user.id])).rows[0];
+    if (!current_pin || !verifyPin(current_pin, u.pin_hash)) {
+      attempt.wrong();
+      return res.status(403).json({ error: 'wrong current PIN' });
+    }
+  } finally {
+    attempt.release();
+  }
   const policyError = pinPolicyError(new_pin, u.pin_hash);
   if (policyError) return res.status(400).json({ error: policyError });
 

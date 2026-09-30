@@ -2,22 +2,18 @@ const crypto = require('crypto');
 const { pool } = require('../db');
 const { AppError } = require('../lib/errors');
 const { cents2rm } = require('../lib/money');
+const { openSql } = require('../lib/status');
 const { writeAudit } = require('./orders');
 
 /* ===== card mode =====
    A numbered card is what identifies a dine-in party. A card is "in use"
    exactly while it has an open order (the one_open_order_per_card index), so
    there is no in-use flag to keep in step and no manual release: the card frees
-   itself the moment its order is paid, cancelled or refunded. */
+   itself the moment its order is paid, cancelled or refunded — or combined
+   into another card's bill (merged). A round's own label, "Card 1 (from 4)"
+   for one Combine moved, is rounds.roundLocationSql. */
 
-const OPEN = "status NOT IN ('paid','cancelled','refunded')";
-
-// SQL for what staff call a dine-in order out as — "Card 7" for a card order,
-// the table's own name for a pre-card-mode table order. Callers LEFT JOIN
-// cards as `cd` and tables as `tb` (or pass their own aliases).
-function locationSql(cardAlias = 'cd', tableAlias = 'tb') {
-  return `COALESCE('Card ' || ${cardAlias}.number, ${tableAlias}.name)`;
-}
+const OPEN = openSql();
 
 /* Every card, with what the floor needs to draw it: in use or free, and for an
    in-use card how long it has been open, how many items and the running total. */
@@ -138,4 +134,4 @@ async function resolveQr(token, cardNumber, { requireCard = true } = {}) {
   return { settings, card: c };
 }
 
-module.exports = { listCards, parseCardCount, setCardCount, setCardCountTx, qrSettings, resolveQr, locationSql };
+module.exports = { listCards, parseCardCount, setCardCount, setCardCountTx, qrSettings, resolveQr };

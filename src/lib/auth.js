@@ -100,10 +100,11 @@ function requireRole(...roles) {
   };
 }
 
-// One entry per rate-limited key (e.g. "login:1.2.3.4"), forever, unless
+// One entry per rate-limited key (e.g. "voice:1.2.3.4"), forever, unless
 // swept — #30. rateLimit() itself already drops timed-out attempts from a key
 // it touches; this reclaims keys nobody's touched in a while so the Map
-// doesn't grow without bound from one-off/rotating IPs.
+// doesn't grow without bound from one-off/rotating IPs. The wrong-PIN limits
+// below are swept by the same timer.
 const rl = new Map();
 const RL_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const RL_MAX_IDLE_MS = 30 * 60 * 1000; // longer than any window this app uses
@@ -114,32 +115,71 @@ function rateLimit(key, max, windowMs) {
   arr.push(now); rl.set(key, arr); return true;
 }
 
-// Split check/record, for the login limiter: a *successful* login is proof the
-// PIN is known, so it must not spend the brute-force budget. Counting it did —
-// which locked out a whole restaurant behind one router IP during a shift
-// change, exactly the failure `trust proxy` was added to avoid (server.js).
-function rateLimitExceeded(key, max, windowMs) {
-  const now = Date.now();
-  const arr = (rl.get(key) || []).filter(t => now - t < windowMs);
-  rl.set(key, arr);
-  return arr.length >= max;
+/* The wrong-PIN limit (login, per address; Clear sales data, per admin).
+
+   Checking a PIN awaits the database, so a check made before that await and a
+   failure recorded after it let a burst of simultaneous guesses all pass a
+   check that none of them had been counted against yet. Instead, an attempt
+   takes its place in the same synchronous step as the check, before anything
+   is awaited, and settles it afterwards:
+     attempt.wrong()    — a wrong PIN keeps its place for the window;
+     attempt.release()  — a right PIN (or one never checked) gives it back, so
+                          a successful login never spends the budget.
+   When every place left is held by an attempt still being checked, a newcomer
+   waits for one to settle rather than being refused: twenty-five staff
+   signing in at once all get in, and twenty-five wrong PINs at once get
+   exactly `max` checks. Resolves to null once `max` wrong PINs are in the
+   window. */
+const pinLimits = new Map();
+async function pinAttempt(key, max, windowMs) {
+  for (;;) {
+    let e = pinLimits.get(key);
+    if (!e) { e = { wrong: [], checking: 0, waiting: [] }; pinLimits.set(key, e); }
+    const now = Date.now();
+    e.wrong = e.wrong.filter(t => now - t < windowMs);
+    if (e.wrong.length >= max) return null;
+    if (e.wrong.length + e.checking < max) {
+      e.checking++;
+      let settled = false;
+      const settle = wrong => {
+        if (settled) return;
+        settled = true;
+        e.checking--;
+        if (wrong) e.wrong.push(Date.now());
+        for (const wake of e.waiting.splice(0)) wake();
+      };
+      return { wrong: () => settle(true), release: () => settle(false) };
+    }
+    await new Promise(wake => e.waiting.push(wake));
+  }
 }
-function rateLimitRecord(key, windowMs) {
-  const now = Date.now();
-  const arr = (rl.get(key) || []).filter(t => now - t < windowMs);
-  arr.push(now);
-  rl.set(key, arr);
+
+// Several limits at once (e.g. per staff account and per admin): each is
+// taken in turn and all settle together. Null as soon as any one is spent.
+async function pinAttempts(limits, windowMs) {
+  const held = [];
+  for (const [key, max] of limits) {
+    const a = await pinAttempt(key, max, windowMs);
+    if (!a) { held.forEach(h => h.release()); return null; }
+    held.push(a);
+  }
+  return { wrong: () => held.forEach(h => h.wrong()), release: () => held.forEach(h => h.release()) };
 }
+
 const rlSweepTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, arr] of rl) {
     if (!arr.length || now - arr[arr.length - 1] > RL_MAX_IDLE_MS) rl.delete(key);
+  }
+  for (const [key, e] of pinLimits) {
+    if (e.checking || e.waiting.length) continue;
+    if (!e.wrong.length || now - e.wrong[e.wrong.length - 1] > RL_MAX_IDLE_MS) pinLimits.delete(key);
   }
 }, RL_SWEEP_INTERVAL_MS);
 rlSweepTimer.unref();
 
 module.exports = {
   SESSION_TTL, hashPin, verifyPin, pinPolicyError, requireRole,
-  rateLimit, rateLimitExceeded, rateLimitRecord,
+  rateLimit, pinAttempt, pinAttempts,
   parseCookies, setSessionCookie, clearSessionCookie, csrfOk,
 };

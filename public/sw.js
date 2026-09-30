@@ -10,7 +10,14 @@
 // v5: card mode's combined-bill payment screen.
 // v6: feature modules and the setup wizard (features.js, setup.js) — past v5,
 // which card mode shipped separately with a different shell.
-const CACHE_VERSION = 'v6';
+// v7: Combine merges bills, split by items, the folded pay panel, and Clear
+// sales data — pos.js, admin.js and index.html all changed together.
+// v8: the login screen no longer arrives filled in with Admin / 1234. A till
+// that cached v7's index.html would otherwise keep showing it.
+// v9: pay-in-full sends the total it showed, failed sends are listed on the
+// till, and Send marks its lines before awaiting — pos.js, outbox.js,
+// index.html and style.css changed together.
+const CACHE_VERSION = 'v9';
 const CACHE_NAME = `mamak-pos-${CACHE_VERSION}`;
 
 const SHELL_URLS = [
