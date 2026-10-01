@@ -101,13 +101,19 @@ test('open bills are not sales; a bill counts on the day it was settled, and the
 
     const week = await explore(base, s, { from: '2026-01-05', to: '2026-01-11' });
     assert.equal(week.bucket, 'day');
-    assert.deepEqual(week.previous_range, { from: '2025-12-29', to: '2026-01-04' });
+    assert.deepEqual(week.previous_range, { from: '2025-12-29', to: '2026-01-04', kind: 'just_before' });
     assert.equal(week.rows.length, 7);
 
     const year = await explore(base, s, { from: '2026-01-01', to: '2026-12-31' });
     assert.equal(year.bucket, 'month');
     assert.equal(year.rows.length, 12);
     assert.equal(year.rows[0].key, '2026-01-01T00:00');
+    // By month, each bar is compared with the same month last year.
+    const tenMonths = await explore(base, s, { from: '2026-01-01', to: '2026-10-01' });
+    assert.deepEqual(tenMonths.previous_range, { from: '2025-01-01', to: '2025-10-01', kind: 'last_year' });
+    assert.deepEqual(tenMonths.previous.map(r => r.key.slice(5, 7)), tenMonths.rows.map(r => r.key.slice(5, 7)));
+    const leap = await explore(base, s, { from: '2028-02-29', to: '2028-03-31', bucket: 'month' });
+    assert.deepEqual(leap.previous_range, { from: '2027-02-28', to: '2027-03-31', kind: 'last_year' });
   });
 });
 
@@ -122,8 +128,58 @@ test('bad ranges and mixed filters are refused with a sentence', async () => {
     };
     await bad({ from: '2026-02-01', to: '2026-01-01' }, /before the start/);
     await bad({ from: 'yesterday', to: '2026-01-01' }, /YYYY-MM-DD/);
+    for (const [from, to] of [['2026-02-30', '2026-03-01'], ['2026-04-31', '2026-05-01'], ['0000-01-01', '2026-01-01'], ['2026-01-01', '9999-12-31']]) {
+      await bad({ from, to }, /YYYY-MM-DD/);
+    }
     await bad({ from: '2026-01-01', to: '2026-03-01', bucket: 'hour' }, /too long to show by hour/);
     await bad({ from: '2026-01-01', to: '2026-01-02', method: 'Cash', category: '1' }, /not both/);
     await bad({ from: '2026-01-01', to: '2026-01-02', method: 'Bitcoin' }, /unknown payment method/);
+  });
+});
+
+
+test('the tiles at the top count the Z report\'s way too: a refunded bill stays a sale, and the refund comes off', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    const day = await todayOf(db);
+    const ids = [];
+    for (const n of [1, 2, 3]) {
+      ids.push(await openCard(base, s, n, one(s.mee)));
+      await ok(post(base, s, `/api/orders/${ids[ids.length - 1]}/pay`, { method: 'Card' }), 'pay');
+    }
+    const pay = id => db.query('SELECT id, amount_cents FROM payments WHERE order_id = $1', [id]).then(r => r.rows[0]);
+    const p2 = await pay(ids[1]), p3 = await pay(ids[2]);
+    await ok(post(base, s, `/api/orders/${ids[1]}/refunds`, { payment_id: p2.id, amount: 2, reason: 'cold' }), 'part refund');
+    await ok(post(base, s, `/api/orders/${ids[2]}/refunds`, { payment_id: p3.id, amount: p3.amount_cents / 100, reason: 'wrong order' }), 'full refund');
+
+    const explorer = await explore(base, s, { from: day, to: day });
+    const dash = await get(base, s, '/api/dashboard');
+    const summary = await get(base, s, '/api/summary');
+    const net = explorer.totals.net_cents / 100;
+    assert.equal(dash.today.sales, net, 'Today sales = the explorer\'s net');
+    assert.equal(dash.today.orders, 3);
+    assert.equal(dash.month.sales, net);
+    assert.equal(dash.year.sales, net);
+    assert.equal(dash.today.average_order, explorer.totals.average_cents / 100);
+    assert.equal(summary.today.sales, net);
+    const shift = await get(base, s, '/api/shift/current');
+    const z = await get(base, s, `/api/shift/${shift.id}/report`);
+    assert.equal(Math.round(net * 100), z.net_sales_cents - z.refunds_cents);
+  });
+});
+
+test('the Z report\'s category lines include option prices, so they add up to its gross', async () => {
+  await withDb(async () => {
+    const base = await startApp();
+    const s = await setup(base);
+    const menu = await get(base, s, '/api/menu');
+    const kandar = menu.items.find(i => i.modifier_group_ids.length);
+    const answers = kandar.modifier_group_ids.map(gid => menu.modifier_options.filter(o => o.group_id === gid).sort((a, b) => b.price - a.price)[0].id);
+    const id = await openCard(base, s, 4, [{ item_id: kandar.id, qty: 2, modifier_option_ids: answers }, { item_id: s.teh.id, qty: 1 }]);
+    await ok(post(base, s, `/api/orders/${id}/pay`, { method: 'Card' }), 'pay');
+    const shift = await get(base, s, '/api/shift/current');
+    const z = await get(base, s, `/api/shift/${shift.id}/report`);
+    assert.equal(z.categories.reduce((t, c) => t + c.cents, 0), z.gross_cents);
   });
 });

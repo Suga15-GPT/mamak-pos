@@ -280,10 +280,34 @@ $('exp-form').addEventListener('submit', saveForm);
 $('exp-rec-form').addEventListener('submit', saveRecurring);
 $('rec-every').addEventListener('change', fillRecDays);
 $('exp-month').addEventListener('change', loadMonth);
+// Record, Skip, Void and switching a regular cost redraw the lists, and the
+// next row's button lands where the last one was: a double tap would record
+// the next month too (review F6). One at a time, and taps are ignored until
+// the redrawn screen has been still for a moment.
+const ACTION_SETTLE_MS = 700;
+let actionBusy = false, actionQuietUntil = 0;
+const GUARDED = new Set(['exp-due-record', 'exp-due-skip', 'exp-void', 'exp-rec-toggle', 'exp-repeat']);
+
 $('tab-expenses').addEventListener('click', async e => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const a = el.dataset.action;
+  if (GUARDED.has(a)) {
+    if (actionBusy || Date.now() < actionQuietUntil) return;
+    actionBusy = true;
+    try { await handleAction(a, el); } finally {
+      actionBusy = false;
+      actionQuietUntil = Date.now() + ACTION_SETTLE_MS;
+      // Greyed for that moment, so a tap that did nothing is visibly why.
+      $('tab-expenses').classList.add('exp-settling');
+      setTimeout(() => $('tab-expenses').classList.remove('exp-settling'), ACTION_SETTLE_MS);
+    }
+    return;
+  }
+  return handleAction(a, el);
+});
+
+async function handleAction(a, el) {
   const id = Number(el.dataset.id);
   if (a === 'exp-type') openForm({}, { source: 'manual' });
   else if (a === 'exp-cancel') closeForm();
@@ -297,15 +321,15 @@ $('tab-expenses').addEventListener('click', async e => {
   else if (a === 'exp-void') {
     const reason = await ask({ title: 'Void this expense?', hint: 'It stays in the list, crossed out. Why?', placeholder: 'e.g. entered twice', ok: 'Void' });
     if (reason == null) return;
-    try { await API.post(`/api/expenses/${id}/void`, { reason }); toast('Voided'); refreshExpenses(); } catch (err) { toast(err.message); }
+    try { await API.post(`/api/expenses/${id}/void`, { reason }); toast('Voided'); await refreshExpenses(); } catch (err) { toast(err.message); }
   } else if (a === 'exp-due-record' || a === 'exp-due-skip') {
     const skip = a === 'exp-due-skip';
     try {
       await API.post(`/api/expenses/recurring/${id}/${skip ? 'skip' : 'record'}`, { for: el.dataset.for, ...(skip ? {} : { amount: $(`due-amt-${id}`).value }) });
       toast(skip ? 'Skipped' : 'Recorded');
-      refreshExpenses();
+      await refreshExpenses();
     } catch (err) { toast(err.message); }
   } else if (a === 'exp-rec-toggle') {
-    try { await API.patch(`/api/expenses/recurring/${id}`, { active: el.dataset.active !== 'true' }); refreshExpenses(); } catch (err) { toast(err.message); }
+    try { await API.patch(`/api/expenses/recurring/${id}`, { active: el.dataset.active !== 'true' }); await refreshExpenses(); } catch (err) { toast(err.message); }
   }
-});
+}

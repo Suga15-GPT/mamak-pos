@@ -34,6 +34,8 @@ module.exports = defineConfig({
     timeout: 30000,
     env: {
       DATABASE_URL,
+      // The shop's time zone, as docker-compose.yml runs the app (review F1).
+      TZ: 'Asia/Kuala_Lumpur',
       ADMIN_PIN: '1234',
       BASE_URL,
       PORT: String(PORT),

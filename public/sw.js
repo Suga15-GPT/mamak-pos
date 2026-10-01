@@ -19,7 +19,8 @@
 // index.html and style.css changed together.
 // v10: the server now appends its build hash to this name when it serves
 // this file (server.js), so every update gets a fresh cache on its own.
-const CACHE_VERSION = 'v10';
+// v11: the event stream bypasses this worker.
+const CACHE_VERSION = 'v11';
 const CACHE_NAME = `mamak-pos-${CACHE_VERSION}`;
 
 const SHELL_URLS = [
@@ -62,6 +63,10 @@ self.addEventListener('fetch', event => {
   if (request.method !== 'GET') return; // never cache POSTs
 
   const url = new URL(request.url);
+  // The live-update stream is never this worker's business: a stream it
+  // answered stayed open for good, so an old worker always had a fetch in
+  // flight and the new one could not take over after an update (review F3).
+  if (url.pathname === '/api/stream') return;
   event.respondWith(url.pathname.startsWith('/api/') ? networkFirst(request) : cacheFirst(request));
 });
 

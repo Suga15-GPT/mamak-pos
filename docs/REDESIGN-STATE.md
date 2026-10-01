@@ -646,6 +646,39 @@ Found by the reviewer on main after PR #18.
   docker-compose now passes GEMINI_* and the VOICE_*/ANTHROPIC_API_KEY
   settings through (Speak to Order's were never passed before).
 
+## Review fixes (PR #20, F1–F8)
+
+- **F1** — `src/db.js` reads DATE columns as text (`types.setTypeParser(1082)`).
+  pg's default made a JS Date at local midnight, so in Malaysia time a regular
+  cost's dates came out a day early and a recorded date stayed due for ever.
+  The unit tests and Playwright now run with `TZ=Asia/Kuala_Lumpur`.
+- **F2 / F6** — after a payment (or a Record/Skip/Void) redraws its screen,
+  those buttons ignore taps for 700 ms, greyed (`.pay-settling`,
+  `.exp-settling`) so the pause is visible: a double tap's second tap landed on
+  the button that had moved under the finger (pay the rest by e-wallet; the next
+  month's Record). Playwright taps twice at one spot 400 ms apart.
+- **F3** — `/api/stream` bypasses the service worker (an old worker always had
+  it in flight, so a new one could not take over); `/` is served stamped, like
+  `/index.html` (static `index: false`); a page without a stamp is out of date
+  rather than taking the server's build as its own; a reload waits (up to 30 s)
+  for the new worker to take control, and never loops — a second attempt for
+  the same build asks for the tab to be closed and reopened. An expense draft
+  counts as busy. Checked with two builds swapped under three open tills.
+- **F4** — the Sales tiles and `/api/summary` count the Z report's way
+  (settled bills at total, refunds as a minus), so they equal the explorer.
+- **F5** — saving an expense holds its receipt photo (FOR KEY SHARE) and the
+  day-old clean-up skips held photos (FOR UPDATE SKIP LOCKED); a photo belongs
+  to one live expense (unique index in 021).
+- **F7** — the Z report's category lines include option prices (they now add
+  up to gross); Help and the handbook say a day equals its Z when the shift
+  opens and closes within it. The explorer's month view compares with the same
+  months last year.
+- **F8** — the split test imports by `file://` URL (Windows).
+- **Nits** — impossible dates and months are 400 sentences; amounts with more
+  than two decimals and dates over five years back are refused; a regular cost
+  must start within a year of today; 021 keeps Expenses off for a shop set up
+  with nothing switched on ("Small stall").
+
 ## Migrations added
 
 None in V2. Speak to Order needed no schema change — it produces the same rows
@@ -729,6 +762,19 @@ added `021_expenses.sql` (four new tables and the default categories).
   is no longer wanted.
 
 ## Latest test state
+
+After the PR #20 review fixes (on `1c85f11`): `npm test` 265/265 in Malaysia
+time (`test/helper.js` sets TZ), 5 new — the tiles equal the explorer and
+the Z report with a part and a full refund (F4), the Z report's categories add
+up to its gross with priced options (F7), 20 runs of saving a day-old photo
+against the clean-up plus two saves of one photo (F5), the nonsense-refusal
+sentences, and the Expenses switch on upgrade (on for a shop using modules, off
+for "Small stall", none before setup). The regular-cost test fails on
+`1c85f11` in Malaysia time and passes after (F1). Playwright 30/30, 2 new —
+a real double tap on share 1 of a fresh three-way split 400 ms apart, and on
+Record with two months due; both fail on the code before the fix. F3 was
+checked by hand with two builds swapped under three open tills (one at `/`,
+one busy): all three ended on the new build.
 
 After the owner requests (on `d947fab`): `npm test` 260/260 — 16 new:
 `analytics.test.js` (3: one day's explorer figures equal that day's Z report —

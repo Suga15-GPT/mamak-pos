@@ -958,6 +958,13 @@ button.chip { min-height:38px; }
 .chart .area { fill:var(--brand); opacity:.1; }
 .chart .peak { fill:var(--brand-ink); font-size:10px; font-weight:800; }
 
+/* A payment (or a Record) has just redrawn its screen: its buttons rest for a
+   moment so a double tap can't land on the one that moved under the finger. */
+#pay-modal.pay-settling [data-action^="pay"],
+#tab-expenses.exp-settling [data-action="exp-due-record"], #tab-expenses.exp-settling [data-action="exp-due-skip"],
+#tab-expenses.exp-settling [data-action="exp-void"], #tab-expenses.exp-settling [data-action="exp-rec-toggle"],
+#tab-expenses.exp-settling [data-action="exp-repeat"] { opacity:.45; pointer-events:none; }
+
 /* ---- Expenses ---- */
 .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .exp-capture { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }

@@ -257,3 +257,80 @@ test('the Gemini call: key in a header (never the URL), the photo inline, JSON o
     }
   }
 });
+
+
+test('F5: a photo saved as an expense is never lost to the clean-up of day-old photos, and belongs to one expense', async () => {
+  await withDb(async db => {
+    process.env.EXPENSE_AI_MODE = 'mock';
+    try {
+      const base = await startApp();
+      const s = await setup(base);
+      const today = await todayOf(db);
+      for (let i = 0; i < 20; i++) {
+        const r = await json(await post(base, s, '/api/expenses/extract', { image: { mime: 'image/jpeg', data: JPEG } }));
+        // The draft has been open over a day.
+        await db.query("UPDATE expense_receipts SET created_at = now() - interval '2 days' WHERE id = $1", [r.receipt_id]);
+        const [saved] = await Promise.all([
+          post(base, s, '/api/expenses', { spent_on: today, amount: 10, method: 'Cash', source: 'photo', receipt_id: r.receipt_id }),
+          post(base, s, '/api/expenses/extract', { image: { mime: 'image/jpeg', data: JPEG } }), // runs the clean-up
+        ]);
+        assert.ok([201, 400].includes(saved.status), `run ${i}: ${saved.status} ${await saved.clone().text()}`);
+        if (saved.status === 201) {
+          const { id } = await json(saved);
+          const row = (await db.query('SELECT receipt_id FROM expenses WHERE id = $1', [id])).rows[0];
+          assert.equal(row.receipt_id, r.receipt_id, `run ${i}: the saved expense kept its photo`);
+          assert.ok((await db.query('SELECT 1 FROM expense_receipts WHERE id = $1', [r.receipt_id])).rows[0], `run ${i}: and the photo is there`);
+        } else {
+          assert.match((await json(saved)).error, /no longer here/);
+        }
+      }
+      // One photo, one expense.
+      const r = await json(await post(base, s, '/api/expenses/extract', { image: { mime: 'image/jpeg', data: JPEG } }));
+      const body = { spent_on: today, amount: 10, method: 'Cash', source: 'photo', receipt_id: r.receipt_id };
+      const both = await Promise.all([post(base, s, '/api/expenses', body), post(base, s, '/api/expenses', body)]);
+      assert.deepEqual(both.map(x => x.status).sort(), [201, 409]);
+    } finally { delete process.env.EXPENSE_AI_MODE; }
+  });
+});
+
+test('nonsense is refused with a sentence: odd sen, ancient dates, impossible months, a receipt id that is not one', async () => {
+  await withDb(async db => {
+    const base = await startApp();
+    const s = await setup(base);
+    const today = await todayOf(db);
+    const bad = async (pending, re) => {
+      const r = await pending;
+      assert.equal(r.status, 400, await r.clone().text());
+      assert.match((await json(r)).error, re);
+    };
+    await bad(post(base, s, '/api/expenses', { spent_on: today, amount: 1.005, method: 'Cash' }), /two decimal places/);
+    await bad(post(base, s, '/api/expenses', { spent_on: '1900-01-01', amount: 1, method: 'Cash' }), /five years ago/);
+    await bad(post(base, s, '/api/expenses', { spent_on: today, amount: 1, method: 'Cash', receipt_id: 'abc' }), /not one of ours/);
+    await bad(post(base, s, '/api/expenses', { spent_on: today, amount: 1, method: 'Cash', receipt_id: 1.5 }), /not one of ours/);
+    for (const m of ['2026-13', '2026-00', 'soon']) await bad(fetch(`${base}/api/expenses?month=${m}`, { headers: s.h }), /YYYY-MM/);
+    await bad(post(base, s, '/api/expenses/recurring', { name: 'Old', amount: 5, every: 'month', day: 1, starts_on: '1900-01-01' }), /within a year/);
+    assert.equal((await post(base, s, '/api/expenses', { spent_on: today, amount: 12.5, method: 'Cash' })).status, 201);
+  });
+});
+
+test('upgrading: a set-up shop gets Expenses on, but a "Small stall" shop that chose nothing keeps it off', async () => {
+  await withDb(async db => {
+    const flag = async () => (await db.query("SELECT value FROM settings WHERE key = 'feature_expenses'")).rows[0]?.value;
+    const upgradeAs = async features => {
+      await db.query("DELETE FROM settings WHERE key LIKE 'feature%' OR key = 'setup_completed'");
+      await db.query("INSERT INTO settings (key, value) VALUES ('setup_completed', '1')");
+      for (const [m, v] of Object.entries(features)) await db.query('INSERT INTO settings (key, value) VALUES ($1, $2)', [`feature_${m}`, v]);
+      await db.query("DELETE FROM schema_migrations WHERE version = '021_expenses.sql'");
+      await db.migrate();
+    };
+    await upgradeAs({ kitchen: '0', printing: '0', shifts: '0', dashboard: '0' });
+    assert.equal(await flag(), '0', 'Small stall: off');
+    await upgradeAs({ kitchen: '1', printing: '0', dashboard: '1' });
+    assert.equal(await flag(), '1', 'a shop using modules: on');
+    // A fresh install (no setup yet) is left to the wizard.
+    await db.query("DELETE FROM settings WHERE key LIKE 'feature%' OR key = 'setup_completed'");
+    await db.query("DELETE FROM schema_migrations WHERE version = '021_expenses.sql'");
+    await db.migrate();
+    assert.equal(await flag(), undefined);
+  });
+});

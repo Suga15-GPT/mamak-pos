@@ -1,3 +1,8 @@
+// Every test runs in the shop's own time zone, as docker-compose.yml runs the
+// app. A suite that ran in UTC passed while regular costs broke in Malaysia
+// time (review F1). Node reads TZ again when it changes.
+process.env.TZ = 'Asia/Kuala_Lumpur';
+
 const crypto = require('crypto');
 const net = require('net');
 const { Pool } = require('pg');

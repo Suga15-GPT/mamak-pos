@@ -68,6 +68,20 @@ CREATE TABLE IF NOT EXISTS expenses (
   void_reason   TEXT
 );
 CREATE INDEX IF NOT EXISTS expenses_spent_on ON expenses (spent_on) WHERE voided_at IS NULL;
+-- A receipt photo belongs to one (live) expense.
+CREATE UNIQUE INDEX IF NOT EXISTS expenses_one_per_receipt
+  ON expenses (receipt_id) WHERE receipt_id IS NOT NULL AND voided_at IS NULL;
 -- One record per regular cost per due date: recording it twice is refused.
 CREATE UNIQUE INDEX IF NOT EXISTS expenses_one_per_due
   ON expenses (recurring_id, recurring_for) WHERE recurring_id IS NOT NULL AND voided_at IS NULL;
+
+-- A shop that already finished setup gets Expenses on — unless it chose
+-- nothing at all (the "Small stall" preset, every module off): a missing
+-- switch means on, and that shop would otherwise find a new screen it never
+-- asked for. A fresh install has no setup yet; its wizard decides.
+INSERT INTO settings (key, value)
+SELECT 'feature_expenses',
+       CASE WHEN EXISTS (SELECT 1 FROM settings WHERE key LIKE 'feature\_%' AND key <> 'feature_expenses' AND value = '1')
+            THEN '1' ELSE '0' END
+ WHERE EXISTS (SELECT 1 FROM settings WHERE key = 'setup_completed' AND value = '1')
+ON CONFLICT (key) DO NOTHING;

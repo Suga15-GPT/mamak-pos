@@ -77,9 +77,13 @@ app.get('/sw.js', (req, res) => res.type('application/javascript').set('Cache-Co
 // service worker serves from its cache — so a till knows exactly what it runs.
 const INDEX_SOURCE = require('fs').readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8')
   .replace('<meta name="app-version" content="">', `<meta name="app-version" content="${APP_VERSION}">`);
-app.get('/index.html', (req, res) => res.type('html').set('Cache-Control', 'no-cache').send(INDEX_SOURCE));
+const sendIndex = (req, res) => res.type('html').set('Cache-Control', 'no-cache').send(INDEX_SOURCE);
+// '/' too, and directly rather than by redirect: the service worker caches '/'
+// as part of its shell, and a page opened at '/' must carry the stamp as well
+// (review F3 — express.static used to answer it with the unstamped file).
+app.get(['/', '/index.html'], sendIndex);
 
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use(express.static(path.join(__dirname, '..', 'public'), { index: false }));
 
 app.use(authRoutes);
 app.use(publicRoutes);
@@ -100,7 +104,6 @@ app.get('/t/:token', (req, res) => {
   });
 });
 
-app.get('/', (req, res) => res.redirect('/index.html'));
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 

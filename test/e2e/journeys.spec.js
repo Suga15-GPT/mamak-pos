@@ -850,8 +850,72 @@ test('a double tap on a split share records one payment', async ({ page, request
   const share = page.locator('#pay-split-result [data-action="pay-share"][data-method="Card"]').first();
   await share.evaluate(b => { b.click(); b.click(); });
   await expect(page.locator('#toast')).toContainText('left');
-  const recent = await request.get('/api/orders').then(r => r.json());
-  expect(recent.find(o => o.id === id).payments).toHaveLength(1);
+  const open = await request.get('/api/orders').then(r => r.json());
+  expect(open.find(o => o.id === id).payments).toHaveLength(1);
+});
+
+/* Review F2: a real double tap on share 1 of a fresh three-way split, 400 ms
+   apart at one spot, on the screen size the reviewer used. The first answer
+   redraws the pay screen ("Paid so far" appears above the buttons) and moves
+   a pay-the-rest button (💳 Card here, 📱 DuitNow / eWallet for the reviewer)
+   under the finger; the second tap must not pay the rest of the bill. */
+test('a real double tap on a split share does not pay the rest of the bill', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const csrfToken = await apiLogin(request);
+  await freeCard(request, csrfToken, 39);
+  await ensureShift(request, csrfToken);
+  const id = await openByApi(request, csrfToken, 39, 'Mee Goreng Mamak');
+  page.on('dialog', dialog => dialog.accept());
+  await login(page);
+  await openCard(page, 39);
+  await page.getByRole('button', { name: /^💵 Take Payment$/ }).click();
+  await page.getByRole('button', { name: 'Split evenly' }).click();
+  await page.locator('#ask-input').fill('3');
+  await page.locator('#ask-ok').click();
+  const share = page.locator('#pay-split-result [data-action="pay-share"][data-method="Card"]').first();
+  await share.scrollIntoViewIfNeeded();
+  const box = await share.boundingBox();
+  const x = box.x + box.width / 2, y = box.y + box.height / 2;
+  await page.mouse.click(x, y);
+  // 400 ms: after the first answer has redrawn the screen (the reviewer saw
+  // 40–400 ms), when 💳 Card "pay the rest" sits under the finger.
+  await page.waitForTimeout(400);
+  await page.mouse.click(x, y);
+  await page.waitForTimeout(1000);
+  const open = await request.get('/api/orders').then(r => r.json());
+  const bill = open.find(o => o.id === id);
+  expect(bill, 'the bill is still open: nobody paid the rest').toBeTruthy();
+  expect(bill.payments.map(p => p.method)).toEqual(['Card']);
+});
+
+/* Review F6: with two months of rent due, a double tap on Record records one. */
+test('a double tap on Record records one regular cost, not the next one too', async ({ page, request }) => {
+  const csrfToken = await apiLogin(request);
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+  const d = new Date(`${today}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 40);
+  const start = d.toISOString().slice(0, 10);
+  const r = await request.post('/api/expenses/recurring', { ...withCsrf(csrfToken),
+    data: { name: 'Double tap rent', amount: 100, method: 'Cash', every: 'month', day: Number(start.slice(8, 10)), starts_on: start } });
+  expect(r.status()).toBe(201);
+  const recId = (await r.json()).id;
+  await login(page);
+  await navTab(page, 'Expenses').click();
+  const row = page.locator('#exp-due .exp-due-row', { hasText: 'Double tap rent' });
+  await expect(row).toContainText('1 more after this');
+  await row.getByRole('button', { name: 'Record' }).scrollIntoViewIfNeeded();
+  const box = await row.getByRole('button', { name: 'Record' }).boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.waitForTimeout(400);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.waitForTimeout(1000);
+  // Every month from the start to today: the second due date may sit in between.
+  const recorded = [];
+  for (let m = start.slice(0, 7); m <= today.slice(0, 7);) {
+    recorded.push(...(await request.get(`/api/expenses?month=${m}`).then(x => x.json())).expenses.filter(e => e.recurring_id === recId));
+    const [yy, mm] = m.split('-').map(Number);
+    m = mm === 12 ? `${yy + 1}-01` : `${yy}-${String(mm + 1).padStart(2, '0')}`;
+  }
+  expect(recorded).toHaveLength(1);
 });
 
 /* Clear sales data: with every bill, shift and kitchen ticket finished, the

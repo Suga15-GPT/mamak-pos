@@ -38,6 +38,12 @@ function cents(rm) {
   if (!Number.isFinite(n)) return null;
   return Math.round(n * 100);
 }
+// RM 1.005 is not an amount anyone paid: at most two decimal places (sen).
+const hasSenOnly = rm => {
+  const n = Number(rm);
+  return Number.isFinite(n) && Math.abs(n * 100 - Math.round(n * 100)) < 1e-6;
+};
+const FIVE_YEARS_DAYS = 5 * 366;
 
 /* ===== Categories ===== */
 async function categories(client = pool) {
@@ -53,11 +59,13 @@ async function checkFields(b, client = pool, { partial = false } = {}) {
   if (!partial || b.spent_on !== undefined) {
     if (!validDate(b.spent_on)) throw AppError('Pick the date of the purchase.', 400);
     if (b.spent_on > todayKL()) throw AppError('That date is in the future.', 400);
+    if (b.spent_on < addDays(todayKL(), -FIVE_YEARS_DAYS)) throw AppError('That date is more than five years ago — check it.', 400);
     out.spent_on = b.spent_on;
   }
   if (!partial || b.amount !== undefined) {
     const c = cents(b.amount);
     if (!(c > 0)) throw AppError('Enter how much it cost.', 400);
+    if (!hasSenOnly(b.amount)) throw AppError('Use at most two decimal places (sen), e.g. 12.50.', 400);
     if (c > MAX_CENTS) throw AppError('That amount looks too big — check it.', 400);
     out.amount_cents = c;
   }
@@ -94,16 +102,36 @@ async function create(body, userId) {
   const f = await checkFields(body);
   const source = ['manual', 'photo', 'voice'].includes(body.source) ? body.source : 'manual';
   let receiptId = null;
-  if (body.receipt_id != null) {
+  if (body.receipt_id != null && body.receipt_id !== '') {
     receiptId = Number(body.receipt_id);
-    if (!(await pool.query('SELECT 1 FROM expense_receipts WHERE id = $1', [receiptId])).rows[0]) throw AppError('That receipt photo is no longer here — take it again.', 400);
+    if (!Number.isInteger(receiptId) || receiptId <= 0 || receiptId > 2147483647) throw AppError('That receipt photo is not one of ours — take it again.', 400);
   }
-  const r = (await pool.query(
-    `INSERT INTO expenses (spent_on, supplier, category_id, description, amount_cents, method, items, source, receipt_id, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-    [f.spent_on, f.supplier, f.category_id, f.description, f.amount_cents, f.method, f.items ? JSON.stringify(f.items) : null, source, receiptId, userId])).rows[0];
-  await writeAudit(pool, { userId, action: 'expense.create', entityType: 'expense', entityId: r.id, detail: { ...f, source, receipt_id: receiptId } });
-  return r.id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // The photo is held for this insert: the clean-up of day-old unsaved
+    // photos (extract()) skips a held one, so it can't vanish between this
+    // check and the insert — a 500, or a saved expense quietly losing its
+    // photo (review F5).
+    if (receiptId != null) {
+      const held = (await client.query('SELECT 1 FROM expense_receipts WHERE id = $1 FOR KEY SHARE', [receiptId])).rows[0];
+      if (!held) throw AppError('That receipt photo is no longer here — take it again.', 400);
+      const used = (await client.query('SELECT 1 FROM expenses WHERE receipt_id = $1 AND voided_at IS NULL', [receiptId])).rows[0];
+      if (used) throw AppError('That receipt photo is already on another expense.', 409);
+    }
+    const r = (await client.query(
+      `INSERT INTO expenses (spent_on, supplier, category_id, description, amount_cents, method, items, source, receipt_id, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+      [f.spent_on, f.supplier, f.category_id, f.description, f.amount_cents, f.method, f.items ? JSON.stringify(f.items) : null, source, receiptId, userId])).rows[0];
+    await writeAudit(client, { userId, action: 'expense.create', entityType: 'expense', entityId: r.id, detail: { ...f, source, receipt_id: receiptId } });
+    await client.query('COMMIT');
+    return r.id;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    // Two saves of one photo at the same instant: the unique index decides.
+    if (e.code === '23505' && e.constraint === 'expenses_one_per_receipt') throw AppError('That receipt photo is already on another expense.', 409);
+    throw e;
+  } finally { client.release(); }
 }
 
 async function update(id, body, userId) {
@@ -140,7 +168,10 @@ async function voidExpense(id, reason, userId) {
 
 /* One month's expenses, newest first, with the month's total by category. */
 async function list(month) {
-  const m = /^\d{4}-\d{2}$/.test(String(month || '')) ? month : todayKL().slice(0, 7);
+  if (month != null && month !== '' && !(/^\d{4}-(0[1-9]|1[0-2])$/.test(String(month)) && month >= '2000-01' && month <= '2099-12')) {
+    throw AppError('Pick a month (YYYY-MM).', 400);
+  }
+  const m = month || todayKL().slice(0, 7);
   const from = `${m}-01`;
   const rows = (await pool.query(
     `SELECT e.id, to_char(e.spent_on, 'YYYY-MM-DD') spent_on, e.supplier, e.description, e.amount_cents, e.method, e.items,
@@ -168,7 +199,7 @@ async function recent() {
             supplier, category_id, description, amount_cents, method, spent_on
        FROM expenses WHERE voided_at IS NULL AND recurring_id IS NULL
       ORDER BY lower(COALESCE(supplier,'')), category_id, lower(COALESCE(description,'')), spent_on DESC, id DESC`)).rows
-    .sort((a, b) => (b.spent_on - a.spent_on))
+    .sort((a, b) => String(b.spent_on).localeCompare(String(a.spent_on)))
     .slice(0, 8)
     .map(r => ({ supplier: r.supplier, category_id: r.category_id, description: r.description, amount: r.amount_cents / 100, method: r.method }));
 }
@@ -239,7 +270,11 @@ async function createRecurring(b, userId) {
     throw AppError(every === 'month' ? 'Pick a day of the month (1–31).' : 'Pick a day of the week.', 400);
   }
   const f = await checkFields({ ...b, spent_on: todayKL() }, pool);
-  const starts = validDate(b.starts_on) ? b.starts_on : todayKL();
+  if (b.starts_on != null && b.starts_on !== '' && !validDate(b.starts_on)) throw AppError('Pick the date it starts from.', 400);
+  const starts = b.starts_on || todayKL();
+  // Due dates are counted from here, so a start years back would make a
+  // screenful of them due at once (a 1900 start made 60).
+  if (starts < addDays(todayKL(), -366) || starts > addDays(todayKL(), 366)) throw AppError('Start it within a year of today.', 400);
   const r = (await pool.query(
     `INSERT INTO recurring_expenses (name, supplier, category_id, amount_cents, method, every, day, starts_on, created_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
@@ -432,8 +467,13 @@ async function extract({ image, audio }, userId) {
 
   const cats = await categories();
   // A receipt photo nobody saved an expense for within a day is dropped.
-  await pool.query(`DELETE FROM expense_receipts r WHERE r.created_at < now() - interval '1 day'
-                     AND NOT EXISTS (SELECT 1 FROM expenses e WHERE e.receipt_id = r.id)`);
+  // A photo being saved right now is held (create(), FOR KEY SHARE) and
+  // skipped here, rather than deleted from under it.
+  await pool.query(`DELETE FROM expense_receipts WHERE id IN (
+                      SELECT r.id FROM expense_receipts r
+                       WHERE r.created_at < now() - interval '1 day'
+                         AND NOT EXISTS (SELECT 1 FROM expenses e WHERE e.receipt_id = r.id)
+                       FOR UPDATE SKIP LOCKED)`);
   const receiptId = kind === 'image'
     ? (await pool.query('INSERT INTO expense_receipts (mime, data, created_by) VALUES ($1, $2, $3) RETURNING id', [u.mime, buf, userId])).rows[0].id
     : null;

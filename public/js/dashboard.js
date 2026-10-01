@@ -107,16 +107,19 @@ function categoryName(id) {
   return o ? o.textContent : 'category';
 }
 
-function pctChange(now, before) {
-  if (!before) return now ? { text: 'no sales in the previous period', cls: '' } : { text: 'same as the previous period', cls: '' };
+// By month the comparison is the same months last year; otherwise the same
+// number of days just before.
+const prevName = d => (d.previous_range.kind === 'last_year' ? 'the same months last year' : 'the previous period');
+function pctChange(now, before, name) {
+  if (!before) return now ? { text: `no sales in ${name}`, cls: '' } : { text: `same as ${name}`, cls: '' };
   const pct = Math.round(((now - before) / Math.abs(before)) * 100);
-  if (pct === 0) return { text: 'same as the previous period', cls: '' };
-  return { text: `${pct > 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs the previous period`, cls: pct > 0 ? 'up' : 'down' };
+  if (pct === 0) return { text: `same as ${name}`, cls: '' };
+  return { text: `${pct > 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs ${name}`, cls: pct > 0 ? 'up' : 'down' };
 }
 
 function renderSummary(d) {
   const t = d.totals, p = d.previous_totals;
-  const cmp = pctChange(valueOf(t), valueOf(p));
+  const cmp = pctChange(valueOf(t), valueOf(p), prevName(d));
   const stats = [
     `<span class="ex-stat">Bills <b>${t.bills}</b></span>`,
     `<span class="ex-stat">Average bill <b>${rm(t.average_cents)}</b></span>`,
@@ -182,7 +185,7 @@ function renderChart(d) {
       ${marks}
     </svg>
     <div class="ex-legend"><span><span class="sw"></span>${esc(rangeText(d.from, d.to))}</span>
-      <span><span class="sw prev"></span>Previous period (${esc(rangeText(d.previous_range.from, d.previous_range.to))})</span></div>`;
+      <span><span class="sw prev"></span>${d.previous_range.kind === 'last_year' ? 'Same months last year' : 'Previous period'} (${esc(rangeText(d.previous_range.from, d.previous_range.to))})</span></div>`;
   $('ex-note').textContent = drill
     ? `Tap a ${d.bucket} to see its ${d.bucket === 'month' ? 'days' : 'hours'}.`
     : '';

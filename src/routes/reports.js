@@ -13,6 +13,29 @@ const router = express.Router();
 
 const KL = 'Asia/Kuala_Lumpur';
 
+/* Net sales the way the Z report and the Sales explorer count them (review
+   F4): a bill counts when it was settled, at its total, whether or not it was
+   refunded later; money given back counts when it was given back, as a minus.
+   Each row of `money` is one of those: c is the cents (+ sale, − refund), bill
+   is 1 for a settled bill, lt the shop-time moment. A tile that read
+   status = 'paid' only dropped a refunded bill's sale and missed partial
+   refunds, so it disagreed with the explorer right below it. */
+const MONEY_CTE = `
+  t AS (SELECT (now() AT TIME ZONE '${KL}')::date AS d),
+  money AS (
+    SELECT o.total_cents AS c, 1 AS bill, o.order_type AS ty, (o.paid_at AT TIME ZONE '${KL}') AS lt
+      FROM orders o WHERE o.status IN ('paid', 'refunded')
+    UNION ALL
+    SELECT -r.amount_cents, 0, o.order_type, (r.at AT TIME ZONE '${KL}')
+      FROM refunds r JOIN orders o ON o.id = r.order_id
+  )`;
+const IN_DAY = (off = 0) => `lt::date = (SELECT d FROM t) - ${off}`;
+const IN_MONTH = `date_trunc('month', lt) = date_trunc('month', (SELECT d FROM t)::timestamp)`;
+const IN_YEAR = `date_trunc('year', lt) = date_trunc('year', (SELECT d FROM t)::timestamp)`;
+const net = (cond, extra = '') => `COALESCE(SUM(c) FILTER (WHERE ${cond}${extra}), 0)::bigint`;
+const bills = (cond, extra = '') => `COUNT(*) FILTER (WHERE bill = 1 AND ${cond}${extra})::int`;
+const gross = (cond, extra = '') => `COALESCE(SUM(c) FILTER (WHERE bill = 1 AND ${cond}${extra}), 0)::bigint`;
+
 // Sales figures belong to the dashboard module: with it off, 404 like every
 // other route of a switched-off module, and the 💰 Sales tab is not shown.
 router.get('/api/summary', requireRole('admin', 'staff'), requireFeature('dashboard'), awaitH(async (req, res) => {
@@ -23,28 +46,24 @@ router.get('/api/summary', requireRole('admin', 'staff'), requireFeature('dashbo
   // `pay_total_cents` (phase 09 drops that column now that phase 05 backfilled
   // `payments`).
   const s = await pool.query(`
-    WITH p AS (SELECT total_cents, paid_at AT TIME ZONE '${KL}' AS lt FROM orders WHERE status = 'paid'),
-    today AS (SELECT (now() AT TIME ZONE '${KL}')::date AS d)
-    SELECT
-      COALESCE(SUM(CASE WHEN lt::date = (SELECT d FROM today) THEN total_cents END), 0)  today_cents,
-      COUNT(CASE WHEN lt::date = (SELECT d FROM today) THEN 1 END)                       today_orders,
-      COALESCE(SUM(CASE WHEN date_trunc('month', lt) = date_trunc('month', (SELECT d FROM today)::timestamp) THEN total_cents END), 0) month_cents,
-      COUNT(CASE WHEN date_trunc('month', lt) = date_trunc('month', (SELECT d FROM today)::timestamp) THEN 1 END) month_orders,
-      COALESCE(SUM(CASE WHEN date_trunc('year', lt) = date_trunc('year', (SELECT d FROM today)::timestamp) THEN total_cents END), 0)  year_cents,
-      COUNT(CASE WHEN date_trunc('year', lt) = date_trunc('year', (SELECT d FROM today)::timestamp) THEN 1 END)  year_orders
-    FROM p`);
+    WITH ${MONEY_CTE}
+    SELECT ${net(IN_DAY())} today_cents, ${bills(IN_DAY())} today_orders,
+           ${net(IN_MONTH)} month_cents, ${bills(IN_MONTH)} month_orders,
+           ${net(IN_YEAR)} year_cents, ${bills(IN_YEAR)} year_orders
+      FROM money`);
   const open = await pool.query(
     "SELECT count(*)::int n FROM orders WHERE status IN ('sent','preparing','ready','served')");
   const top = await pool.query(`
     SELECT oi.name, SUM(oi.qty)::int sold
     FROM orders o JOIN order_items oi ON oi.order_id = o.id
-    WHERE o.status = 'paid' AND (o.paid_at AT TIME ZONE '${KL}')::date = (now() AT TIME ZONE '${KL}')::date
+    WHERE o.status IN ('paid', 'refunded') AND oi.voided_at IS NULL
+      AND (o.paid_at AT TIME ZONE '${KL}')::date = (now() AT TIME ZONE '${KL}')::date
     GROUP BY oi.name ORDER BY sold DESC LIMIT 5`);
   const r = s.rows[0];
   res.json({
-    today: { sales: cents2rm(r.today_cents), orders: Number(r.today_orders) },
-    month: { sales: cents2rm(r.month_cents), orders: Number(r.month_orders) },
-    year:  { sales: cents2rm(r.year_cents),  orders: Number(r.year_orders) },
+    today: { sales: cents2rm(Number(r.today_cents)), orders: Number(r.today_orders) },
+    month: { sales: cents2rm(Number(r.month_cents)), orders: Number(r.month_orders) },
+    year:  { sales: cents2rm(Number(r.year_cents)),  orders: Number(r.year_orders) },
     open_orders: open.rows[0].n,
     top_items: top.rows,
   });
@@ -60,22 +79,17 @@ router.get('/api/dashboard', requireRole('admin', 'staff'), requireFeature('dash
   const paidLocal = `(o.paid_at AT TIME ZONE '${KL}')`;
 
   const [sales, mix, hourly, top, kitchen, adjustments, floor] = await Promise.all([
-    // Sales and covers for today and yesterday (for the comparison), plus the
-    // running month and year. closed_shift_id is irrelevant here: this is a
-    // calendar view, not a till reconciliation.
+    // Net sales and bills for today and yesterday (for the comparison), the
+    // running month and year, and today by order type — the Z report's way
+    // (MONEY_CTE above). This is a calendar view, not a till reconciliation.
     pool.query(`
-      SELECT
-        COALESCE(SUM(o.total_cents) FILTER (WHERE ${paidLocal}::date = ${today}), 0)::int AS today_cents,
-        COUNT(*) FILTER (WHERE ${paidLocal}::date = ${today})::int                        AS today_orders,
-        COALESCE(SUM(o.total_cents) FILTER (WHERE ${paidLocal}::date = ${today} - 1), 0)::int AS yesterday_cents,
-        COUNT(*) FILTER (WHERE ${paidLocal}::date = ${today} - 1)::int                    AS yesterday_orders,
-        COALESCE(SUM(o.total_cents) FILTER (WHERE date_trunc('month', ${paidLocal}) = date_trunc('month', ${today}::timestamp)), 0)::int AS month_cents,
-        COALESCE(SUM(o.total_cents) FILTER (WHERE date_trunc('year',  ${paidLocal}) = date_trunc('year',  ${today}::timestamp)), 0)::int AS year_cents,
-        COALESCE(SUM(o.total_cents) FILTER (WHERE ${paidLocal}::date = ${today} AND o.order_type = 'dine_in'), 0)::int  AS dine_in_cents,
-        COUNT(*) FILTER (WHERE ${paidLocal}::date = ${today} AND o.order_type = 'dine_in')::int                          AS dine_in_orders,
-        COALESCE(SUM(o.total_cents) FILTER (WHERE ${paidLocal}::date = ${today} AND o.order_type = 'takeaway'), 0)::int AS takeaway_cents,
-        COUNT(*) FILTER (WHERE ${paidLocal}::date = ${today} AND o.order_type = 'takeaway')::int                         AS takeaway_orders
-      FROM orders o WHERE o.status = 'paid'`),
+      WITH ${MONEY_CTE}
+      SELECT ${net(IN_DAY())} today_cents, ${bills(IN_DAY())} today_orders, ${gross(IN_DAY())} today_gross_cents,
+             ${net(IN_DAY(1))} yesterday_cents, ${bills(IN_DAY(1))} yesterday_orders,
+             ${net(IN_MONTH)} month_cents, ${net(IN_YEAR)} year_cents,
+             ${net(IN_DAY(), " AND ty = 'dine_in'")} dine_in_cents, ${bills(IN_DAY(), " AND ty = 'dine_in'")} dine_in_orders,
+             ${net(IN_DAY(), " AND ty = 'takeaway'")} takeaway_cents, ${bills(IN_DAY(), " AND ty = 'takeaway'")} takeaway_orders
+        FROM money`),
 
     pool.query(`
       SELECT p.method, SUM(p.amount_cents)::int cents, COUNT(*)::int n
@@ -86,13 +100,13 @@ router.get('/api/dashboard', requireRole('admin', 'staff'), requireFeature('dash
     pool.query(`
       SELECT EXTRACT(hour FROM ${paidLocal})::int AS hour, SUM(o.total_cents)::int cents, COUNT(*)::int orders
         FROM orders o
-       WHERE o.status = 'paid' AND ${paidLocal}::date = ${today}
+       WHERE o.status IN ('paid', 'refunded') AND ${paidLocal}::date = ${today}
        GROUP BY 1 ORDER BY 1`),
 
     pool.query(`
       SELECT oi.name, SUM(oi.qty)::int sold, SUM(oi.price_cents * oi.qty)::int cents
         FROM orders o JOIN order_items oi ON oi.order_id = o.id
-       WHERE o.status = 'paid' AND ${paidLocal}::date = ${today} AND oi.voided_at IS NULL
+       WHERE o.status IN ('paid', 'refunded') AND ${paidLocal}::date = ${today} AND oi.voided_at IS NULL
        GROUP BY oi.name ORDER BY sold DESC, cents DESC LIMIT 8`),
 
     // Kitchen health, measured off the round tickets that actually record it.
@@ -139,8 +153,10 @@ router.get('/api/dashboard', requireRole('admin', 'staff'), requireFeature('dash
       FROM orders WHERE status IN ('sent','preparing','ready','served')`),
   ]);
 
-  const s = sales.rows[0], k = kitchen.rows[0], a = adjustments.rows[0], f = floor.rows[0];
-  const avgOrder = s.today_orders ? Math.round(s.today_cents / s.today_orders) : 0;
+  const s = Object.fromEntries(Object.entries(sales.rows[0]).map(([key, v]) => [key, Number(v)]));
+  const k = kitchen.rows[0], a = adjustments.rows[0], f = floor.rows[0];
+  // As the Z report's average check: settled bills' totals over their count.
+  const avgOrder = s.today_orders ? Math.round(s.today_gross_cents / s.today_orders) : 0;
 
   res.json({
     today: {

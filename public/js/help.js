@@ -616,7 +616,7 @@ const TOPICS = [
         'The table under the chart has every figure; ⬇ Export CSV saves it for Excel or your accountant.',
         'The owner also sees Expenses and Sales − expenses (by day or month, with no filter chosen).',
       ] },
-      { p: 'Sales are counted when a bill is paid, at its full total with SST — the same way the Z report counts them, so the two always agree. Refunds are their own column. Below: top items, payment mix and sales by category for the same timeframe, and what the kitchen is doing now.' },
+      { p: 'Sales are counted when a bill is paid, at its full total with SST — the same way the Z report counts them, so a day’s figures match that day’s Z report when the shift opens and closes on the same day. (A shift that runs past midnight is split across the two days here.) Refunds are their own column. The tiles at the top count the same way. Below: top items, payment mix and sales by category for the same timeframe, and what the kitchen is doing now.' },
     ],
   },
   {

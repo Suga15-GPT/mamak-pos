@@ -8,7 +8,10 @@ const { startApp, setup, post, json, openCard, one } = require('../apphelper');
    exactly what is left to pay, and the card's own QR gives the page what it
    needs (prices, the breakdown, what is paid) — and nothing more. */
 
-const load = () => import(path.join(__dirname, '..', '..', 'public', 'customer', 'split-math.js'));
+// A file:// URL, not a path: on Windows import('C:\\…') is refused
+// (ERR_UNSUPPORTED_ESM_URL_SCHEME; review F8).
+const { pathToFileURL } = require('url');
+const load = () => import(pathToFileURL(path.join(__dirname, '..', '..', 'public', 'customer', 'split-math.js')).href);
 
 test('an even split adds up to the sen, and the first shares carry the spare sen', async () => {
   const { splitEvenCents } = await load();

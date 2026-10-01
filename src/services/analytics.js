@@ -5,7 +5,9 @@ const { AppError } = require('../lib/errors');
    One query shape for any date range, bucketed by hour, day or month, with
    the previous period of the same length alongside for comparison.
 
-   What "sales" means is the Z report's meaning, so the two always agree: a
+   What "sales" means is the Z report's meaning, so a day matches that day's Z
+   report when the shift opens and closes within the day (a shift past
+   midnight is split across two days here): a
    bill counts on the moment it was settled (paid_at), at its total (SST,
    service charge, discounts and cash rounding included), whether it was later
    refunded or not; money given back is its own figure (refunds.at), and net =
@@ -39,7 +41,9 @@ const MAX_DAYS = { hour: 7, day: 366, month: 3 * 366 };
 
 function parseQuery(q) {
   const from = String(q.from || ''), to = String(q.to || '');
-  if (!DATE.test(from) || !DATE.test(to) || isNaN(toDate(from)) || isNaN(toDate(to))) {
+  // A real calendar date (no 30 February), in a sensible range of years.
+  const real = d => DATE.test(d) && !isNaN(toDate(d)) && iso(toDate(d)) === d && d >= '2000-01-01' && d <= '2099-12-31';
+  if (!real(from) || !real(to)) {
     throw AppError('from and to must be dates (YYYY-MM-DD)', 400);
   }
   if (to < from) throw AppError('the end date is before the start date', 400);
@@ -129,8 +133,18 @@ function totals(rows) {
    bucket then carries what was spent too, and the summary sales − expenses. */
 async function explore(query, { withExpenses = false } = {}) {
   const q = parseQuery(query);
-  const prevTo = addDays(q.from, -1);
-  const prevFrom = addDays(q.from, -q.days);
+  // What a bar is compared with. By month: the same months a year earlier —
+  // "the previous 273 days" would put April's tick on January's bar and leave
+  // a month without one (review). By day or hour: the same number of days
+  // just before.
+  const yearEarlier = d => {
+    const [y, m, dd] = d.split('-').map(Number);
+    const last = new Date(Date.UTC(y - 1, m, 0)).getUTCDate();
+    return `${y - 1}-${String(m).padStart(2, '0')}-${String(Math.min(dd, last)).padStart(2, '0')}`;
+  };
+  const byMonth = q.bucket === 'month';
+  const prevFrom = byMonth ? yearEarlier(q.from) : addDays(q.from, -q.days);
+  const prevTo = byMonth ? yearEarlier(q.to) : addDays(q.from, -1);
   const client = await pool.connect();
   try {
     // One snapshot for every figure on the screen.
@@ -173,7 +187,7 @@ async function explore(query, { withExpenses = false } = {}) {
       from: q.from, to: q.to, bucket: q.bucket,
       measure: q.method ? 'method' : q.category ? 'category' : 'sales',
       filters: { order_type: q.orderType, method: q.method, category: q.category },
-      previous_range: { from: prevFrom, to: prevTo },
+      previous_range: { from: prevFrom, to: prevTo, kind: byMonth ? 'last_year' : 'just_before' },
       rows, previous: previous.map(r => ({ key: r.key, net_cents: r.net_cents, sales_cents: r.sales_cents, bills: r.bills })),
       totals: totals(rows), previous_totals: totals(previous),
       top_items: top.map(r => ({ name: r.name, sold: r.sold, cents: Number(r.cents) })),

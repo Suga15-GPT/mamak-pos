@@ -941,12 +941,29 @@ function updateChangeDue() {
    sends the "To pay" this screen shows, so a bill that grew on another till
    (a Combine, an add-on) is refused instead of charged unseen. */
 let payBusy = false;
+// After a payment's answer has redrawn the pay screen, the buttons have moved:
+// a second tap of a double tap lands on whatever now sits under the finger —
+// 📱 DuitNow / eWallet "pay the rest" under a share's button (review F2). So
+// every pay button ignores taps until the screen has been still this long.
+const PAY_SETTLE_MS = 700;
+let payQuietUntil = 0;
+const payLocked = () => payBusy || Date.now() < payQuietUntil;
+// The pay buttons also grey out for that moment (style.css .pay-settling), so
+// the cashier can see why a tap did nothing.
+let settleTimer = null;
+function payDone() {
+  payBusy = false;
+  payQuietUntil = Date.now() + PAY_SETTLE_MS;
+  $('pay-modal').classList.add('pay-settling');
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => $('pay-modal').classList.remove('pay-settling'), PAY_SETTLE_MS);
+}
 async function processPay(method, amount, tendered) {
   // Payments require server confirmation and must fail loudly offline — unlike
   // order entry, they are never queued: a mis-queued payment is a cash
   // discrepancy nobody can reconstruct.
   if (!navigator.onLine) return toast('Cannot take payment while offline');
-  if (payBusy) return;
+  if (payLocked()) return;
   payBusy = true;
   const orderId = $('pay-btn').dataset.orderId;
   try {
@@ -966,7 +983,7 @@ async function processPay(method, amount, tendered) {
   } catch (e) {
     toast('Payment failed: ' + e.message);
     if (e.status === 409) await refreshPayOrClose();
-  } finally { payBusy = false; }
+  } finally { payDone(); }
 }
 
 // Re-reads the bill behind an open pay screen. A bill that closed or was
@@ -1025,7 +1042,7 @@ function updateGroupLegsSummary() {
 
 async function payGroup(legs) {
   if (!navigator.onLine) return toast('Cannot take payment while offline');
-  if (payBusy) return;
+  if (payLocked()) return;
   payBusy = true;
   try {
     // The total this screen shows: a combined bill that grew since (an
@@ -1037,7 +1054,7 @@ async function payGroup(legs) {
   } catch (e) {
     toast('Payment failed: ' + e.message);
     if (e.status === 409) await refreshPayOrClose();
-  } finally { payBusy = false; }
+  } finally { payDone(); }
 }
 
 function payGroupLegs() {
@@ -1081,7 +1098,7 @@ async function paySplitShare(idx, method) {
   if (!share) return;
   if (!navigator.onLine) return toast('Cannot take payment while offline');
   // One payment at a time: a double tap on a share recorded it twice (N1).
-  if (payBusy) return;
+  if (payLocked()) return;
   payBusy = true;
   try {
     const r = await API.post(`/api/orders/${$('pay-btn').dataset.orderId}/pay`, { method, amount: share.amount });
@@ -1089,7 +1106,7 @@ async function paySplitShare(idx, method) {
     if (r.settled) { closePayModal(); toast('Paid in full'); backToTables(); }
     else { toast(`Paid ${fmt(r.paid)} — ${fmt(r.remaining)} left`); await refreshPayModal(); }
   } catch (e) { toast('Payment failed: ' + e.message); }
-  finally { payBusy = false; }
+  finally { payDone(); }
 }
 
 async function splitEvenlyUI() {
@@ -1179,7 +1196,7 @@ async function toggleSplitItem(id, checked) {
 async function payItems(method) {
   if (!itemSplit?.preview || !itemSplit.selected.size) return;
   if (!navigator.onLine) return toast('Cannot take payment while offline');
-  if (payBusy) return;
+  if (payLocked()) return;
   payBusy = true;
   try {
     const r = await API.post(`/api/orders/${currentOrder.id}/pay`, {
@@ -1202,7 +1219,7 @@ async function payItems(method) {
     try { itemSplit.preview = await API.get(`/api/orders/${currentOrder.id}/split?by=items&items=${[...itemSplit.selected].join(',')}`); }
     catch { /* the error already says what is wrong */ }
     renderItemSplit();
-  } finally { payBusy = false; }
+  } finally { payDone(); }
 }
 
 /* ===== DISCOUNT =====
