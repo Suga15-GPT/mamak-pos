@@ -37,6 +37,19 @@ break the shop on a normal day.
 - Gemini and every other outside service are replaced by local stand-ins. Send
   nothing to Google or anyone else.
 
+## Known setup (so you don't have to stop and ask)
+
+- **The review folder** (`mamak-pos-r`) is your own copy of the repository,
+  not the shop. At the start of a round, bring it to the commit under review:
+  `git fetch origin <branch>` then `git merge --ff-only origin/<branch>` (or
+  `git checkout --detach <commit>`). Controls on older commits come from
+  `git archive` into your scratch folder, as before.
+- **`localhost:5434` is the throwaway database**: the Docker container
+  `pos-test-r`, published as 5434 on the PC and listening on 5432 inside the
+  container — so a server that reports its own port as 5432 is expected. The
+  shop's database publishes no port at all, so nothing on `localhost` can be
+  it. Check the address (`localhost:5434`) and nothing else.
+
 ## How to review
 
 - Check every item in the request, and every claim in the PR description.
