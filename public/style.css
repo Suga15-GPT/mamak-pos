@@ -965,6 +965,8 @@ button.chip { min-height:38px; }
 #tab-expenses.exp-settling [data-action="exp-void"], #tab-expenses.exp-settling [data-action="exp-rec-toggle"],
 #tab-expenses.exp-settling [data-action="exp-repeat"] { opacity:.45; pointer-events:none; }
 
+.app-version { margin:24px 0 8px; text-align:center; color:var(--text-2); font-size:12px; }
+
 /* ---- Expenses ---- */
 .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .exp-capture { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }

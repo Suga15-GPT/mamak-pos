@@ -965,10 +965,10 @@ test('clear sales data: running setup keeps the sales, clearing starts every fig
 
   await navTab(page, 'Sales').click();
   const kpi = label => page.locator('#dash-kpis .kpi', { hasText: label }).locator('.v');
-  await expect(kpi('Today sales')).toHaveText('RM 0.00');
+  await expect(kpi('Net sales today')).toHaveText('RM 0.00');
   await expect(kpi('Orders')).toHaveText('0');
-  await expect(kpi('This month')).toHaveText('RM 0.00');
-  await expect(kpi('This year')).toHaveText('RM 0.00');
+  await expect(kpi('Net sales this month')).toHaveText('RM 0.00');
+  await expect(kpi('Net sales this year')).toHaveText('RM 0.00');
   await expect(page.locator('#dash-top')).toContainText('Nothing in this period');
   await expect(page.locator('#sales-explorer .ex-hero')).toHaveText('RM 0.00');
 

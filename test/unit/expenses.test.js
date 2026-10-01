@@ -309,6 +309,11 @@ test('nonsense is refused with a sentence: odd sen, ancient dates, impossible mo
     await bad(post(base, s, '/api/expenses', { spent_on: today, amount: 1, method: 'Cash', receipt_id: 1.5 }), /not one of ours/);
     for (const m of ['2026-13', '2026-00', 'soon']) await bad(fetch(`${base}/api/expenses?month=${m}`, { headers: s.h }), /YYYY-MM/);
     await bad(post(base, s, '/api/expenses/recurring', { name: 'Old', amount: 5, every: 'month', day: 1, starts_on: '1900-01-01' }), /within a year/);
+    // A regular cost's amount, changed or confirmed at Record, too (re-check F4).
+    const rec = await json(await post(base, s, '/api/expenses/recurring', { name: 'Gas', amount: 50, every: 'month', day: Number(today.slice(8, 10)), starts_on: today }));
+    await bad(patch(base, s, `/api/expenses/recurring/${rec.id}`, { amount: 1.005 }), /two decimal places/);
+    await bad(post(base, s, `/api/expenses/recurring/${rec.id}/record`, { for: today, amount: 12.555 }), /two decimal places/);
+    assert.equal((await post(base, s, `/api/expenses/recurring/${rec.id}/record`, { for: today, amount: 12.55 })).status, 200);
     assert.equal((await post(base, s, '/api/expenses', { spent_on: today, amount: 12.5, method: 'Cash' })).status, 201);
   });
 });

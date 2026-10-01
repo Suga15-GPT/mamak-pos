@@ -68,6 +68,9 @@ CREATE TABLE IF NOT EXISTS expenses (
   void_reason   TEXT
 );
 CREATE INDEX IF NOT EXISTS expenses_spent_on ON expenses (spent_on) WHERE voided_at IS NULL;
+-- Finding the expense a photo belongs to is quick (the day-old clean-up asks
+-- for every photo it considers).
+CREATE INDEX IF NOT EXISTS expenses_receipt ON expenses (receipt_id) WHERE receipt_id IS NOT NULL;
 -- A receipt photo belongs to one (live) expense.
 CREATE UNIQUE INDEX IF NOT EXISTS expenses_one_per_receipt
   ON expenses (receipt_id) WHERE receipt_id IS NOT NULL AND voided_at IS NULL;

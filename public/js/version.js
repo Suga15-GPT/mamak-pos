@@ -77,6 +77,10 @@ async function check() {
 }
 
 export function startVersionCheck() {
+  // Shown at the foot of Help, so anyone can see which build a till runs and
+  // compare tills after an update.
+  const label = $('app-version-label');
+  if (label) label.textContent = `POS version ${running}`;
   check();
   setInterval(check, 30000);
   // Once an update is known, look for a quiet moment every few seconds.

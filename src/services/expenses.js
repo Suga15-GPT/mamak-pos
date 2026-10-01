@@ -290,6 +290,7 @@ async function updateRecurring(id, b, userId) {
   if (b.amount !== undefined) {
     const c = cents(b.amount);
     if (!(c > 0) || c > MAX_CENTS) throw AppError('Enter how much it costs.', 400);
+    if (!hasSenOnly(b.amount)) throw AppError('Use at most two decimal places (sen), e.g. 12.50.', 400);
     add('amount_cents', c);
   }
   if (b.name !== undefined) { const n = clean(b.name, 80); if (!n) throw AppError('Give it a name.', 400); add('name', n); }
@@ -315,6 +316,7 @@ async function settleDue(id, { forDate, amount, skip = false }, userId) {
     if (forDate !== next) throw AppError(`The next ${t.name} due is for ${next}. Do that one first.`, 409);
     let expenseId = null;
     if (!skip) {
+      if (amount != null && !hasSenOnly(amount)) throw AppError('Use at most two decimal places (sen), e.g. 12.50.', 400);
       const c = amount != null ? cents(amount) : t0.amount_cents;
       if (!(c > 0) || c > MAX_CENTS) throw AppError('Enter how much it cost.', 400);
       expenseId = (await client.query(
@@ -466,14 +468,28 @@ async function extract({ image, audio }, userId) {
   if (kind === 'image' && !looksLikeImage(buf, u.mime)) throw AppError('That file is not a photo.', 400);
 
   const cats = await categories();
-  // A receipt photo nobody saved an expense for within a day is dropped.
-  // A photo being saved right now is held (create(), FOR KEY SHARE) and
-  // skipped here, rather than deleted from under it.
-  await pool.query(`DELETE FROM expense_receipts WHERE id IN (
-                      SELECT r.id FROM expense_receipts r
-                       WHERE r.created_at < now() - interval '1 day'
-                         AND NOT EXISTS (SELECT 1 FROM expenses e WHERE e.receipt_id = r.id)
-                       FOR UPDATE SKIP LOCKED)`);
+  // A receipt photo nobody saved an expense for within a day is dropped. Two
+  // steps in one transaction (review F5, re-check F2): first lock the
+  // candidates, skipping any held by a save right now (create(), FOR KEY
+  // SHARE); then delete only those that *still* belong to no expense — the
+  // second statement sees a save that committed while the first ran, which a
+  // single DELETE's snapshot did not, and ON DELETE SET NULL then emptied the
+  // photo off the expense just saved.
+  const sweep = await pool.connect();
+  try {
+    await sweep.query('BEGIN');
+    const ids = (await sweep.query(
+      `SELECT r.id FROM expense_receipts r
+        WHERE r.created_at < now() - interval '1 day'
+          AND NOT EXISTS (SELECT 1 FROM expenses e WHERE e.receipt_id = r.id)
+        FOR UPDATE SKIP LOCKED`)).rows.map(r => r.id);
+    if (ids.length) {
+      await sweep.query(
+        `DELETE FROM expense_receipts r WHERE r.id = ANY($1::int[])
+           AND NOT EXISTS (SELECT 1 FROM expenses e WHERE e.receipt_id = r.id)`, [ids]);
+    }
+    await sweep.query('COMMIT');
+  } catch (e) { await sweep.query('ROLLBACK'); throw e; } finally { sweep.release(); }
   const receiptId = kind === 'image'
     ? (await pool.query('INSERT INTO expense_receipts (mime, data, created_by) VALUES ($1, $2, $3) RETURNING id', [u.mime, buf, userId])).rows[0].id
     : null;

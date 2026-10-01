@@ -603,7 +603,7 @@ const TOPICS = [
     blurb: 'How today is going.',
     body: [
       { h: 'The numbers along the top', list: [
-        'Today sales — settled takings so far, against all of yesterday.',
+        'Net sales today — bills settled today, less any refunds given today, against all of yesterday. A refund of an earlier bill can take it below zero; the line under it says so.',
         'Orders and Average order — how many bills and how big.',
         'Cards in use and Ready to pay — the floor right now. Ready to pay means go and collect.',
         'Late in kitchen — tickets over ten minutes old.',

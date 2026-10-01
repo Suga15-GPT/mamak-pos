@@ -20,12 +20,17 @@ function kpi({ label, value, sub, cls = '' }) {
 // Yesterday at the same point isn't available (only its whole-day total is), so
 // this compares whole day to whole day and says so, rather than implying a
 // like-for-like it can't measure.
-function comparison(today, yesterday) {
-  if (!yesterday) return { text: 'No sales yesterday', cls: '' };
+// The tiles are net sales (sales less refunds given), as the Z report and
+// the explorer count them — so a morning whose first event is a refund of
+// yesterday's bill reads below zero (re-check F3). Then a percentage means
+// nothing; say what happened instead.
+function comparison(today, yesterday, refundsToday = 0) {
+  if (today <= 0 && refundsToday > 0) return { text: `Refunds of ${fmt(refundsToday)} so far today`, cls: 'down' };
+  if (!(yesterday > 0)) return { text: refundsToday > 0 ? `After ${fmt(refundsToday)} refunds` : 'No sales yesterday', cls: '' };
   const pct = Math.round(((today - yesterday) / yesterday) * 100);
   if (pct === 0) return { text: 'Same as all day yesterday', cls: '' };
   return {
-    text: `${pct > 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs all day yesterday`,
+    text: `${pct > 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs all day yesterday${refundsToday > 0 ? ` · after ${fmt(refundsToday)} refunds` : ''}`,
     cls: pct > 0 ? 'up' : 'down',
   };
 }
@@ -373,7 +378,7 @@ export async function refreshDashboard() {
     if (stamp) stamp.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
     $('dash-kpis').innerHTML = [
-      kpi({ label: 'Today sales', value: fmt(d.today.sales), cls: 'hero', sub: comparison(d.today.sales, d.yesterday.sales) }),
+      kpi({ label: 'Net sales today', value: fmt(d.today.sales), cls: 'hero', sub: comparison(d.today.sales, d.yesterday.sales, d.adjustments.refunds) }),
       kpi({ label: 'Orders', value: String(d.today.orders), sub: { text: `${d.today.dine_in.orders} dine in · ${d.today.takeaway.orders} takeaway` } }),
       kpi({ label: 'Average order', value: fmt(d.today.average_order) }),
       kpi({ label: 'Cards in use', value: String(d.floor.open_cards), sub: { text: `${fmt(d.floor.open_value)} on the floor` } }),
@@ -387,8 +392,8 @@ export async function refreshDashboard() {
         cls: d.kitchen.late_tickets ? 'alert' : '',
         sub: { text: d.kitchen.longest_active_minutes ? `Oldest ${d.kitchen.longest_active_minutes} min` : 'Nothing waiting', cls: d.kitchen.late_tickets ? 'down' : '' },
       }),
-      kpi({ label: 'This month', value: fmt(d.month.sales) }),
-      kpi({ label: 'This year', value: fmt(d.year.sales) }),
+      kpi({ label: 'Net sales this month', value: fmt(d.month.sales) }),
+      kpi({ label: 'Net sales this year', value: fmt(d.year.sales) }),
     ].join('');
 
     await loadCategories();

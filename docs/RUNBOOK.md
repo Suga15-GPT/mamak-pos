@@ -363,5 +363,17 @@ opens empty and you type it.
 
 Every screen checks every 30 seconds which version the server is running. After
 an update it reloads itself at the first quiet moment (no dialog open, nothing
-unsent on the bill); until then a blue bar says it will. The very first update
-that adds this needs one manual reload of every till; after that it is automatic.
+unsent on the bill, no expense draft open); until then a blue bar says it will.
+Each till's version is at the foot of **🛟 Help** ("POS version …") — after an
+update every till should show the same one.
+
+**The first update that adds this (from a version without it):** the old
+version's offline cache holds the tills on the old screens, and a reload alone
+is answered from that cache. On every till:
+
+1. Close the POS tab (or the POS app) completely, and open it again.
+2. Do it a second time.
+3. Check: **🛟 Help** shows a "POS version" line at the bottom, and the owner's
+   login shows **🧾 Expenses**. If not, close and open once more.
+
+From then on, updates reach the tills by themselves.

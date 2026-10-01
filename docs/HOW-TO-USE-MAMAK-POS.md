@@ -789,12 +789,14 @@ The Z report appears. Tap **Print** for a paper copy, or **Export CSV**.
 
 Tap **💰 Sales**. At a glance:
 
-- **Today sales** — and whether that is up or down on all of yesterday
+- **Net sales today** — bills settled today less refunds given today, and whether
+  that is up or down on all of yesterday (a refund of an earlier bill can take it
+  below zero; the line under it says so)
 - **Orders** and **Average order**
 - **Open tables** and how much money is sitting on the floor
 - **Ready to pay** — tables to go and collect from
 - **Late in kitchen** — anything over 10 minutes
-- **This month** and **This year**
+- **Net sales this month** and **this year**, counted the same way
 
 Below that is the **Sales explorer**:
 
