@@ -316,9 +316,9 @@ async function settleDue(id, { forDate, amount, skip = false }, userId) {
     if (forDate !== next) throw AppError(`The next ${t.name} due is for ${next}. Do that one first.`, 409);
     let expenseId = null;
     if (!skip) {
-      if (amount != null && !hasSenOnly(amount)) throw AppError('Use at most two decimal places (sen), e.g. 12.50.', 400);
       const c = amount != null ? cents(amount) : t0.amount_cents;
       if (!(c > 0) || c > MAX_CENTS) throw AppError('Enter how much it cost.', 400);
+      if (amount != null && !hasSenOnly(amount)) throw AppError('Use at most two decimal places (sen), e.g. 12.50.', 400);
       expenseId = (await client.query(
         `INSERT INTO expenses (spent_on, supplier, category_id, description, amount_cents, method, source, recurring_id, recurring_for, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,'recurring',$7,$1,$8) RETURNING id`,

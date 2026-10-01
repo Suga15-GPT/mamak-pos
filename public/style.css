@@ -513,12 +513,15 @@ nav#nav .nav-foot { padding:8px 10px; border-top:1px solid var(--border); }
     border-radius:var(--radius-pill); padding:0 6px; font-size:10px; font-weight:800;
   }
   #bottom-nav .nav-brand, #bottom-nav .nav-spacer, #bottom-nav .nav-foot { display:none; }
-  main { padding-bottom:calc(var(--bottomnav-h) + 24px + env(safe-area-inset-bottom)); }
 }
 
 main { padding:22px; max-width:1440px; margin:0 auto; margin-left:var(--sidebar-w); }
 @media (min-width:768px) { main { max-width:none; padding:24px 28px 40px; } }
 @media (max-width:600px) { main { padding:14px; } }
+/* The phone's bottom bar covers the foot of every screen unless the page keeps
+   clear of it. This has to come after the padding shorthands above, which
+   otherwise reset it (re-check 2, F1: Help's "POS version" line was under the bar). */
+@media (max-width:767px) { main { padding-bottom:calc(var(--bottomnav-h) + 24px + env(safe-area-inset-bottom)); } }
 .tab { display:none; }
 /* Opacity only, deliberately: a `transform` here — even the identity matrix a
    finished fill-mode:both animation leaves behind — makes the section a

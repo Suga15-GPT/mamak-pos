@@ -1216,3 +1216,21 @@ for (const vp of VIEWPORTS) {
     }
   });
 }
+
+/* After an update the RUNBOOK asks everyone to read "POS version …" at the foot
+   of Help. On a phone the bottom bar is fixed over the page, so the page has
+   to keep clear of it or that last line is never visible (re-check 2, F1). */
+for (const vp of [{ width: 390, height: 844 }, { width: 360, height: 640 }]) {
+  test(`the POS version line at the foot of Help is above the bottom bar at ${vp.width}x${vp.height}`, async ({ page }) => {
+    await page.setViewportSize(vp);
+    await login(page);
+    await page.locator('#bottom-nav button').filter({ hasText: 'Help' }).click();
+    const label = page.locator('#app-version-label');
+    await expect(label).toHaveText(/^POS version \S+/);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await page.waitForTimeout(150);
+    const labelBox = await label.boundingBox();
+    const barBox = await page.locator('#bottom-nav').boundingBox();
+    expect(labelBox.y + labelBox.height).toBeLessThanOrEqual(barBox.y);
+  });
+}

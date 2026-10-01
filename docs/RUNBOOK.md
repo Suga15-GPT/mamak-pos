@@ -369,11 +369,18 @@ update every till should show the same one.
 
 **The first update that adds this (from a version without it):** the old
 version's offline cache holds the tills on the old screens, and a reload alone
-is answered from that cache. On every till:
+is answered from that cache. On every device that runs the POS:
 
-1. Close the POS tab (or the POS app) completely, and open it again.
-2. Do it a second time.
-3. Check: **🛟 Help** shows a "POS version" line at the bottom, and the owner's
-   login shows **🧾 Expenses**. If not, close and open once more.
+1. **Send or clear what is on the screen first.** The old version keeps a line
+   that hasn't been sent only in the page, so closing the page loses it.
+2. **Close every POS tab and window on that device** — the Kitchen screen and
+   any second POS tab too, not just the one in front of you — then open the
+   POS again. While any old POS tab stays open on a device, that device stays
+   on the old version.
+3. Do step 2 a second time.
+4. Check: **🛟 Help** shows a "POS version" line at the bottom, the same on
+   every till (on a phone, scroll to the very end). If 🧾 Expenses is switched
+   on (Admin → Features), the owner's login also shows it. If the version line
+   is missing, close every POS tab once more.
 
 From then on, updates reach the tills by themselves.

@@ -24,13 +24,20 @@ function kpi({ label, value, sub, cls = '' }) {
 // the explorer count them — so a morning whose first event is a refund of
 // yesterday's bill reads below zero (re-check F3). Then a percentage means
 // nothing; say what happened instead.
-function comparison(today, yesterday, refundsToday = 0) {
+function comparison(today, yesterday, refundsToday = 0, yesterdayBills = 0) {
   if (today <= 0 && refundsToday > 0) return { text: `Refunds of ${fmt(refundsToday)} so far today`, cls: 'down' };
+  const after = refundsToday > 0 ? ` · after ${fmt(refundsToday)} refunds` : '';
+  // Yesterday's net can be zero or below with sales in it (a refund of an
+  // earlier bill outweighed them): there is nothing to take a percentage of,
+  // but "No sales yesterday" would be untrue.
+  if (yesterday < 0 || (yesterday === 0 && yesterdayBills > 0)) {
+    return { text: refundsToday > 0 ? `After ${fmt(refundsToday)} refunds` : "No comparison: yesterday's refunds matched or outweighed its sales", cls: '' };
+  }
   if (!(yesterday > 0)) return { text: refundsToday > 0 ? `After ${fmt(refundsToday)} refunds` : 'No sales yesterday', cls: '' };
   const pct = Math.round(((today - yesterday) / yesterday) * 100);
-  if (pct === 0) return { text: 'Same as all day yesterday', cls: '' };
+  if (pct === 0) return { text: `Same as all day yesterday${after}`, cls: '' };
   return {
-    text: `${pct > 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs all day yesterday${refundsToday > 0 ? ` · after ${fmt(refundsToday)} refunds` : ''}`,
+    text: `${pct > 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs all day yesterday${after}`,
     cls: pct > 0 ? 'up' : 'down',
   };
 }
@@ -378,7 +385,7 @@ export async function refreshDashboard() {
     if (stamp) stamp.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
     $('dash-kpis').innerHTML = [
-      kpi({ label: 'Net sales today', value: fmt(d.today.sales), cls: 'hero', sub: comparison(d.today.sales, d.yesterday.sales, d.adjustments.refunds) }),
+      kpi({ label: 'Net sales today', value: fmt(d.today.sales), cls: 'hero', sub: comparison(d.today.sales, d.yesterday.sales, d.adjustments.refunds, d.yesterday.orders) }),
       kpi({ label: 'Orders', value: String(d.today.orders), sub: { text: `${d.today.dine_in.orders} dine in · ${d.today.takeaway.orders} takeaway` } }),
       kpi({ label: 'Average order', value: fmt(d.today.average_order) }),
       kpi({ label: 'Cards in use', value: String(d.floor.open_cards), sub: { text: `${fmt(d.floor.open_value)} on the floor` } }),

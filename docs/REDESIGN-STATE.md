@@ -763,6 +763,14 @@ added `021_expenses.sql` (four new tables and the default categories).
 
 ## Latest test state
 
+After the PR #20 re-check 2 fixes (on `e8e7222`): `npm test` 265/265 in
+Malaysia time. Playwright 32/32, 2 new — at 390×844 and 360×640, Help's
+"POS version" line ends above the bottom bar; both fail on `e8e7222`, where
+`main { padding }` reset the bottom-bar clearance on every phone screen (F1).
+The first-update steps in the RUNBOOK now cover a second POS tab, an unsent
+line and Expenses off (F2). Migration 022 adds `expenses_receipt` to databases
+that ran 021 before the index was added to it.
+
 After the PR #20 review fixes (on `1c85f11`): `npm test` 265/265 in Malaysia
 time (`test/helper.js` sets TZ), 5 new — the tiles equal the explorer and
 the Z report with a part and a full refund (F4), the Z report's categories add
