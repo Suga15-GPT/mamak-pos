@@ -763,6 +763,16 @@ added `021_expenses.sql` (four new tables and the default categories).
 
 ## Latest test state
 
+After the PR #20 re-check 4 fixes (on `ff92e19`): `npm test` 268/268, 2 new in
+`stream.test.js`, both failing on `ff92e19`. A till that stopped reading left a
+stream whose `end()` couldn't finish; the next ping or event wrote after it and
+the unhandled error stopped the server (F1). The stream now stops writing
+before it ends, and ignores errors on its response. Every stream opens with
+`event: hello` carrying the newest event number and a boot id, so a screen that
+has seen no event yet still reconnects with `?since=` (`?since=0` replays from
+the start), and a changed boot (a restarted server) makes every screen refresh
+once (`stream.resync`) (F2). Playwright 32/32.
+
 After the PR #20 re-check 3 fixes (on `7f2c50b`): `npm test` 266/266, 1 new
 (`stream.test.js`: the server ends a live stream after `STREAM_MAX_MS`, default
 5 minutes, and a reconnect with `?since=` replays what happened in between;
