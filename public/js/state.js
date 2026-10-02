@@ -136,9 +136,13 @@ export function connectStream() {
   };
   ['order.created', 'order.updated', 'order.paid', 'order.voided', 'menu.updated', 'features.updated', 'sales.cleared']
     .forEach(type => es.addEventListener(type, onEvent));
-  es.onopen = () => { reconnectDelay = 1000; setConnDot('connected'); };
+  let wasOpen = false;
+  es.onopen = () => { wasOpen = true; reconnectDelay = 1000; setConnDot('connected'); };
   es.onerror = () => {
-    setConnDot('offline');
+    // A stream that was open and ended is the server's routine refresh (every
+    // few minutes): reconnecting, not offline.
+    setConnDot(wasOpen ? 'reconnecting' : 'offline');
+    wasOpen = false;
     if (es) { es.close(); es = null; }
     // EventSource's own auto-retry is a fixed ~3s; we want our own backoff so a
     // downed server doesn't get hammered every 3s forever.

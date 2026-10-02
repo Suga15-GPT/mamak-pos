@@ -86,6 +86,7 @@ router.get('/api/dashboard', requireRole('admin', 'staff'), requireFeature('dash
       WITH ${MONEY_CTE}
       SELECT ${net(IN_DAY())} today_cents, ${bills(IN_DAY())} today_orders, ${gross(IN_DAY())} today_gross_cents,
              ${net(IN_DAY(1))} yesterday_cents, ${bills(IN_DAY(1))} yesterday_orders,
+             (-${net(IN_DAY(1), ' AND bill = 0')}) yesterday_refunds_cents,
              ${net(IN_MONTH)} month_cents, ${net(IN_YEAR)} year_cents,
              ${net(IN_DAY(), " AND ty = 'dine_in'")} dine_in_cents, ${bills(IN_DAY(), " AND ty = 'dine_in'")} dine_in_orders,
              ${net(IN_DAY(), " AND ty = 'takeaway'")} takeaway_cents, ${bills(IN_DAY(), " AND ty = 'takeaway'")} takeaway_orders
@@ -164,7 +165,7 @@ router.get('/api/dashboard', requireRole('admin', 'staff'), requireFeature('dash
       dine_in: { sales: cents2rm(s.dine_in_cents), orders: s.dine_in_orders },
       takeaway: { sales: cents2rm(s.takeaway_cents), orders: s.takeaway_orders },
     },
-    yesterday: { sales: cents2rm(s.yesterday_cents), orders: s.yesterday_orders },
+    yesterday: { sales: cents2rm(s.yesterday_cents), orders: s.yesterday_orders, refunds: cents2rm(s.yesterday_refunds_cents) },
     month: { sales: cents2rm(s.month_cents) },
     year: { sales: cents2rm(s.year_cents) },
     floor: {

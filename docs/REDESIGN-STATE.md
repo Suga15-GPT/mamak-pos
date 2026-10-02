@@ -763,6 +763,16 @@ added `021_expenses.sql` (four new tables and the default categories).
 
 ## Latest test state
 
+After the PR #20 re-check 3 fixes (on `7f2c50b`): `npm test` 266/266, 1 new
+(`stream.test.js`: the server ends a live stream after `STREAM_MAX_MS`, default
+5 minutes, and a reconnect with `?since=` replays what happened in between;
+fails on `7f2c50b`). main's service worker copies `/api/stream` into its cache,
+which holds the connection after its tab closes; six of those and a device
+reached nothing on the server (F1). Ending the stream from the server frees
+them; the page reconnects at once and shows "reconnecting", not "offline". The
+RUNBOOK's first-update steps open one POS tab only and stop after two tries
+(restart the app instead). Playwright 32/32.
+
 After the PR #20 re-check 2 fixes (on `e8e7222`): `npm test` 265/265 in
 Malaysia time. Playwright 32/32, 2 new — at 390×844 and 360×640, Help's
 "POS version" line ends above the bottom bar; both fail on `e8e7222`, where

@@ -374,13 +374,20 @@ is answered from that cache. On every device that runs the POS:
 1. **Send or clear what is on the screen first.** The old version keeps a line
    that hasn't been sent only in the page, so closing the page loses it.
 2. **Close every POS tab and window on that device** — the Kitchen screen and
-   any second POS tab too, not just the one in front of you — then open the
-   POS again. While any old POS tab stays open on a device, that device stays
-   on the old version.
+   any second POS tab too, not just the one in front of you — then open **one**
+   POS tab again. Open the Kitchen screen and any other screens only after
+   step 4 has passed. While any old POS tab stays open on a device, that device
+   stays on the old version.
 3. Do step 2 a second time.
 4. Check: **🛟 Help** shows a "POS version" line at the bottom, the same on
    every till (on a phone, scroll to the very end). If 🧾 Expenses is switched
-   on (Admin → Features), the owner's login also shows it. If the version line
-   is missing, close every POS tab once more.
+   on (Admin → Features), the owner's login also shows it.
+5. **If the version line is still missing, stop closing and opening** — each
+   extra try can tie up the device's connections to the server, until the till
+   can't load bills at all. Restart the app on the server
+   (`docker compose restart app`, or Restart on the `app` container in Docker
+   Desktop; a few seconds, and nothing saved is lost), then do steps 2–4 once.
+   (The new version also ends each live connection every few minutes, which
+   frees them in time on its own.)
 
 From then on, updates reach the tills by themselves.
