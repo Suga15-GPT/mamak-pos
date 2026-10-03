@@ -17,7 +17,8 @@ const DB_MODULE = require.resolve('../../src/db');
 const SERVER_MODULE = require.resolve('../../src/server');
 const MIGRATIONS_DIR = path.join(__dirname, '..', '..', 'migrations');
 
-const MODULES = ['kitchen', 'stations', 'printing', 'shifts', 'discounts', 'refunds', 'split_combine', 'qr', 'voice', 'dashboard'];
+const MODULES = ['kitchen', 'stations', 'printing', 'shifts', 'discounts', 'refunds', 'split_combine', 'qr', 'voice', 'dashboard', 'expenses'];
+const MODULES_AT_018 = MODULES.filter(m => m !== 'expenses');
 
 function clearSrcCache() {
   for (const key of Object.keys(require.cache)) {
@@ -850,7 +851,9 @@ test('upgrading a shop that already has orders switches every module on and skip
     assert.deepEqual(applied.slice(-2), ['016_features.sql', '018_features_existing_shops.sql'], 'the upgrade ran 016 and 018, after 017');
     const rows = Object.fromEntries((await db.query(
       "SELECT key, value FROM settings WHERE key LIKE 'feature%' OR key = 'setup_completed'")).rows.map(r => [r.key, r.value]));
-    for (const m of MODULES) assert.equal(rows[`feature_${m}`], '1', m);
+    // 018 wrote a row for each module there was then; a module added since
+    // (expenses) has no row, which means on — the API check below shows it.
+    for (const m of MODULES_AT_018) assert.equal(rows[`feature_${m}`], '1', m);
     assert.equal(rows.setup_completed, '1');
 
     const base = await startApp();
@@ -877,7 +880,9 @@ test('A4 an installed shop that never took an order keeps every module on and sk
   }, async db => {
     const rows = Object.fromEntries((await db.query(
       "SELECT key, value FROM settings WHERE key LIKE 'feature%' OR key = 'setup_completed'")).rows.map(r => [r.key, r.value]));
-    for (const m of MODULES) assert.equal(rows[`feature_${m}`], '1', m);
+    // 018 wrote a row for each module there was then; a module added since
+    // (expenses) has no row, which means on — the API check below shows it.
+    for (const m of MODULES_AT_018) assert.equal(rows[`feature_${m}`], '1', m);
     assert.equal(rows.setup_completed, '1');
 
     const base = await startApp();

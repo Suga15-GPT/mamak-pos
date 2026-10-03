@@ -125,7 +125,10 @@ router.post('/api/bill-groups/:id/pay', staff, validIds, awaitH(async (req, res)
     amountCents: l?.amount != null ? rm2cents(l.amount) : null,
     tenderedCents: l?.tendered != null ? rm2cents(l.tendered) : null,
   })) : raw;
-  const result = await groups.payGroup(Number(req.params.id), { legs, userId: req.user.id });
+  const expected = req.body?.expected_due;
+  const result = await groups.payGroup(Number(req.params.id), {
+    legs, userId: req.user.id, expectedDueCents: expected != null ? rm2cents(expected) : null,
+  });
   result.order_ids.forEach(id => publish('order.paid', { order_id: id }));
   // One receipt for the whole group: printing builds the grouped layout for
   // any order that belongs to a bill group.

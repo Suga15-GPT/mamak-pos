@@ -38,6 +38,7 @@ Words you will see on the screen are written **like this**.
 13. [Takeaway](#13-takeaway)
 14. [Moving a table](#14-moving-a-table)
 15. [Customers ordering with the QR code](#15-customers-ordering-with-the-qr-code)
+    - [The customer's bill, splitting it, and NFC](#15a-the-customers-bill-splitting-it-and-nfc)
 15b. [Customers ordering by speaking](#15b-customers-ordering-by-speaking)
 16. [Pausing QR ordering](#16-pausing-qr-ordering)
 17. [Adding and editing the menu](#17-adding-and-editing-the-menu)
@@ -49,6 +50,7 @@ Words you will see on the screen are written **like this**.
 22b. [Starting the figures from RM0](#22b-starting-the-figures-from-rm0)
 23. [Closing the shift](#23-closing-the-shift)
 24. [The Sales screen](#24-the-sales-screen)
+24b. [Recording expenses](#24b-recording-expenses)
 25. [When something goes wrong](#25-when-something-goes-wrong)
 26. [Help inside the POS](#26-help-inside-the-pos)
 27. [Quick start — staff](#quick-start--staff)
@@ -509,6 +511,37 @@ Accept or reject it on the Kitchen screen, then take payment.
 
 ---
 
+## 15a. The customer's bill, splitting it, and NFC
+
+On a card's **own** QR (not the shop poster), the customer's phone shows
+**Your bill**: every dish with its price, SST, anything already paid, and what
+is left to pay. Two buttons sit under it:
+
+- **🧮 Split the bill** — **Evenly** (say how many people) or **By what each
+  person had**: type everyone's name, then tap who had each dish. A dish two
+  people shared is split between them, and SST (and any service charge or
+  discount) follows the food. The amounts always add up to exactly what is
+  left. They can **Share on WhatsApp** or **Copy** it. Names stay on their
+  phone — nothing is sent to the POS.
+- **Pay now — coming soon.** Paying from the phone needs a payment provider,
+  which isn't connected yet. For now they still pay at the counter.
+
+If a friend has already paid for some dishes with **Split by items** at the
+till, those dishes show **✓ Paid** and drop out of the split.
+
+**NFC (optional): tap instead of scan.** An NFC sticker on a card opens the same
+page as its QR when a phone touches it.
+
+1. Buy **NTAG213** NFC stickers (about RM1–2 each) and stick one on each card.
+2. Install the free app **NFC Tools** on your phone.
+3. **⚙ Admin → 🎴 Cards & QR**, tap **Copy link** under a card.
+4. In NFC Tools: **Write → Add a record → URL/URI**, paste, **Write**, and hold
+   your phone on that card's sticker. Test it with another phone.
+5. Optional: **Other → Lock tag**, so nobody can overwrite it. If you ever press
+   **New QR** for that card, a locked sticker must be replaced.
+
+---
+
 ## 15b. Customers ordering by speaking
 
 Where the owner has switched it on, the page a customer sees after scanning
@@ -756,15 +789,67 @@ The Z report appears. Tap **Print** for a paper copy, or **Export CSV**.
 
 Tap **💰 Sales**. At a glance:
 
-- **Today sales** — and whether that is up or down on all of yesterday
+- **Net sales today** — bills settled today less refunds given today, and whether
+  that is up or down on all of yesterday (a refund of an earlier bill can take it
+  below zero; the line under it says so)
 - **Orders** and **Average order**
 - **Open tables** and how much money is sitting on the floor
 - **Ready to pay** — tables to go and collect from
 - **Late in kitchen** — anything over 10 minutes
-- **This month** and **This year**
+- **Net sales this month** and **this year**, counted the same way
 
-Below that: sales by hour, top items today, how people are paying, and what the
-kitchen is doing right now, plus today's voids, discounts and refunds.
+Below that is the **Sales explorer**:
+
+- Pick a timeframe: **Today, Yesterday, Last 7 days, Last 30 days, This month,
+  Last month, This year** or **Custom…** for any dates.
+- **View by** hour, day or month. Tap a **month** bar (or table row) to see its
+  days, and a **day** to see its hours. **‹ Back** goes up again.
+- Filter by **Order type**, **Payment** or **Category**. A category shows that
+  category's item sales (before SST); a payment method shows the money taken
+  that way, less refunds.
+- The big number is **net sales** (sales less refunds), with the change against
+  the previous period of the same length. The short grey line on each bar is
+  the same hour/day/month in that previous period.
+- The **table** under the chart has every figure and a total. **⬇ Export CSV**
+  saves it for Excel or your accountant.
+- The owner also sees **Expenses** and **Sales − expenses**, by day or month,
+  when no filter is chosen.
+
+Sales count when a bill is paid, at its full total — the same way the Z report
+counts them, so a day's figures match that day's Z report when the shift opens
+and closes on the same day. A shift that runs past midnight is split across
+the two days here; pick both days to match its Z report. The tiles at the top
+count the same way: a refunded bill is still a sale, and the refund comes off. Under the explorer: top items, payment
+mix and sales by category for the same timeframe, and what the kitchen is doing
+right now.
+
+---
+
+## 24b. Recording expenses
+
+Owner only. Tap **🧾 Expenses**, then:
+
+- **📷 Photo of receipt** — take a photo; the form fills itself in.
+- **🎙 Voice note** — say it: *"beli ayam 20 kilo kat pasar, RM180 cash"*,
+  then **Done**; the form fills itself in.
+- **✍ Type it** — fill in the date, amount, supplier, category and how it was
+  paid.
+
+**Always check the figures before Save expense** — reading a photo or a voice
+note can get a number wrong. Nothing is saved until you press Save.
+
+- **Buy it again** — your usual purchases, one tap to fill the form; change the
+  amount and save.
+- **Regular costs** — rent, wages, the weekly gas: add them once (every month on
+  day N, or every week on a weekday). When one is due it shows under **Due
+  now**: check the amount, then **Record** (or **Skip**).
+- A mistake is **voided** with a reason, never deleted.
+- The month's list shows the total and a bar per category. **📎** opens a
+  receipt photo; photos are kept in the nightly backup.
+
+Reading photos and voice notes needs a free Google Gemini key set up on the
+server (see the runbook). Without it, typing works as normal. Clearing sales
+data never touches expenses.
 
 ---
 

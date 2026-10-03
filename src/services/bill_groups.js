@@ -269,7 +269,7 @@ function checkLegs(legs) {
    that rounds to nothing settles on the rounding alone, with no zero-sen
    payment row (finding #6). Every member becomes paid, and the group closes,
    in the same transaction. */
-async function payGroup(groupId, { legs, userId }) {
+async function payGroup(groupId, { legs, userId, expectedDueCents = null }) {
   checkLegs(legs);
   const client = await pool.connect();
   try {
@@ -283,6 +283,10 @@ async function payGroup(groupId, { legs, userId }) {
     const dues = members.map(m => ({ m, due: Math.max(0, (m.total_cents || 0) - (paid[m.id] || 0)) }));
     const groupDue = dues.reduce((s, d) => s + d.due, 0);
     if (groupDue <= 0) throw AppError('combined bill already settled', 400);
+    // What the till showed as "To pay" (N3, as addPayment's expected_due).
+    if (expectedDueCents != null && Number(expectedDueCents) !== groupDue) {
+      throw AppError(`The bill has changed: it now comes to ${formatRM(groupDue)}. Check it and take payment again.`, 409);
+    }
 
     // Same control as a single order's payment: no open shift, no payment
     // (and with shifts switched off, no check and every leg's shift_id NULL).

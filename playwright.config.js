@@ -34,6 +34,8 @@ module.exports = defineConfig({
     timeout: 30000,
     env: {
       DATABASE_URL,
+      // The shop's time zone, as docker-compose.yml runs the app (review F1).
+      TZ: 'Asia/Kuala_Lumpur',
       ADMIN_PIN: '1234',
       BASE_URL,
       PORT: String(PORT),
@@ -43,6 +45,8 @@ module.exports = defineConfig({
       VOICE_ORDERING: '1',
       VOICE_MODE: 'mock',
       VOICE_MOCK_TRANSCRIPT: 'roti canai dua, teh tarik satu',
+      // Expenses: a receipt photo or voice note is "read" by a fixed answer.
+      EXPENSE_AI_MODE: 'mock',
     },
   },
 });

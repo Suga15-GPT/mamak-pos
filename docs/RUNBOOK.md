@@ -340,3 +340,54 @@ watch a service, and change it back if the corrections get annoying.
 Unset `VOICE_ORDERING` and restart. To stop **all** customer ordering
 (voice and tapping) without a restart, use Admin → Tables & QR → Accept QR
 orders instead.
+
+
+## Reading receipts for Expenses (Gemini)
+
+Optional. Without it, 🧾 Expenses works by typing.
+
+1. Sign in at https://aistudio.google.com with a Google account → **Get API key**
+   → **Create API key**. The free tier needs no card and is plenty for a few
+   receipts a day.
+2. Add it to `.env`: `GEMINI_API_KEY=...` (and, only if Google retires the
+   default model, `GEMINI_MODEL=<a current model that reads images and audio>`).
+3. `docker compose up -d` (the app restarts with the key; nothing else changes).
+4. 🧾 Expenses → Photo of receipt: the form should fill itself in.
+
+The key stays on the server; phones never see it. On the free tier Google may
+use what is sent to improve its products — receipts from suppliers only.
+If reading fails ("free reading limit used up", "could not reach"), the form
+opens empty and you type it.
+
+## Tills after an update
+
+Every screen checks every 30 seconds which version the server is running. After
+an update it reloads itself at the first quiet moment (no dialog open, nothing
+unsent on the bill, no expense draft open); until then a blue bar says it will.
+Each till's version is at the foot of **🛟 Help** ("POS version …") — after an
+update every till should show the same one.
+
+**The first update that adds this (from a version without it):** the old
+version's offline cache holds the tills on the old screens, and a reload alone
+is answered from that cache. On every device that runs the POS:
+
+1. **Send or clear what is on the screen first.** The old version keeps a line
+   that hasn't been sent only in the page, so closing the page loses it.
+2. **Close every POS tab and window on that device** — the Kitchen screen and
+   any second POS tab too, not just the one in front of you — then open **one**
+   POS tab again. Open the Kitchen screen and any other screens only after
+   step 4 has passed. While any old POS tab stays open on a device, that device
+   stays on the old version.
+3. Do step 2 a second time.
+4. Check: **🛟 Help** shows a "POS version" line at the bottom, the same on
+   every till (on a phone, scroll to the very end). If 🧾 Expenses is switched
+   on (Admin → Features), the owner's login also shows it.
+5. **If the version line is still missing, stop closing and opening** — each
+   extra try can tie up the device's connections to the server, until the till
+   can't load bills at all. Restart the app on the server
+   (`docker compose restart app`, or Restart on the `app` container in Docker
+   Desktop; a few seconds, and nothing saved is lost), then do steps 2–4 once.
+   (The new version also ends each live connection every few minutes, which
+   frees them in time on its own.)
+
+From then on, updates reach the tills by themselves.

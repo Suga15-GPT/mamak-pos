@@ -49,8 +49,9 @@ const translations = {
   'kitchen.colServed': { en: '🍽 Served', ms: '🍽 Dihidang' },
 
   'dashboard.heading': { en: 'Sales', ms: 'Jualan' },
-  'dashboard.topItems': { en: 'Top items today', ms: 'Item Terlaris Hari Ini' },
-  'dashboard.hourly': { en: 'Sales by hour', ms: 'Jualan Mengikut Jam' },
+  'dashboard.topItems': { en: 'Top items', ms: 'Item Terlaris' },
+  'dashboard.explorer': { en: 'Sales explorer', ms: 'Penjelajah Jualan' },
+  'dashboard.categories': { en: 'Sales by category', ms: 'Jualan Mengikut Kategori' },
   'dashboard.paymentMix': { en: 'Payment mix', ms: 'Kaedah Bayaran' },
   'dashboard.kitchenState': { en: 'Kitchen right now', ms: 'Dapur Sekarang' },
 
@@ -119,6 +120,9 @@ const translations = {
   'module.voice.desc': { en: 'Customers can say their order into their phone instead of tapping.', ms: 'Pelanggan boleh sebut pesanan ke telefon dan bukannya tekan.' },
   'module.dashboard': { en: 'Full sales dashboard', ms: 'Papan jualan penuh' },
   'module.dashboard.desc': { en: 'Sales figures, charts by hour, top items and payment mix. Off: there is no 💰 Sales screen.', ms: 'Angka jualan, carta mengikut jam, item terlaris dan kaedah bayaran. Mati: tiada skrin 💰 Jualan.' },
+  'module.expenses': { en: 'Expenses', ms: 'Perbelanjaan' },
+  'module.expenses.desc': { en: 'Record what you spend — snap a receipt or send a voice note and it fills itself in — and see sales against costs. Off: there is no 🧾 Expenses screen.', ms: 'Rekod perbelanjaan — ambil gambar resit atau hantar nota suara dan ia diisi sendiri — dan lihat jualan berbanding kos. Mati: tiada skrin 🧾 Perbelanjaan.' },
+  'nav.expenses': { en: 'Expenses', ms: 'Belanja' },
 
   'setup.title': { en: 'Set up your POS', ms: 'Sediakan POS anda' },
   'setup.step': { en: 'Step {n} of {total}', ms: 'Langkah {n} daripada {total}' },
@@ -202,6 +206,7 @@ const translations = {
   'clear.helpLink': { en: 'Before you clear', ms: 'Sebelum mengosongkan' },
   'clear.intro': { en: 'Start the sales figures from RM0 — after training, or a trial day. Every bill, payment, shift and kitchen ticket moves into an archive in the database, where it can be restored. Menu, staff, cards, settings, features and the activity log stay as they are.', ms: 'Mulakan angka jualan dari RM0 — selepas latihan, atau hari percubaan. Setiap bil, bayaran, syif dan tiket dapur dipindahkan ke arkib dalam pangkalan data, dan boleh dipulihkan. Menu, staf, kad, tetapan, ciri dan log aktiviti kekal.' },
   'clear.button': { en: 'Clear sales data…', ms: 'Kosongkan data jualan…' },
+  'clear.what_one': { en: '1 bill and {amount} taken would move into an archive.', ms: '1 bil dan {amount} diterima akan dipindahkan ke arkib.' },
   'clear.what': { en: '{bills} bills and {amount} taken would move into an archive.', ms: '{bills} bil dan {amount} diterima akan dipindahkan ke arkib.' },
   'clear.nothing': { en: 'There are no sales to clear — every figure is already RM0.', ms: 'Tiada jualan untuk dikosongkan — semua angka sudah RM0.' },
   'clear.summary': { en: '{bills} bills and {amount} taken move into an archive, and every sales figure starts again from RM0. Menu, staff, cards, settings and the activity log stay.', ms: '{bills} bil dan {amount} diterima dipindahkan ke arkib, dan setiap angka jualan bermula semula dari RM0. Menu, staf, kad, tetapan dan log aktiviti kekal.' },

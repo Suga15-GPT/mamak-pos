@@ -32,9 +32,16 @@ function subscribe(fn) {
 function subscriberCount() { return bus.listenerCount('event'); }
 
 // Replay everything after sinceSeq, for a reconnect that shouldn't miss an order.
+// sinceSeq 0 is a real answer ("I have seen nothing since this server started"),
+// so it replays everything; null means the caller has no position at all.
 function recent(sinceSeq) {
-  if (!sinceSeq) return [];
+  if (sinceSeq == null || !Number.isFinite(sinceSeq)) return [];
   return ring.filter(e => e.seq > sinceSeq);
 }
 
-module.exports = { publish, subscribe, recent, subscriberCount };
+// The newest event number, and which run of the server it belongs to: numbers
+// start again from 1 after a restart, so a page compares BOOT_ID to tell.
+function currentSeq() { return seq; }
+const BOOT_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+module.exports = { publish, subscribe, recent, subscriberCount, currentSeq, BOOT_ID };

@@ -453,6 +453,17 @@ const TOPICS = [
         'Pending orders appear at the top of 🍳 Kitchen with a count on the tab.',
         'Accept sends it to the kitchen. Reject voids the lines and tells the customer.',
       ] },
+      { h: 'The customer’s bill and splitting it', list: [
+        'On a card’s own QR the customer sees their bill: every dish with its price, SST, what is already paid and what is left.',
+        'Split the bill: evenly by number of people, or by what each person had — they type names and tap who had each dish; shared dishes divide. SST follows the food.',
+        'The split stays on their phone and can be shared on WhatsApp. They still pay at the counter; “Pay now” shows as coming soon.',
+      ] },
+      { h: 'NFC — tap instead of scan (optional)', steps: [
+        'Stick an NTAG213 NFC sticker on each card.',
+        '⚙ Admin → 🎴 Cards & QR → Copy link under a card.',
+        'On your phone, NFC Tools → Write → Add a record → URL, paste, Write, and hold the phone on that card.',
+        'Tapping the card now opens the same page as scanning its QR.',
+      ] },
       { tip: 'To stop QR ordering entirely — a rush, a broken kitchen printer — turn Accept QR orders off. Customers then see a short message asking them to order with staff.' },
     ],
   },
@@ -592,12 +603,38 @@ const TOPICS = [
     blurb: 'How today is going.',
     body: [
       { h: 'The numbers along the top', list: [
-        'Today sales — settled takings so far, against all of yesterday.',
+        'Net sales today — bills settled today, less any refunds given today, against all of yesterday. A refund of an earlier bill can take it below zero; the line under it says so.',
         'Orders and Average order — how many bills and how big.',
         'Cards in use and Ready to pay — the floor right now. Ready to pay means go and collect.',
         'Late in kitchen — tickets over ten minutes old.',
       ] },
-      { p: 'Below that: sales by hour with the busiest hour marked, what sold most, how people paid, and what the kitchen is doing.' },
+      { h: 'Sales explorer', list: [
+        'Pick a timeframe — Today, Yesterday, Last 7 or 30 days, This or Last month, This year, or Custom… for any dates.',
+        'View by hour, day or month. Tap a month to see its days, tap a day to see its hours; ‹ Back goes up again.',
+        'Filter by order type, payment method or menu category. A category shows that category’s item sales; a payment method shows what was taken that way.',
+        'The short grey line on each bar is the same slot in the previous period, so you can see whether you are up or down.',
+        'The table under the chart has every figure; ⬇ Export CSV saves it for Excel or your accountant.',
+        'The owner also sees Expenses and Sales − expenses (by day or month, with no filter chosen).',
+      ] },
+      { p: 'Sales are counted when a bill is paid, at its full total with SST — the same way the Z report counts them, so a day’s figures match that day’s Z report when the shift opens and closes on the same day. (A shift that runs past midnight is split across the two days here.) Refunds are their own column. The tiles at the top count the same way. Below: top items, payment mix and sales by category for the same timeframe, and what the kitchen is doing now.' },
+    ],
+  },
+  {
+    id: 'expenses', icon: '🧾', title: 'Recording expenses', time: '1 min', roles: ['admin'],
+    blurb: 'Snap a receipt, say it, or type it.',
+    body: [
+      { h: 'Adding one', steps: [
+        '🧾 Expenses → Photo of receipt, Voice note, or Type it.',
+        'A photo or a voice note fills in the form by itself ("beli ayam 20 kilo kat pasar, RM180 cash" works).',
+        'Check every figure — it can misread — then Save expense.',
+      ] },
+      { list: [
+        'Buy it again: your usual purchases are one tap away; change the amount and save.',
+        'Regular costs (rent, wages, the gas delivery): add them once. When one is due it shows under Due now — check the amount, then Record, or Skip.',
+        'A mistake is voided with a reason, never deleted; it stays in the list, crossed out.',
+        'Receipt photos are kept with the expense (📎) and go into the nightly backup.',
+      ] },
+      { tip: 'Reading photos and voice notes needs a free Google Gemini key on the server (GEMINI_API_KEY — see the runbook). Without it, typing works as normal.' },
     ],
   },
   {

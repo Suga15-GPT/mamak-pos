@@ -7,12 +7,14 @@ import { showHelpTopic } from './help.js';
 import { loadFeatures, setupCompleted } from './features.js';
 import { openSetup } from './setup.js';
 import './i18n.js';
+import { startVersionCheck } from './version.js';
 
 /* ===== OFFLINE (phase 07) =====
    Started unconditionally at page load — not gated behind login — so a reload
    while offline still flushes whatever the outbox is still holding once the
    network (and, separately, a session) comes back. */
 startOutbox();
+startVersionCheck();
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 }

@@ -182,9 +182,14 @@ async function report(shiftId, { final = false } = {}) {
 
   const categoryRows = orderIds.length
     ? await pool.query(
-        `SELECT COALESCE(c.name, 'Uncategorised') category, SUM(oi.price_cents * oi.qty)::int cents
+        // A line's value is its price plus its options', times quantity — as
+        // on the bill — so the category lines add up to gross (review F7:
+        // without the options, a Nasi Kandar with lauk fell short).
+        `SELECT COALESCE(c.name, 'Uncategorised') category,
+                SUM((oi.price_cents + COALESCE((SELECT SUM(m.price_cents) FROM order_item_mods m WHERE m.order_item_id = oi.id), 0)) * oi.qty)::int cents
          FROM order_items oi LEFT JOIN items i ON i.id = oi.item_id LEFT JOIN categories c ON c.id = i.category_id
-         WHERE oi.order_id = ANY($1::int[]) AND oi.voided_at IS NULL
+         LEFT JOIN order_sends se ON se.id = oi.send_id
+         WHERE oi.order_id = ANY($1::int[]) AND oi.voided_at IS NULL AND (se.id IS NULL OR se.approval_state = 'approved')
          GROUP BY c.name ORDER BY cents DESC`, [orderIds])
     : { rows: [] };
 

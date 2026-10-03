@@ -17,7 +17,7 @@ const { openSql } = require('../lib/status');
 
 const MODULES = [
   'kitchen', 'stations', 'printing', 'shifts', 'discounts',
-  'refunds', 'split_combine', 'qr', 'voice', 'dashboard',
+  'refunds', 'split_combine', 'qr', 'voice', 'dashboard', 'expenses',
 ];
 
 // A child is only ever on while its parent is. Turning a parent off turns its
@@ -26,7 +26,7 @@ const PARENT = { stations: 'kitchen', voice: 'qr' };
 
 const PRESETS = {
   lite: [],
-  medium: ['kitchen', 'printing', 'shifts', 'discounts', 'split_combine'],
+  medium: ['kitchen', 'printing', 'shifts', 'discounts', 'split_combine', 'expenses'],
   advanced: MODULES,
 };
 

@@ -14,6 +14,7 @@ const kitchenRoutes = require('./routes/kitchen');
 const voiceRoutes = require('./routes/voice');
 const cardRoutes = require('./routes/cards');
 const featureRoutes = require('./routes/features');
+const expenseRoutes = require('./routes/expenses');
 
 const app = express();
 
@@ -43,8 +44,46 @@ app.use((req, res, next) => {
 // the rest of the API wants. Mounted first and path-scoped: body-parser marks
 // the request parsed, so the 256kb limit below still governs every other route.
 app.use('/api/public/voice', express.json({ limit: '1500kb' }));
+// A receipt photo or a voice note (base64, downscaled on the phone first).
+app.use('/api/expenses/extract', express.json({ limit: '5mb' }));
 app.use(express.json({ limit: '256kb' }));
-app.use(express.static(path.join(__dirname, '..', 'public')));
+/* Which build of the screens this server hands out: a hash of everything in
+   public/, worked out once at boot. A till compares it with the one it loaded
+   and reloads itself (when nobody is mid-bill) after an update, so a page left
+   open through a deploy can't keep running the old code (review N2). */
+const APP_VERSION = (() => {
+  const crypto = require('crypto');
+  const fs = require('fs');
+  const hash = crypto.createHash('sha1');
+  const walk = dir => fs.readdirSync(dir, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .forEach(e => {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else hash.update(e.name).update(fs.readFileSync(full));
+    });
+  walk(path.join(__dirname, '..', 'public'));
+  return hash.digest('hex').slice(0, 12);
+})();
+app.get('/api/version', (req, res) => res.set('Cache-Control', 'no-store').json({ version: APP_VERSION }));
+
+/* The service worker's cache is named after that version, so every update
+   that changes a screen installs a fresh cache and drops the old one — a
+   reload can't be served yesterday's files from it. */
+const SW_SOURCE = require('fs').readFileSync(path.join(__dirname, '..', 'public', 'sw.js'), 'utf8')
+  .replace(/const CACHE_VERSION = '([^']+)';/, (m, v) => `const CACHE_VERSION = '${v}-${APP_VERSION}';`);
+app.get('/sw.js', (req, res) => res.type('application/javascript').set('Cache-Control', 'no-cache').send(SW_SOURCE));
+// The staff page carries its own build in a meta tag — even the copy the
+// service worker serves from its cache — so a till knows exactly what it runs.
+const INDEX_SOURCE = require('fs').readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8')
+  .replace('<meta name="app-version" content="">', `<meta name="app-version" content="${APP_VERSION}">`);
+const sendIndex = (req, res) => res.type('html').set('Cache-Control', 'no-cache').send(INDEX_SOURCE);
+// '/' too, and directly rather than by redirect: the service worker caches '/'
+// as part of its shell, and a page opened at '/' must carry the stamp as well
+// (review F3 — express.static used to answer it with the unstamped file).
+app.get(['/', '/index.html'], sendIndex);
+
+app.use(express.static(path.join(__dirname, '..', 'public'), { index: false }));
 
 app.use(authRoutes);
 app.use(publicRoutes);
@@ -56,6 +95,7 @@ app.use(kitchenRoutes);
 app.use(voiceRoutes);
 app.use(cardRoutes);
 app.use(featureRoutes);
+app.use(expenseRoutes);
 
 /* customer page route */
 app.get('/t/:token', (req, res) => {
@@ -64,8 +104,8 @@ app.get('/t/:token', (req, res) => {
   });
 });
 
-app.get('/', (req, res) => res.redirect('/index.html'));
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
 
 async function boot(retries = 15) {
   try {

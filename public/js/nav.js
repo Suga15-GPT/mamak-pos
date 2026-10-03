@@ -4,6 +4,7 @@ import { refreshKitchen } from './kitchen.js';
 import { refreshDashboard } from './dashboard.js';
 import { refreshAdmin } from './admin.js';
 import { refreshShift } from './shift.js';
+import { refreshExpenses } from './expenses.js';
 import { refreshHelp } from './help.js';
 import { t } from './i18n.js';
 import { on } from './features.js';
@@ -18,6 +19,7 @@ const TAB_DEFS = [
   { id: 'kitchen',   key: 'nav.kitchen',   icon: '🍳', roles: ['admin', 'staff', 'kitchen'], feature: () => on('kitchen') || on('qr') },
   { id: 'dashboard', key: 'nav.dashboard', icon: '💰', roles: ['admin', 'staff'], feature: () => on('dashboard') },
   { id: 'shift',     key: 'nav.shift',     icon: '🕐', roles: ['admin', 'staff'], feature: () => on('shifts') },
+  { id: 'expenses',  key: 'nav.expenses',  icon: '🧾', roles: ['admin'], feature: () => on('expenses') },
   { id: 'admin',     key: 'nav.admin',     icon: '⚙',  roles: ['admin'] },
   // Help is last on purpose — always in the same place, never in the way of the
   // four things somebody taps a hundred times a night.
@@ -94,6 +96,7 @@ export function switchTab(id) {
   if (id === 'kitchen') refreshKitchen();
   if (id === 'dashboard') refreshDashboard();
   if (id === 'shift') refreshShift();
+  if (id === 'expenses') refreshExpenses();
   if (id === 'admin') refreshAdmin();
   if (id === 'help') refreshHelp();
   // Help stops its walkthrough animation when you leave it.

@@ -97,7 +97,8 @@ let reconnectDelay = 1000;
 let reconnectTimer = null;
 let debounceTimer = null;
 let pendingEvents = [];
-let lastSeq = 0;
+let lastSeq = null;   // null until the server has told this page where it stands
+let lastBoot = null;
 const streamListeners = new Set();
 
 export function onStreamEvent(fn) { streamListeners.add(fn); return () => streamListeners.delete(fn); }
@@ -126,7 +127,7 @@ export function connectStream() {
   if (es) { es.close(); es = null; }
   if (!API.user) return;
   setConnDot('reconnecting');
-  const url = '/api/stream' + (lastSeq ? '?since=' + lastSeq : '');
+  const url = '/api/stream' + (lastSeq != null ? '?since=' + lastSeq : '');
   es = new EventSource(url);
   const onEvent = ev => {
     let data;
@@ -134,11 +135,28 @@ export function connectStream() {
     lastSeq = data.seq;
     dispatchStream(data);
   };
+  // Every stream opens by saying where the server's events stand, so the next
+  // reconnect asks for what it missed even if this screen has seen nothing yet
+  // (re-check 4, F2). A different boot is a restarted server, whose numbers
+  // started again from 1: what happened meanwhile can't be replayed, so every
+  // screen refreshes once instead.
+  es.addEventListener('hello', ev => {
+    let h;
+    try { h = JSON.parse(ev.data); } catch { return; }
+    const restarted = lastBoot != null && h.boot !== lastBoot;
+    lastBoot = h.boot;
+    if (lastSeq == null || restarted) lastSeq = h.seq;
+    if (restarted) dispatchStream({ type: 'stream.resync', seq: h.seq });
+  });
   ['order.created', 'order.updated', 'order.paid', 'order.voided', 'menu.updated', 'features.updated', 'sales.cleared']
     .forEach(type => es.addEventListener(type, onEvent));
-  es.onopen = () => { reconnectDelay = 1000; setConnDot('connected'); };
+  let wasOpen = false;
+  es.onopen = () => { wasOpen = true; reconnectDelay = 1000; setConnDot('connected'); };
   es.onerror = () => {
-    setConnDot('offline');
+    // A stream that was open and ended is the server's routine refresh (every
+    // few minutes): reconnecting, not offline.
+    setConnDot(wasOpen ? 'reconnecting' : 'offline');
+    wasOpen = false;
     if (es) { es.close(); es = null; }
     // EventSource's own auto-retry is a fixed ~3s; we want our own backoff so a
     // downed server doesn't get hammered every 3s forever.

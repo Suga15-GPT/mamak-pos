@@ -6,6 +6,8 @@
      and the "page shrinks on mobile" complaint is caused by overflow and
      sub-16px inputs, not by zoom being available. Both are fixed at source. -->
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<!-- Filled in by the server with the build this page belongs to (version.js). -->
+<meta name="app-version" content="">
 <meta name="color-scheme" content="light dark">
 <title>Mamak POS</title>
 <link rel="stylesheet" href="style.css">
@@ -31,6 +33,7 @@
 <div id="app-view" class="view" style="display:none">
   <div id="offline-banner" role="status"></div>
   <div id="outbox-failed" role="alert" hidden></div>
+  <div id="update-banner" role="status" hidden>The POS has been updated. It will reload by itself once this bill is done.</div>
   <header>
     <span class="brand">Mamak<span class="dot">.</span></span>
     <span class="page-title" id="page-title"></span>
@@ -177,10 +180,50 @@
         <div class="actions"><button class="btn small ghost" data-action="refresh-dashboard">↻ <span data-i18n="common.refresh">Refresh</span></button></div>
       </div>
       <div id="dash-kpis" class="kpi-grid"></div>
+
+      <div class="card explorer" id="sales-explorer">
+        <div class="explorer-head">
+          <h3 data-i18n="dashboard.explorer">Sales explorer</h3>
+          <div class="explorer-tools">
+            <button class="btn small ghost" data-action="ex-back" id="ex-back" hidden>‹ Back</button>
+            <button class="btn small outline" data-action="ex-export">⬇ Export CSV</button>
+          </div>
+        </div>
+        <div class="ex-ranges" role="group" aria-label="Timeframe">
+          <button class="chip" data-range="today">Today</button>
+          <button class="chip" data-range="yesterday">Yesterday</button>
+          <button class="chip" data-range="7d">Last 7 days</button>
+          <button class="chip" data-range="30d">Last 30 days</button>
+          <button class="chip" data-range="month">This month</button>
+          <button class="chip" data-range="lastmonth">Last month</button>
+          <button class="chip" data-range="year">This year</button>
+          <button class="chip" data-range="custom">Custom…</button>
+        </div>
+        <div class="ex-custom" id="ex-custom" hidden>
+          <label class="label" for="ex-from">From</label><input type="date" id="ex-from">
+          <label class="label" for="ex-to">To</label><input type="date" id="ex-to">
+          <button class="btn small" data-action="ex-apply">Show</button>
+        </div>
+        <div class="ex-filters">
+          <div><label class="label" for="ex-bucket">View by</label>
+            <select id="ex-bucket"><option value="auto">Best fit</option><option value="hour">Hour</option><option value="day">Day</option><option value="month">Month</option></select></div>
+          <div><label class="label" for="ex-type">Order type</label>
+            <select id="ex-type"><option value="all">All</option><option value="dine_in">Dine in</option><option value="takeaway">Takeaway</option></select></div>
+          <div><label class="label" for="ex-method">Payment</label>
+            <select id="ex-method"><option value="all">All</option><option value="Cash">Cash</option><option value="Card">Card</option><option value="DuitNow/eWallet">DuitNow / eWallet</option></select></div>
+          <div><label class="label" for="ex-category">Category</label>
+            <select id="ex-category"><option value="all">All</option></select></div>
+        </div>
+        <div id="ex-summary" class="ex-summary" aria-live="polite"></div>
+        <div id="ex-chart" class="ex-chart"></div>
+        <div id="ex-note" class="meta"></div>
+        <div class="scroll-x ex-table-wrap"><table class="data-table" id="ex-table"></table></div>
+      </div>
+
       <div class="chart-grid" data-feature="dashboard">
-        <div class="card"><h3 data-i18n="dashboard.hourly">Sales by hour</h3><div id="dash-hourly"></div></div>
-        <div class="card"><h3 data-i18n="dashboard.topItems">Top items today</h3><div id="dash-top"></div></div>
+        <div class="card"><h3 data-i18n="dashboard.topItems">Top items</h3><div id="dash-top"></div></div>
         <div class="card"><h3 data-i18n="dashboard.paymentMix">Payment mix</h3><div id="dash-mix"></div></div>
+        <div class="card"><h3 data-i18n="dashboard.categories">Sales by category</h3><div id="dash-categories"></div></div>
         <div class="card" data-feature="kitchen"><h3 data-i18n="dashboard.kitchenState">Kitchen right now</h3><div id="dash-kitchen"></div></div>
       </div>
     </section>
@@ -238,6 +281,83 @@
       </div>
     </section>
 
+    <!-- EXPENSES (owner only) -->
+    <section id="tab-expenses" class="tab" data-feature="expenses">
+      <div class="view-head">
+        <div><h2>🧾 <span data-i18n="nav.expenses">Expenses</span></h2>
+          <div class="sub">What the shop spends. Snap a receipt or say it — it fills itself in, and you check it before it is saved.</div></div>
+      </div>
+
+      <div class="card" id="exp-add-card">
+        <h3>Add an expense</h3>
+        <div class="exp-capture">
+          <label class="btn exp-cap" id="exp-photo-btn">📷 Photo of receipt
+            <input type="file" id="exp-photo-input" accept="image/*" capture="environment" hidden></label>
+          <button class="btn exp-cap" data-action="exp-voice" id="exp-voice-btn">🎙 Voice note</button>
+          <button class="btn outline exp-cap" data-action="exp-type">✍ Type it</button>
+        </div>
+        <div id="exp-ai-off" class="meta" hidden>Reading receipts and voice notes isn't set up on this till yet — see Help → Expenses. You can still type them in.</div>
+        <div id="exp-recording" class="exp-recording" hidden>
+          <span class="rec-dot" aria-hidden="true"></span><span id="exp-rec-time">0:00</span> Recording — say what you bought, where, and how much.
+          <button class="btn small" data-action="exp-voice-stop">Done</button>
+          <button class="btn small ghost" data-action="exp-voice-cancel">Cancel</button>
+        </div>
+        <div id="exp-reading" class="meta" hidden>⏳ Reading it…</div>
+        <div id="exp-recent" class="exp-recent"></div>
+
+        <form id="exp-form" class="exp-form" hidden autocomplete="off">
+          <div id="exp-draft-note" class="banner info" hidden></div>
+          <div class="exp-form-body">
+            <img id="exp-receipt-preview" class="exp-receipt" alt="Receipt photo" hidden>
+            <div class="form-grid exp-fields">
+              <div><label class="label" for="exp-date">Date</label><input type="date" id="exp-date" required></div>
+              <div><label class="label" for="exp-amount">Amount (RM)</label><input type="number" id="exp-amount" min="0.01" step="0.01" inputmode="decimal" required></div>
+              <div><label class="label" for="exp-supplier">Supplier / shop</label><input type="text" id="exp-supplier" maxlength="80" placeholder="e.g. Pasar Selayang"></div>
+              <div><label class="label" for="exp-category">Category</label><select id="exp-category"></select></div>
+              <div><label class="label" for="exp-method">Paid by</label><select id="exp-method"></select></div>
+              <div><label class="label" for="exp-desc">What was bought</label><input type="text" id="exp-desc" maxlength="200" placeholder="e.g. Ayam 20kg"></div>
+            </div>
+          </div>
+          <div id="exp-items" class="exp-items"></div>
+          <div id="exp-form-err" class="err" role="alert"></div>
+          <div class="modal-actions">
+            <button type="button" class="btn ghost" data-action="exp-cancel">Cancel</button>
+            <button type="submit" class="btn" id="exp-save">Save expense</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card" id="exp-due-card" hidden>
+        <h3>Due now</h3>
+        <div id="exp-due"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Expenses in <input type="month" id="exp-month" aria-label="Month"></h3>
+          <div class="exp-total" id="exp-total"></div>
+        </div>
+        <div id="exp-by-cat"></div>
+        <div class="scroll-x"><table class="data-table" id="exp-table"></table></div>
+      </div>
+
+      <div class="card">
+        <h3>Regular costs</h3>
+        <p class="meta">Rent, wages, the gas delivery — set them once. When one is due it appears under "Due now" for you to confirm.</p>
+        <div id="exp-recurring"></div>
+        <form id="exp-rec-form" class="form-grid exp-rec-form" autocomplete="off">
+          <div><label class="label" for="rec-name">Name</label><input type="text" id="rec-name" maxlength="80" placeholder="e.g. Rent" required></div>
+          <div><label class="label" for="rec-amount">Amount (RM)</label><input type="number" id="rec-amount" min="0.01" step="0.01" required></div>
+          <div><label class="label" for="rec-category">Category</label><select id="rec-category"></select></div>
+          <div><label class="label" for="rec-method">Paid by</label><select id="rec-method"></select></div>
+          <div><label class="label" for="rec-every">Every</label>
+            <select id="rec-every"><option value="month">Month, on day…</option><option value="week">Week, on…</option></select></div>
+          <div><label class="label" for="rec-day">Day</label><select id="rec-day"></select></div>
+          <div><button type="submit" class="btn outline">Add regular cost</button></div>
+        </form>
+      </div>
+    </section>
+
     <!-- HELP & TRAINING -->
     <section id="tab-help" class="tab">
       <div id="help-home">
@@ -292,6 +412,8 @@
           <div id="help-article-body"></div>
         </div>
       </div>
+      <!-- Which build this till runs: after an update, every till should show the same. -->
+      <p class="meta app-version" id="app-version-label"></p>
     </section>
 
     <!-- ADMIN -->
@@ -401,6 +523,21 @@
             <button class="btn small" data-action="print-qr-sheet">🖨 Print</button>
           </div>
           <div id="qr-grid" class="qr-grid"></div>
+        </div>
+
+        <div class="card" id="nfc-card" data-feature="qr">
+          <div class="card-head">
+            <h3>📡 NFC tags on the cards</h3>
+            <button class="btn small outline" data-action="copy-all-card-links">Copy all links</button>
+          </div>
+          <p class="meta">Optional. An NFC sticker on a card lets a customer tap their phone instead of scanning — it opens the same page as that card's QR. Works on Android phones and iPhone XS or newer.</p>
+          <ol class="nfc-steps">
+            <li>Buy <b>NTAG213</b> NFC stickers (about RM1–2 each) and stick one on the back of each card.</li>
+            <li>On your phone, install the free app <b>NFC Tools</b>.</li>
+            <li>Tap <b>Copy link</b> under a card above, then in NFC Tools: <b>Write → Add a record → URL/URI</b>, paste, and <b>Write</b>. Hold the phone on that card's sticker.</li>
+            <li>Test it: tap the card with another phone — it should open that card's page.</li>
+            <li>Optional: <b>Other → Lock tag</b> in NFC Tools so nobody can overwrite it. (A locked tag can't be changed — if you ever press "New QR", you'd need a new sticker.)</li>
+          </ol>
         </div>
       </div>
 

@@ -1,6 +1,13 @@
 const fs = require('fs');
 const path = require('path');
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+/* A DATE column comes back as the text it is ('2026-10-01'), not as a JS Date.
+   pg's default makes a Date at *local* midnight, so on a server in Malaysia
+   time (docker-compose.yml sets TZ=Asia/Kuala_Lumpur) toISOString() of
+   2026-10-01 reads 2026-09-30 — a regular cost recorded for one date stayed
+   due for ever (review F1). A shop date has no time of day; text keeps it so. */
+types.setTypeParser(1082, v => v);
 
 /* DATABASE_URL when it is set, exactly as before. Otherwise pg reads the
    standard variables PGHOST, PGPORT, PGUSER, PGPASSWORD and PGDATABASE, which
